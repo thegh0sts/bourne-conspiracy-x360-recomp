@@ -11,12 +11,14 @@ Nothing from the game ships with it. Running the installer again resumes where i
 
 | Setting | How it's applied |
 |---|---|
-| Fullscreen, output resolution, render scale, anti-aliasing, VSync | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`, `--vsync`) |
+| Fullscreen, output resolution, render resolution, anti-aliasing, VSync | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`, `--vsync`) |
+| Render resolution | 1280×720 (original), 2560×1440 or 3840×2160: the size the game draws at (`--resolution_scale` 1/2/3). Output resolution only sets the final picture size. |
 | Show FPS counter | `--show_fps=true`, a small counter drawn by `src/tbc_app.h` (builds from before this option need rebuilding). F3 opens the SDK's full debug overlay in any build. |
-| Frame rate limit | Game config `[Engine.GameEngine] MaxSmoothedFrameRate` (original 62) plus `--video_mode_refresh_rate` |
 | Motion blur, depth of field, bloom | Game config `[SystemSettings]` |
 | Field of view | Scales every camera mode's `Fov=` value in the camera config |
 | Stick dead zone | Game config `[HM_Engine.HmPlayerInput] DeadZone` (original 0.25) |
+
+There's no frame rate option: the game is locked to 30 FPS in its own code, as on the Xbox 360, and the engine config can't lift it.
 
 On Play, the launcher rebuilds `Coalesced.ini` from the original (kept as `Coalesced.ini.bak`) with the chosen settings, updates `Xbox360TOC.txt` to match, and starts the game. With every setting at default the original files are put back. Settings are saved in `%LOCALAPPDATA%\BourneConspiracyPC\settings.json`; the install location in `launcher.json` next to it.
 

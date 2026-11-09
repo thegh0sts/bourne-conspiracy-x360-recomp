@@ -33,9 +33,12 @@ RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
 RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
 # Render resolution: the size the game actually draws at (the runtime's --resolution_scale
 # multiplies the Xbox 360's 1280x720). Shown as resolutions rather than 1x/2x/3x.
-SCALES = ["1280×720 (original)", "2560×1440", "3840×2160"]
+# Scaling is expensive in this runtime: on an RTX 4080 Super, one heavy street scene ran
+# about 48 FPS at 1x, about 20 at 2x and under 10 at 3x, with the GPU near full load.
+SCALES = ["1280×720 (original)", "2560×1440 (demanding)", "3840×2160 (very demanding)"]
 SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 2, SCALES[2]: 3}
-OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2]}
+OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
+                   "2560×1440": SCALES[1], "3840×2160": SCALES[2]}
 AA = ["Off", "FXAA", "FXAA (strong)"]
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
 # Frame rate. The game asks for a present interval of two vblanks (30 FPS); tbc.exe's
@@ -61,6 +64,8 @@ DEFAULTS = {
     "motion_blur": True,
     "depth_of_field": True,
     "bloom": True,
+    "lens_flares": True,
+    "distortion": True,
     "fov": 100,
     "deadzone": 25,
     "close_on_play": True,
@@ -133,6 +138,10 @@ def apply_game_config(game: Path, s) -> str:
         edits.append(("Xe-BourneEngine.ini", "SystemSettings", "DepthOfField", "False"))
     if not s["bloom"]:
         edits.append(("Xe-BourneEngine.ini", "SystemSettings", "Bloom", "False"))
+    if not s["lens_flares"]:
+        edits.append(("Xe-BourneEngine.ini", "SystemSettings", "LensFlares", "False"))
+    if not s["distortion"]:
+        edits.append(("Xe-BourneEngine.ini", "SystemSettings", "Distortion", "False"))
     if int(s["deadzone"]) != 25:
         edits.append(("Xe-BourneInput.ini", "HM_Engine.HmPlayerInput", "DeadZone", f"{int(s['deadzone']) / 100:.2f}"))
     fov = int(s["fov"])
@@ -241,10 +250,10 @@ class SettingsView(tk.Frame):
         self._check(box, 6, "show_fps", "Show FPS counter")
 
         box = self._section("Graphics and camera")
-        self._check(box, 0, "motion_blur", "Motion blur")
-        self._check(box, 1, "depth_of_field", "Depth of field")
-        self._check(box, 2, "bloom", "Bloom")
-        self._slider(box, 3, "fov", "Field of view (%)", 80, 140, 5)
+        self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
+                              ("bloom", "Bloom")])
+        self._checks(box, 1, [("lens_flares", "Lens flares"), ("distortion", "Heat haze / distortion")])
+        self._slider(box, 2, "fov", "Field of view (%)", 80, 140, 5)
 
         box = self._section("Controller")
         self._slider(box, 0, "deadzone", "Stick dead zone (%)", 5, 40, 1)
@@ -285,6 +294,15 @@ class SettingsView(tk.Frame):
         tk.Checkbutton(box, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                        activebackground=PANEL, activeforeground=FG, anchor="w"
                        ).grid(row=row, column=0, columnspan=2, sticky="w")
+
+    def _checks(self, box, row, items):
+        """Several checkboxes side by side on one row."""
+        line = tk.Frame(box, bg=PANEL)
+        line.grid(row=row, column=0, columnspan=2, sticky="w")
+        for key, text in items:
+            v = self.vars[key] = tk.BooleanVar(value=self.s[key])
+            tk.Checkbutton(line, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
+                           activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 18))
 
     def _combo(self, box, row, key, text, values):
         v = self.vars[key] = tk.StringVar(value=self.s[key] if self.s[key] in values else DEFAULTS[key])

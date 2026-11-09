@@ -12,10 +12,10 @@ Nothing from the game ships with it. Running the installer again resumes where i
 | Setting | How it's applied |
 |---|---|
 | Fullscreen, output resolution, render resolution, anti-aliasing, VSync | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`, `--vsync`) |
-| Render resolution | 1280×720 (original), 2560×1440 or 3840×2160: the size the game draws at (`--resolution_scale` 1/2/3). Output resolution only sets the final picture size. |
+| Render resolution | 1280×720 (original), 2560×1440 or 3840×2160: the size the game draws at (`--resolution_scale` 1/2/3). Output resolution only sets the final picture size. Scaling is expensive in this runtime: on an RTX 4080 Super one heavy street scene ran about 48 FPS at 1x, about 20 at 2x and under 10 at 3x. For 60 FPS, use 1x with FXAA. |
 | Frame rate | `--frame_rate` (30, 60 or 0), handled by `src/fps_unlock.cpp`: the game asks Direct3D for a present interval of two vblanks (30 FPS) and this changes it to one (60) or none. For 120/144/unlimited the launcher also raises `[Engine.GameEngine] MaxSmoothedFrameRate`, the engine's own limiter. Needs a rebuilt `tbc.exe`. |
 | Show FPS counter | `--show_fps=true`, a small counter drawn by `src/tbc_app.h` (builds from before this option need rebuilding). F3 opens the SDK's full debug overlay in any build. |
-| Motion blur, depth of field, bloom | Game config `[SystemSettings]` |
+| Motion blur, depth of field, bloom, lens flares, heat haze / distortion | Game config `[SystemSettings]` (`MotionBlur`, `DepthOfField`, `Bloom`, `LensFlares`, `Distortion`) |
 | Field of view | Scales every camera mode's `Fov=` value in the camera config |
 | Stick dead zone | Game config `[HM_Engine.HmPlayerInput] DeadZone` (original 0.25) |
 

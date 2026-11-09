@@ -54,6 +54,7 @@ If the game crashes with `Call to invalid or unregistered function at guest addr
 ## Known issues
 
 - Function `0x825EADC8` is reported as 1.27 MB, which suggests several functions merged into one. Not yet investigated.
+- FPS is currently capped at 30fps. This is being investigated.
 
 ## Credits
 

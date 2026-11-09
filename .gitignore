@@ -16,3 +16,10 @@ tbc_log.txt
 *.log
 .vs/
 *.user
+
+# Installer build output
+installer/payload/
+installer/build/
+installer/dist/
+installer/*.spec
+__pycache__/

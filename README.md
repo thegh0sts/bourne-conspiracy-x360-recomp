@@ -58,6 +58,7 @@ If the game crashes with `Call to invalid or unregistered function at guest addr
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and the Xenia project, whose work this is built on.
+- Function recovery, installer and tooling developed with help from Claude (Anthropic).
 
 ## Disclaimer
 

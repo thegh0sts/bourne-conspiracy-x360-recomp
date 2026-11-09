@@ -1,0 +1,8 @@
+# PyInstaller build output (rebuilt by build_installer.bat)
+build/
+dist/
+payload/
+*.spec
+__pycache__/
+# copied in from ../tools by build_installer.bat
+tbc_config.py

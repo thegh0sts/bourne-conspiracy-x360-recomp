@@ -51,10 +51,41 @@ ReXGlue's analyzer misses some functions, mostly small virtual-function stubs th
 
 If the game crashes with `Call to invalid or unregistered function at guest address 0x...`, that address is another missed function: add it to `default_functions.toml` and rebuild.
 
+## Performance and 60 FPS
+
+The original game runs at 30 FPS: it asks Direct3D to wait two screen refreshes per frame. `src/fps_unlock.cpp` can change that, set with the launcher's **Frame rate** option or `--frame_rate=60` (or `--frame_rate=0` for no limit; the launcher then also raises the engine's own cap, `MaxSmoothedFrameRate`).
+
+**60 FPS is experimental.** Keep these caveats in mind:
+
+- The game was only ever tuned and tested at 30 FPS. Gameplay speed, physics, animation and cutscene timing at 60 FPS have only been lightly tested, through the first level. If anything looks too fast, too slow or broken, switch back to 30.
+- Above 60 FPS (120, 144, unlimited) is untested beyond starting the game.
+- Heavy scenes don't hold 60. The runtime's imitation of the Xbox 360 graphics hardware is expensive, so even a fast graphics card dips into the 40s in busy areas. Expect an uneven frame rate rather than a steady 60.
+- Higher render resolutions cost far more than on PC games. 2560×1440 and 3840×2160 are only practical at 30 FPS, and not in every scene.
+
+### Tested on
+
+| | |
+|---|---|
+| CPU | Intel Core i7-12700KF |
+| RAM | 32 GB DDR4 |
+| GPU | NVIDIA GeForce RTX 4080 SUPER (driver 621.01) |
+| OS | Windows 11 |
+| Build | ReXGlue SDK v0.10.1, RelWithDebInfo |
+
+Frame rate at 60 FPS in the busy street at the start of the first level:
+
+| Render resolution | FPS | GPU load |
+|---|---|---|
+| 1280×720 (1x) | about 48 (dips to about 40 as the level opens) | about 85% |
+| 2560×1440 (2x) | about 15-25 | close to 100% |
+| 3840×2160 (3x) | under 10 | close to 100% |
+
+Changing the runtime's render target path (`--render_target_path_d3d12 rtv` or `rov`) made no difference. For a smooth 60, use 1280×720 with FXAA.
+
 ## Known issues
 
 - Function `0x825EADC8` is reported as 1.27 MB, which suggests several functions merged into one. Not yet investigated.
-- FPS is currently capped at 30fps. This is being investigated.
+- 60 FPS and higher render resolutions are limited by graphics performance (see above).
 
 ## Credits
 

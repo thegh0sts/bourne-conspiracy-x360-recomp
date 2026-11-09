@@ -1,0 +1,50 @@
+# Manual function starts for default.xex.
+# These are targets of tail-call branches (b) that the analyzer did not
+# detect as functions on its own (from the first codegen run: 142
+# "UnresolvedCall" errors pointing at these 34 addresses).
+
+[functions]
+0x82419470 = { name = "sub_82419470" }
+0x8241A660 = { name = "sub_8241A660" }
+0x8241A710 = { name = "sub_8241A710" }
+0x8241AB78 = { name = "sub_8241AB78" }
+0x8247BDC8 = { name = "sub_8247BDC8" }
+0x8247CB08 = { name = "sub_8247CB08" }
+0x8247CB30 = { name = "sub_8247CB30" }
+0x8247CB60 = { name = "sub_8247CB60" }
+0x8247CB88 = { name = "sub_8247CB88" }
+0x8247CBC8 = { name = "sub_8247CBC8" }
+# Found at runtime (crash #2): called through a function pointer.
+0x824B9AE0 = { name = "sub_824B9AE0" }
+# Found at runtime (crash #3): called through a function pointer.
+0x82524240 = { name = "sub_82524240" }
+0x82524BF0 = { name = "sub_82524BF0" }
+0x82525020 = { name = "sub_82525020" }
+0x825DEFC0 = { name = "sub_825DEFC0" }
+0x825DF028 = { name = "sub_825DF028" }
+0x825DF070 = { name = "sub_825DF070" }
+0x825DF0A8 = { name = "sub_825DF0A8" }
+0x825DF0E0 = { name = "sub_825DF0E0" }
+0x825DF120 = { name = "sub_825DF120" }
+0x826882F0 = { name = "sub_826882F0" }
+0x82723EA8 = { name = "sub_82723EA8" }
+0x827AC740 = { name = "sub_827AC740" }
+0x827AC8B0 = { name = "sub_827AC8B0" }
+0x827AC998 = { name = "sub_827AC998" }
+0x827ACB78 = { name = "sub_827ACB78" }
+0x82D69618 = { name = "sub_82D69618" }
+0x82D69628 = { name = "sub_82D69628" }
+0x82D69638 = { name = "sub_82D69638" }
+0x82D69648 = { name = "sub_82D69648" }
+0x82D69658 = { name = "sub_82D69658" }
+0x82D69668 = { name = "sub_82D69668" }
+0x82D69678 = { name = "sub_82D69678" }
+0x82D69688 = { name = "sub_82D69688" }
+0x82D69698 = { name = "sub_82D69698" }
+0x82D696A8 = { name = "sub_82D696A8" }
+0x82D696B8 = { name = "sub_82D696B8" }
+0x82D696C8 = { name = "sub_82D696C8" }
+0x82F01898 = { name = "sub_82F01898" }
+# Found at runtime: called through a function pointer, so static analysis missed it.
+0x83028D40 = { name = "sub_83028D40" }
+0x830F3FB0 = { name = "sub_830F3FB0" }

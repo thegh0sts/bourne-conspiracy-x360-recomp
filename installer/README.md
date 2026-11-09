@@ -12,6 +12,7 @@ Nothing from the game ships with it. Running the installer again resumes where i
 | Setting | How it's applied |
 |---|---|
 | Fullscreen, output resolution, render scale, anti-aliasing, VSync | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`, `--vsync`) |
+| Show FPS counter | `--show_fps=true`, a small counter drawn by `src/tbc_app.h` (builds from before this option need rebuilding). F3 opens the SDK's full debug overlay in any build. |
 | Frame rate limit | Game config `[Engine.GameEngine] MaxSmoothedFrameRate` (original 62) plus `--video_mode_refresh_rate` |
 | Motion blur, depth of field, bloom | Game config `[SystemSettings]` |
 | Field of view | Scales every camera mode's `Fov=` value in the camera config |

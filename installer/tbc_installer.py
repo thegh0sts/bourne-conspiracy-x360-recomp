@@ -514,6 +514,36 @@ BG, FG, DIM, ACCENT, FIELD = "#13161c", "#e8e8e8", "#9aa3ad", "#c8102e", "#fffff
 LAUNCHER_HOME = DEFAULT_DIR.parent / "BourneConspiracyPC"
 
 
+def start_game(args, cwd):
+    """Start the game fully separate from this (PyInstaller one-file) program.
+
+    A one-file exe unpacks itself into a temporary _MEI folder and points the Windows DLL
+    search path and a few environment variables at it. Child processes inherit those, so
+    the game could load DLLs from that folder and keep it locked; when the launcher then
+    closed, Windows showed "Failed to remove temporary directory". Clear all of that first.
+    """
+    env = dict(os.environ)
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        for k in ("TCL_LIBRARY", "TK_LIBRARY", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
+                  "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL", "_PYI_SPLASH_IPC"):
+            env.pop(k, None)
+        env["PATH"] = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
+                                      if p and not p.lower().startswith(mei.lower()))
+    flags = 0
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            pass
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(args, cwd=str(cwd), env=env, creationflags=flags, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+
 def install_info_path() -> Path:
     """Where the launcher remembers the install (always in %LOCALAPPDATA%)."""
     return LAUNCHER_HOME / "launcher.json"
@@ -631,8 +661,8 @@ class InstallView(tk.Frame):
         if self.exe:
             if self.on_installed:
                 return self.on_installed(self.exe, self.game, self.root_dir)
-            return subprocess.Popen([self.exe, "--game_data_root", self.game, "--gpu_plugin", "xenos"],
-                                    cwd=str(Path(self.exe).parent))
+            return start_game([self.exe, "--game_data_root", self.game, "--gpu_plugin", "xenos"],
+                              Path(self.exe).parent)
         iso = Path(self.iso_var.get().strip('" '))
         if not iso.is_file():
             messagebox.showerror("Choose ISO", "Choose your game's .iso file first.")

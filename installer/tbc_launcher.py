@@ -22,7 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
-                           make_root)
+                           make_root, start_game)
 
 VERSION = "0.1.0"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
@@ -30,6 +30,7 @@ PANEL = "#1c2029"
 
 RESOLUTIONS = ["Original (720p)", "1080p", "1440p", "4K"]
 RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
+RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
 SCALES = ["1x (original)", "2x", "3x"]
 AA = ["Off", "FXAA", "FXAA (strong)"]
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
@@ -43,6 +44,7 @@ DEFAULTS = {
     "render_scale": "1x (original)",
     "aa": "Off",
     "vsync": True,
+    "show_fps": False,
     "fps": "60 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -144,14 +146,36 @@ def apply_game_config(game: Path, s) -> str:
     return f"{len(edits) + (fov != 100)} config change(s)"
 
 
-def game_args(s):
+def window_size(s, screen):
+    """Window size for windowed mode: the chosen output size, shrunk (16:9) to fit
+    within 85% of the screen so a 1440p/4K window doesn't cover the whole display."""
+    w, h = RES_SIZE.get(s["resolution"], (1280, 720))
+    if screen:
+        sw, sh = int(screen[0] * 0.85), int(screen[1] * 0.85)
+        k = min(1.0, sw / w, sh / h)
+        w, h = int(w * k) // 16 * 16, int(h * k) // 9 * 9
+        w, h = min(w, h * 16 // 9), min(h, w * 9 // 16)
+    return w, h
+
+
+def game_args(s, screen=None):
     """ReXGlue command-line settings, only when not at default. Valued settings use the
     "--name value" form already used for --gpu_plugin; on/off settings use "--name=value"."""
     args = ["--gpu_plugin", "xenos"]
-    if s["fullscreen"]:
-        args.append("--fullscreen=true")
+    # Always pass fullscreen explicitly: the runtime's own default is fullscreen, so
+    # leaving the flag out when the box is unticked still opened full screen.
+    args.append("--fullscreen=true" if s["fullscreen"] else "--fullscreen=false")
     if s["resolution"] in RES_FLAG:
-        args += ["--resolution", RES_FLAG[s["resolution"]]]
+        if s["fullscreen"]:
+            args += ["--resolution", RES_FLAG[s["resolution"]]]
+        else:
+            # --resolution also sizes the window, so a 4K preset fills the screen even
+            # when windowed. Set the game's output size and the window size separately.
+            w, h = RES_SIZE[s["resolution"]]
+            args += ["--video_mode_width", str(w), "--video_mode_height", str(h)]
+    if not s["fullscreen"]:
+        ww, wh = window_size(s, screen)
+        args += ["--window_width", str(ww), "--window_height", str(wh)]
     scale = int(s["render_scale"][0])
     if scale > 1:
         args += ["--resolution_scale", str(scale)]
@@ -159,6 +183,10 @@ def game_args(s):
         args += ["--swap_post_effect", AA_FLAG[s["aa"]]]
     if not s["vsync"]:
         args.append("--vsync=false")
+    if s.get("show_fps"):
+        # Needs a tbc.exe built with the FPS counter (src/tbc_app.h); older builds
+        # don't know this flag, so it's only passed when ticked.
+        args.append("--show_fps=true")
     _, refresh = FPS_CAP[s["fps"]]
     if refresh != 60:
         args += ["--video_mode_refresh_rate", str(refresh)]
@@ -196,6 +224,7 @@ class SettingsView(tk.Frame):
         self._combo(box, 3, "aa", "Anti-aliasing", AA)
         self._combo(box, 4, "fps", "Frame rate limit", FPS)
         self._check(box, 5, "vsync", "VSync")
+        self._check(box, 6, "show_fps", "Show FPS counter")
 
         box = self._section("Graphics and camera")
         self._check(box, 0, "motion_blur", "Motion blur")
@@ -282,9 +311,9 @@ class SettingsView(tk.Frame):
                 return
             summary = "config unchanged"
         log = Path(self.info.get("root", exe.parent)) / "game.log"
-        args = [str(exe), "--game_data_root", str(game)] + game_args(s) + ["--log_file", str(log)]
+        args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
         try:
-            subprocess.Popen(args, cwd=str(exe.parent))
+            start_game(args, exe.parent)
         except OSError as e:
             messagebox.showerror("Play", f"Couldn't start the game: {e}")
             return
@@ -296,7 +325,7 @@ class SettingsView(tk.Frame):
 class Launcher:
     def __init__(self):
         self.root = make_root(APP_NAME)
-        self.root.geometry("780x860")
+        self.root.geometry("780x890")
         self.root.minsize(700, 760)
         self.view = None
         info = load_install()

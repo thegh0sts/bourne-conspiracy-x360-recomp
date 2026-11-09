@@ -178,13 +178,11 @@ def game_args(s, screen=None):
     if not s["fullscreen"]:
         ww, wh = window_size(s, screen)
         args += ["--window_width", str(ww), "--window_height", str(wh)]
-    scale = SCALE_FACTOR.get(s["render_scale"], 1)
-    if scale > 1:
-        args += ["--resolution_scale", str(scale)]
-    if s["aa"] in AA_FLAG:
-        args += ["--swap_post_effect", AA_FLAG[s["aa"]]]
-    if not s["vsync"]:
-        args.append("--vsync=false")
+    # Graphics-plugin settings are always passed, so a value left in tbc.toml (the runtime's
+    # own config file, written by its F4 settings overlay) can't override the launcher.
+    args += ["--resolution_scale", str(SCALE_FACTOR.get(s["render_scale"], 1))]
+    args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
+    args.append("--vsync=true" if s["vsync"] else "--vsync=false")
     if s.get("show_fps"):
         # Needs a tbc.exe built with the FPS counter (src/tbc_app.h); older builds
         # don't know this flag, so it's only passed when ticked.

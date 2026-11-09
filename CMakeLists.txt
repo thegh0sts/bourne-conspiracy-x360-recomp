@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(TBC_SOURCES
     src/main.cpp
+    src/gpu_preload.cpp
 )
 
 if(WIN32)

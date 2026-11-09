@@ -38,9 +38,17 @@ SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 2, SCALES[2]: 3}
 OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2]}
 AA = ["Off", "FXAA", "FXAA (strong)"]
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
-# The game is locked to 30 FPS in its own code (as on the Xbox 360); the engine's
-# MaxSmoothedFrameRate setting doesn't lift it, so there's no frame rate option until
-# that lock is patched.
+# Frame rate. The game asks for a present interval of two vblanks (30 FPS); tbc.exe's
+# --frame_rate setting (src/fps_unlock.cpp) changes that. Above 60 the vblank wait is
+# removed and the engine's own limiter, MaxSmoothedFrameRate (62 by default), sets the cap.
+FPS = ["30 (original)", "60", "120 (experimental)", "144 (experimental)", "Unlimited (experimental)"]
+FPS_MODE = {  # label: (--frame_rate, MaxSmoothedFrameRate or None to keep the original 62)
+    "30 (original)": (30, None),
+    "60": (60, None),
+    "120 (experimental)": (0, "122"),
+    "144 (experimental)": (0, "146"),
+    "Unlimited (experimental)": (0, "1000"),
+}
 
 DEFAULTS = {
     "fullscreen": False,
@@ -49,6 +57,7 @@ DEFAULTS = {
     "aa": "Off",
     "vsync": True,
     "show_fps": False,
+    "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
     "bloom": True,
@@ -65,7 +74,8 @@ def load_settings():
     except (OSError, ValueError):
         pass
     s["render_scale"] = OLD_SCALE_NAMES.get(s["render_scale"], s["render_scale"])
-    s.pop("fps", None)  # removed option
+    if s.get("fps") not in FPS:  # labels from older launcher versions
+        s["fps"] = DEFAULTS["fps"]
     return s
 
 
@@ -114,6 +124,9 @@ def apply_game_config(game: Path, s) -> str:
         shutil.copy2(toc, toc_bak)
 
     edits = []  # (file, section, key, value)
+    _, cap = FPS_MODE[s["fps"]]
+    if cap:
+        edits.append(("Xe-BourneEngine.ini", "Engine.GameEngine", "MaxSmoothedFrameRate", cap))
     if not s["motion_blur"]:
         edits.append(("Xe-BourneEngine.ini", "SystemSettings", "MotionBlur", "False"))
     if not s["depth_of_field"]:
@@ -183,6 +196,10 @@ def game_args(s, screen=None):
     args += ["--resolution_scale", str(SCALE_FACTOR.get(s["render_scale"], 1))]
     args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
     args.append("--vsync=true" if s["vsync"] else "--vsync=false")
+    rate, _ = FPS_MODE[s["fps"]]
+    if rate != 30:
+        # Needs a tbc.exe built with src/fps_unlock.cpp; only passed when changed.
+        args.append(f"--frame_rate={rate}")
     if s.get("show_fps"):
         # Needs a tbc.exe built with the FPS counter (src/tbc_app.h); older builds
         # don't know this flag, so it's only passed when ticked.
@@ -219,8 +236,9 @@ class SettingsView(tk.Frame):
         self._combo(box, 1, "resolution", "Output resolution", RESOLUTIONS)
         self._combo(box, 2, "render_scale", "Render resolution (sharper, slower)", SCALES)
         self._combo(box, 3, "aa", "Anti-aliasing", AA)
-        self._check(box, 4, "vsync", "VSync")
-        self._check(box, 5, "show_fps", "Show FPS counter")
+        self._combo(box, 4, "fps", "Frame rate", FPS)
+        self._check(box, 5, "vsync", "VSync")
+        self._check(box, 6, "show_fps", "Show FPS counter")
 
         box = self._section("Graphics and camera")
         self._check(box, 0, "motion_blur", "Motion blur")
@@ -321,7 +339,7 @@ class SettingsView(tk.Frame):
 class Launcher:
     def __init__(self):
         self.root = make_root(APP_NAME)
-        self.root.geometry("780x860")
+        self.root.geometry("780x890")
         self.root.minsize(700, 760)
         self.view = None
         info = load_install()

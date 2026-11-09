@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 set(TBC_SOURCES
     src/main.cpp
     src/gpu_preload.cpp
+    src/fps_unlock.cpp
 )
 
 if(WIN32)

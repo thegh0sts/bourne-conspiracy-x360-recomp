@@ -23,3 +23,9 @@ installer/build/
 installer/dist/
 installer/*.spec
 __pycache__/
+
+# Personal leak-scan patterns (see .githooks/blocklist.txt)
+.githooks/blocklist.local
+tbc.toml
+logs/
+*.dmp

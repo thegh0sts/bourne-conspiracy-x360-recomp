@@ -11,14 +11,18 @@ Nothing from the game ships with it. Running the installer again resumes where i
 
 | Setting | How it's applied |
 |---|---|
-| Fullscreen, output resolution, render resolution, anti-aliasing, VSync | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`, `--vsync`) |
+| Fullscreen, output resolution, render resolution, anti-aliasing | ReXGlue command-line settings (`--fullscreen`, `--resolution`, `--resolution_scale`, `--swap_post_effect`) |
+| VSync | Display vsync. Unticked passes `--d3d12_allow_variable_refresh_rate_and_tearing=true`: frames may tear, but a present can no longer stall the graphics queue the emulation uses (the Table Tennis port measured 47 FPS instead of 60 without it). |
+| Original Xbox 360 frame pacing | Off by default: the launcher passes `--vsync=false`, which turns off the plugin's imitation of the Xbox 360 vblank wait (it slept on every GPU wait), and `tbc.exe`'s own frame limiter holds the frame rate. Ticked passes `--vsync=true` and the limiter stays off. For troubleshooting. |
 | Render resolution | 1280×720 (original), 2560×1440 or 3840×2160: the size the game draws at (`--resolution_scale` 1/2/3). Output resolution only sets the final picture size. Scaling is expensive in this runtime: on an RTX 4080 Super one heavy street scene ran about 48 FPS at 1x, about 20 at 2x and under 10 at 3x. For 60 FPS, use 1x with FXAA. |
-| Frame rate | `--frame_rate` (30, 60 or 0), handled by `src/fps_unlock.cpp`: the game asks Direct3D for a present interval of two vblanks (30 FPS) and this changes it to one (60) or none. For 120/144/unlimited the launcher also raises `[Engine.GameEngine] MaxSmoothedFrameRate`, the engine's own limiter. Needs a rebuilt `tbc.exe`. |
-| Show FPS counter | `--show_fps=true`, a small counter drawn by `src/tbc_app.h` (builds from before this option need rebuilding). F3 opens the SDK's full debug overlay in any build. |
+| Frame rate | `--frame_rate` (30, 60, 120, 144 or 0 for unlimited), handled by `src/fps_unlock.cpp`: it changes the game's Direct3D present interval (two vblanks, 30 FPS, originally) and sets the frame limiter in `src/frame_pacing.cpp`. For 120/144/unlimited the launcher also raises `[Engine.GameEngine] MaxSmoothedFrameRate`, the engine's own limiter. |
+| Show FPS counter | `--show_fps=true`: the game's frame rate in a small separate window over the game's top-left corner (`src/fps_overlay.cpp`). It isn't an ImGui overlay, because those make the SDK repaint every display refresh. F3 opens the SDK's full debug overlay. |
 | Motion blur, depth of field, bloom, lens flares, heat haze / distortion | Game config `[SystemSettings]` (`MotionBlur`, `DepthOfField`, `Bloom`, `LensFlares`, `Distortion`) |
 | Field of view | Scales every camera mode's `Fov=` value in the camera config |
 | Stick dead zone | Game config `[HM_Engine.HmPlayerInput] DeadZone` (original 0.25) |
 
+
+**Open logs** opens the folder with `game.log`. **Save crash report** zips `game.log`, the newest `logs\crash-<pid>.txt` and `.dmp` that `tbc.exe` writes on a crash, and the launcher settings onto the desktop, for attaching to an issue. No game files go in it.
 
 On Play, the launcher rebuilds `Coalesced.ini` from the original (kept as `Coalesced.ini.bak`) with the chosen settings, updates `Xbox360TOC.txt` to match, and starts the game. With every setting at default the original files are put back. Settings are saved in `%LOCALAPPDATA%\BourneConspiracyPC\settings.json`; the install location in `launcher.json` next to it.
 

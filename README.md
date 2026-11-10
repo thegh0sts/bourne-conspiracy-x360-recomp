@@ -55,6 +55,8 @@ If the game crashes with `Call to invalid or unregistered function at guest addr
 
 The original game runs at 30 FPS: it asks Direct3D to wait two screen refreshes per frame. `src/fps_unlock.cpp` can change that, set with the launcher's **Frame rate** option or `--frame_rate=60` (or `--frame_rate=0` for no limit; the launcher then also raises the engine's own cap, `MaxSmoothedFrameRate`).
 
+The launcher also turns off the graphics plugin's imitation of the Xbox 360 vblank wait (`--vsync=false`), which slept on every GPU wait and cost a lot of frame rate, and lets `tbc.exe`'s own frame limiter (`src/frame_pacing.cpp`) hold the chosen rate instead. This approach comes from the Table Tennis PC port. Together with an FPS counter that no longer forces extra repaints, it took the busiest scene from about 48 to the mid-50s FPS at 1x.
+
 **60 FPS is experimental.** Keep these caveats in mind:
 
 - The game was only ever tuned and tested at 30 FPS. Gameplay speed, physics, animation and cutscene timing at 60 FPS have only been lightly tested, through the first level. If anything looks too fast, too slow or broken, switch back to 30.
@@ -74,13 +76,27 @@ The original game runs at 30 FPS: it asks Direct3D to wait two screen refreshes 
 
 Frame rate at 60 FPS in the busy street at the start of the first level:
 
-| Render resolution | FPS | GPU load |
-|---|---|---|
-| 1280×720 (1x) | about 48 (dips to about 40 as the level opens) | about 85% |
-| 2560×1440 (2x) | about 15-25 | close to 100% |
-| 3840×2160 (3x) | under 10 | close to 100% |
+| Render resolution | FPS now | FPS before the pacing change | GPU load (before) |
+|---|---|---|---|
+| 1280×720 (1x) | mid-50s | about 48 (dips to about 40 as the level opens) | about 85% |
+| 2560×1440 (2x) | mid-teens | about 15-25 | close to 100% |
+| 3840×2160 (3x) | not measured | under 10 | close to 100% |
+
+"Before" was measured with the old pacing and the old FPS counter overlay; "now" with the new pacing, the native FPS counter and Original Xbox 360 frame pacing unticked. At 2x the graphics card is the limit, which pacing can't help; a native renderer (see the roadmap) is the route to faster scaling.
 
 Changing the runtime's render target path (`--render_target_path_d3d12 rtv` or `rov`) made no difference. For a smooth 60, use 1280×720 with FXAA.
+
+## Roadmap
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for what's planned, including ideas from the [Skullburglar](https://github.com/nlwstein/skullburglar) and [Table Tennis PC](https://github.com/davidptrssvea/Table-Tennis-Rockstar-PC) ports.
+
+## Contributing
+
+Turn on the leak-scan hooks once per clone, so game files, generated code and personal paths can't be committed:
+
+```
+git config core.hooksPath .githooks
+```
 
 ## Known issues
 
@@ -90,6 +106,8 @@ Changing the runtime's render target path (`--render_target_path_d3d12 rtv` or `
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and the Xenia project, whose work this is built on.
+- [Skullburglar](https://github.com/nlwstein/skullburglar) (BSD 3-Clause): crash reports and the leak scanner are adapted from its code, and its notes on SDK performance pointed at the FPS counter cost.
+- [Table Tennis PC](https://github.com/davidptrssvea/Table-Tennis-Rockstar-PC) (MIT): the frame pacing approach (guest vsync off, host frame limiter, tearing).
 - Function recovery, installer and tooling developed with help from Claude (Anthropic).
 
 ## Disclaimer

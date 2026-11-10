@@ -11,10 +11,13 @@ Settings are saved in %LOCALAPPDATA%\\BourneConspiracyPC\\settings.json.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+import zipfile
 from pathlib import Path
 
 import tkinter as tk
@@ -24,7 +27,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
@@ -41,17 +44,26 @@ OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
                    "2560×1440": SCALES[1], "3840×2160": SCALES[2]}
 AA = ["Off", "FXAA", "FXAA (strong)"]
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
-# Frame rate. The game asks for a present interval of two vblanks (30 FPS); tbc.exe's
-# --frame_rate setting (src/fps_unlock.cpp) changes that. Above 60 the vblank wait is
-# removed and the engine's own limiter, MaxSmoothedFrameRate (62 by default), sets the cap.
+# Frame rate. tbc.exe's --frame_rate (src/fps_unlock.cpp) sets both the game's present
+# interval and a host frame limiter. The limiter does the pacing because the launcher turns
+# the graphics plugin's guest vsync off (--vsync=false): with it on, the plugin sleeps on
+# every GPU wait, which cost a lot of frame rate (the Table Tennis PC port measured 30-48
+# FPS instead of 60). Above 60, the engine's own limiter (MaxSmoothedFrameRate, 62 by
+# default) is raised out of the way.
 FPS = ["30 (original)", "60", "120 (experimental)", "144 (experimental)", "Unlimited (experimental)"]
 FPS_MODE = {  # label: (--frame_rate, MaxSmoothedFrameRate or None to keep the original 62)
     "30 (original)": (30, None),
     "60": (60, None),
-    "120 (experimental)": (0, "122"),
-    "144 (experimental)": (0, "146"),
+    "120 (experimental)": (120, "1000"),
+    "144 (experimental)": (144, "1000"),
     "Unlimited (experimental)": (0, "1000"),
 }
+# Logo movies played before the menu (BourneGame\Movies). An earlier "Skip intro logos"
+# option renamed them so the game couldn't find them, but that left the game stuck on the
+# first level's loading screen, so the option is gone. The launcher still renames them back
+# on Play for anyone who had it ticked.
+INTRO_MOVIES = ["THXLogo51Mix.bik", "SierraHighMoonLogos.bik"]
+SKIPPED_SUFFIX = ".skipped"
 
 DEFAULTS = {
     "fullscreen": False,
@@ -59,6 +71,7 @@ DEFAULTS = {
     "render_scale": SCALES[0],
     "aa": "Off",
     "vsync": True,
+    "original_pacing": False,
     "show_fps": False,
     "fps": "30 (original)",
     "motion_blur": True,
@@ -170,6 +183,43 @@ def apply_game_config(game: Path, s) -> str:
     return f"{len(edits) + (fov != 100)} config change(s)"
 
 
+def apply_intro_skip(game: Path, skip: bool) -> None:
+    """Rename the intro logo movies away (skip) or back (don't skip)."""
+    movies = game / "BourneGame" / "Movies"
+    for name in INTRO_MOVIES:
+        on, off = movies / name, movies / (name + SKIPPED_SUFFIX)
+        if skip and on.exists() and not off.exists():
+            on.rename(off)
+        elif not skip and off.exists() and not on.exists():
+            off.rename(on)
+
+
+def logs_dir(info) -> Path:
+    return Path(info.get("root") or Path(info["exe"]).parent)
+
+
+def save_crash_report(info) -> Path:
+    """Zip the game log, the newest crash files and the launcher settings onto the desktop."""
+    root = logs_dir(info)
+    exe_logs = Path(info["exe"]).parent / "logs"
+    files = []
+    for p in (root / "game.log", SETTINGS_PATH, install_info_path()):
+        if p.is_file():
+            files.append(p)
+    crash = sorted(exe_logs.glob("crash-*.*"), key=lambda p: p.stat().st_mtime, reverse=True) if exe_logs.is_dir() else []
+    if crash:
+        stem = crash[0].stem  # crash-<pid>: the newest crash's .txt and .dmp
+        files += [p for p in crash if p.stem == stem]
+    desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+    if not desktop.is_dir():
+        desktop = Path.home()
+    out = desktop / f"BourneConspiracy-report-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in files:
+            z.write(p, p.name)
+    return out
+
+
 def window_size(s, screen):
     """Window size for windowed mode: the chosen output size, shrunk (16:9) to fit
     within 85% of the screen so a 1440p/4K window doesn't cover the whole display."""
@@ -204,14 +254,15 @@ def game_args(s, screen=None):
     # own config file, written by its F4 settings overlay) can't override the launcher.
     args += ["--resolution_scale", str(SCALE_FACTOR.get(s["render_scale"], 1))]
     args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
-    args.append("--vsync=true" if s["vsync"] else "--vsync=false")
+    # Guest vsync (the plugin's imitation of the Xbox 360 vblank): off, with tbc.exe's own
+    # frame limiter holding the frame rate, unless "original frame pacing" is ticked.
+    args.append("--vsync=true" if s.get("original_pacing") else "--vsync=false")
+    # Display VSync: unticked lets presents tear instead of waiting for the display, which
+    # also stops a present from stalling the graphics queue the emulation uses.
+    args.append("--d3d12_allow_variable_refresh_rate_and_tearing=" + ("false" if s["vsync"] else "true"))
     rate, _ = FPS_MODE[s["fps"]]
-    if rate != 30:
-        # Needs a tbc.exe built with src/fps_unlock.cpp; only passed when changed.
-        args.append(f"--frame_rate={rate}")
+    args.append(f"--frame_rate={rate}")
     if s.get("show_fps"):
-        # Needs a tbc.exe built with the FPS counter (src/tbc_app.h); older builds
-        # don't know this flag, so it's only passed when ticked.
         args.append("--show_fps=true")
     return args
 
@@ -239,6 +290,8 @@ class SettingsView(tk.Frame):
         links.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self._link(links, "Reinstall from a disc image...", on_reinstall).pack(side="left")
         self._link(links, "Use a different install...", on_locate).pack(side="left", padx=14)
+        self._link(links, "Open logs", self.open_logs).pack(side="left")
+        self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=14)
 
         box = self._section("Display")
         self._check(box, 0, "fullscreen", "Fullscreen")
@@ -246,8 +299,8 @@ class SettingsView(tk.Frame):
         self._combo(box, 2, "render_scale", "Render resolution (sharper, slower)", SCALES)
         self._combo(box, 3, "aa", "Anti-aliasing", AA)
         self._combo(box, 4, "fps", "Frame rate", FPS)
-        self._check(box, 5, "vsync", "VSync")
-        self._check(box, 6, "show_fps", "Show FPS counter")
+        self._checks(box, 5, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
+        self._check(box, 6, "original_pacing", "Original Xbox 360 frame pacing (slower)")
 
         box = self._section("Graphics and camera")
         self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
@@ -328,6 +381,23 @@ class SettingsView(tk.Frame):
         for k, v in self.vars.items():
             v.set(DEFAULTS[k])
 
+    def open_logs(self):
+        folder = logs_dir(self.info)
+        try:
+            os.startfile(str(folder))
+        except OSError as e:
+            messagebox.showerror("Open logs", f"Couldn't open {folder}: {e}")
+
+    def crash_report(self):
+        try:
+            out = save_crash_report(self.info)
+        except OSError as e:
+            messagebox.showerror("Crash report", f"Couldn't save the report: {e}")
+            return
+        messagebox.showinfo("Crash report", f"Saved {out.name} to {out.parent}.\n\n"
+                                            "Attach it when you report a problem. It contains the game log, "
+                                            "your launcher settings and any crash dump (no game files).")
+
     def play(self):
         s = self.collect()
         save_settings(s)
@@ -342,6 +412,10 @@ class SettingsView(tk.Frame):
                                                "Start the game with its original config instead?"):
                 return
             summary = "config unchanged"
+        try:
+            apply_intro_skip(game, False)  # undo the removed "skip intro" option, if it was used
+        except OSError as e:
+            messagebox.showwarning("Play", f"Couldn't change the intro movies ({e}). Starting anyway.")
         log = Path(self.info.get("root", exe.parent)) / "game.log"
         args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
         try:

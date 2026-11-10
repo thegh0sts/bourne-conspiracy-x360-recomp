@@ -65,11 +65,34 @@ cmake --build out\build\win-amd64-relwithdebinfo
 
 For players, the installer would then download our patched SDK build (a zip on this repo's Releases page, checked against a fixed SHA-256, as the Table Tennis installer does) instead of the stock one.
 
+## Planned for 0.3.0: keyboard and mouse
+
+The SDK's keyboard-and-mouse driver is already in our runtime, switched off (`--mnk_mode=true --mnk_mouse=true`). It acts as a virtual Xbox controller: keys and mouse buttons (LMB, RMB, MMB) bind to pad buttons with `--keybind_*` settings, the mouse drives the right stick (`--mnk_sensitivity`), and it merges with a real controller on player 1. The launcher gets a **Keyboard & mouse** section: on/off, mouse sensitivity, and these defaults from the game's controller bindings:
+
+| Action (controller) | Keyboard / mouse |
+|---|---|
+| Move (left stick) | W A S D |
+| Camera (right stick) | Mouse |
+| Fire (RT) | Left mouse |
+| Aim / targeting (LT) | Right mouse |
+| Action / block (A) | Space |
+| Takedown, skip cutscene (B) | F |
+| Light attack / reload (X) | E, R |
+| Heavy attack / Bourne Instinct (Y) | Q |
+| Sprint (RB) | Shift |
+| Weapon (LB) | G |
+| Crouch (L3) | Control |
+| Recentre camera / switch shoulder (R3) | Middle mouse |
+| Pause (Start) | Escape, Return |
+| Back | Tab |
+
+It's controller emulation, so the game's stick dead zone and acceleration still apply to the mouse. Native mouse look through the engine's PC input (Skullburglar's approach) would be a later, bigger step, if Bourne's Xbox 360 build includes that code. Key remapping in the launcher can follow.
+
 ## Later
 
 - Skip intro logos. Renaming the THX and Sierra / High Moon movies left the game stuck on the first level's loading screen, and the Unreal Engine and PhysX logos aren't separate movie files. Needs a code-level skip instead (Bourne's UE3 build has no `-nostartupmovies` switch).
 - Controller feel: stick acceleration off, linear turning, vibration toggle (needs Bourne's input code found).
-- PlayStation and keyboard button prompts (texture replacement; Table Tennis's SDK patch).
+- PlayStation and keyboard button prompts. Bourne's prompts are a small 3D diamond of four face buttons seen at an angle: three empty rings and the active button, which presses down and shows its symbol (the PS3 version uses the same design with PlayStation symbols). If the button is a 3D model with the symbol as a flat texture, only the symbols need replacing (cross, circle, square, triangle, L1/R1/L2/R2), drawn as our own art, and the press animation carries over. If it's pre-drawn frames, each frame needs redrawing. Step 1 is capturing the game's textures to find out. The swap itself would hook texture uploads, as Table Tennis's SDK patch does, with SDL detecting a PlayStation pad for an Auto setting. Keyboard prompts need keyboard and mouse support first.
 - Proper keyboard and mouse (Skullburglar routes mouse look through UE3's PC input; may be compiled out of Bourne's 360 build).
 - Ultrawide.
 - A native Direct3D renderer like Skullburglar's pre-1.0 one, which replaces calls into the Xbox 360 Direct3D library (Microsoft code built into every 360 game). It ran 275 FPS where the emulated renderer ran 108 on an RTX 3090. Their `tools/d3d_scan.py` finds those functions.

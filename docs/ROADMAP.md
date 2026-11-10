@@ -20,11 +20,24 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`
 
 ## Next: build the ReXGlue SDK ourselves (item 11)
 
-We use the prebuilt SDK v0.10.1. Building it from source lets us apply fixes that only exist as SDK patches. Skullburglar's patches are written for v0.10.0, but this subset applies cleanly to v0.10.1, in this order (checked with `git apply`):
+We use the prebuilt SDK v0.10.1. Building it from source gets us two things the prebuilt one doesn't have.
+
+### FSR and CAS output filters
+
+The SDK's v0.10.1 source already contains AMD FidelityFX support for the final picture: **FSR** (upscales the finished 720p image to the window or screen resolution, with sharpening) and **CAS** (sharpening only), plus experimental FSR 2 and 3 modes. It's off in the prebuilt download, which is why `--present_effect` only accepts `bilinear` there. Building with `-DREXGLUE_ENABLE_FIDELITYFX=ON` turns it on (CMake fetches AMD's FidelityFX SDK during the build; on Windows it uses the Direct3D 12 backend).
+
+These filters only work on the finished image, so they cost a fraction of a millisecond, unlike a higher render resolution (2x render ran in the mid-teens in our busiest scene). Rendering at 1x with FSR to 1440p or 4K output is the practical way to a sharper picture at close to 60 FPS. This is what the Table Tennis PC port does (through its own SDK patch).
+
+Once the SDK is built this way, the launcher gets an **Upscaling filter** option (Off / FSR / CAS) that passes `--present_effect fsr` or `cas`. The option has to wait for that SDK: the prebuilt one rejects any value but `bilinear`.
+
+### Performance patches
+
+Building from source also lets us apply fixes that only exist as SDK patches. Skullburglar's patches are written for v0.10.0, but this subset applies cleanly to v0.10.1, in this order (checked with `git apply`):
 
 | Patch | What it does for us |
 |---|---|
 | 0002 debug-audio-dump-fps-log | Prerequisite for 0029 (env-gated debug output, off by default) |
+| 0003 vulkan-hoist-shared-memory-uploads | A Vulkan change (unused on Windows), but it carries header declarations that 0006 and 0008 need |
 | 0004 framerate-limit-and-vk-warning-dedupe | `framerate_limit` setting inside the SDK |
 | 0006 perf-micro-and-mac-fullscreen | Register-write bookkeeping was 3-4% of the GPU thread |
 | 0008 async-pipelines-background-precompile | Background shader compilation, no compile stutter |
@@ -33,20 +46,22 @@ We use the prebuilt SDK v0.10.1. Building it from source lets us apply fixes tha
 | 0029 timer-queue-precise-sleep | A timer spun about a quarter of a CPU core for nothing |
 | 0030 imgui-passive-overlays-skip-continuous-repaint | Overlays no longer force continuous repaints |
 
-v0.10.1 already has Skullburglar's 0001 (sync fences). Table Tennis's SDK patch adds FSR and CAS sharpening filters and button-prompt texture hooks; it's written for v0.10.0 and hasn't been checked against v0.10.1.
+v0.10.1 already has Skullburglar's 0001 (sync fences). Table Tennis's SDK patch (button-prompt texture hooks, its own FSR and CAS wiring, networking) is written for v0.10.0 and hasn't been checked against v0.10.1.
 
-Build steps (Windows, x64 Native Tools prompt; needs LLVM/Clang, CMake and Ninja):
+### Building it
+
+`tools\build_sdk.bat` does all of it: clones SDK v0.10.1 and Skullburglar (pinned to the commit the patch list was checked against), applies the patches above, and builds and installs the SDK with FidelityFX on. Run it from an x64 Native Tools prompt:
 
 ```
-git clone --recursive --branch v0.10.1 https://github.com/rexglue/rexglue-sdk C:\rexglue-src
-cd /d C:\rexglue-src
-git apply <path to skullburglar>\patches\rexglue-sdk\0002-...patch   (then 0004, 0006, 0008, 0009, 0026, 0029, 0030)
-cmake --preset win-amd64
-cmake --build out\build\win-amd64 --config RelWithDebInfo --target install --parallel
-cmake --build out\build\win-amd64 --config Release --target install --parallel
+tools\build_sdk.bat C:\rexglue-src
 ```
 
-The SDK installs to `C:\rexglue-src\out\install\win-amd64`. Point this project at it with `-DCMAKE_PREFIX_PATH=C:/rexglue-src/out/install/win-amd64` and rebuild.
+The SDK installs to `C:\rexglue-src\rexglue-sdk\out\install\win-amd64`. Then reconfigure this project against it and rebuild:
+
+```
+cmake --preset win-amd64-relwithdebinfo -DCMAKE_PREFIX_PATH=C:/rexglue-src/rexglue-sdk/out/install/win-amd64
+cmake --build out\build\win-amd64-relwithdebinfo
+```
 
 For players, the installer would then download our patched SDK build (a zip on this repo's Releases page, checked against a fixed SHA-256, as the Table Tennis installer does) instead of the stock one.
 

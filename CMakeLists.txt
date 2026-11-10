@@ -27,3 +27,14 @@ else()
 endif()
 
 rexglue_setup_target(tbc GPU_PLUGINS xenos)
+
+# AMD FidelityFX runtime (FSR / CAS output filters). Only present when the SDK was built with
+# REXGLUE_ENABLE_FIDELITYFX (tools/build_sdk.bat); the runtime DLL needs it next to tbc.exe.
+# The stock SDK download doesn't have it, and then there's nothing to copy.
+get_filename_component(TBC_SDK_BIN "${rexglue_DIR}/../../../bin" ABSOLUTE)
+file(GLOB TBC_FFX_DLLS "${TBC_SDK_BIN}/amd_fidelityfx_dx12*.dll")
+if(TBC_FFX_DLLS)
+    add_custom_command(TARGET tbc POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TBC_FFX_DLLS} $<TARGET_FILE_DIR:tbc>
+        COMMENT "Copying FidelityFX runtime")
+endif()

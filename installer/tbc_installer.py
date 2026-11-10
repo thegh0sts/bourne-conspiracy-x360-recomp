@@ -239,6 +239,14 @@ def find_sdk_asset():
     raise InstallError(f"Couldn't find the ReXGlue SDK {SDK_VERSION} for Windows on GitHub.")
 
 
+def bundled_sdk():
+    """The SDK zip packed into this installer by build_installer.bat, if any: our own build
+    with AMD FidelityFX (FSR/CAS) and Skullburglar's performance patches (tools/build_sdk.bat)."""
+    folder = payload_dir() / "sdk"
+    zips = sorted(folder.glob("*.zip")) if folder.is_dir() else []
+    return zips[0] if zips else None
+
+
 def find_sdk_root(folder: Path):
     for cfg in folder.rglob("rexglue-config.cmake"):
         # .../<root>/lib/cmake/rexglue/rexglue-config.cmake
@@ -372,6 +380,28 @@ class Installer:
 
     def ensure_sdk(self):
         root = find_sdk_root(self.sdk_dir) if self.sdk_dir.exists() else None
+        bundled = bundled_sdk()
+        if bundled:
+            # Use the SDK packed into this installer. An install made with a different SDK
+            # (the stock download, or an older bundle) is replaced; the marker file says which.
+            marker = self.sdk_dir / ".tbc-sdk"
+            current = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+            if root and current == bundled.name:
+                self.log(f"ReXGlue SDK already present: {root} ({bundled.name})")
+                return root
+            self.status("Unpacking the ReXGlue SDK...")
+            self.log(f"Unpacking bundled SDK {bundled.name}")
+            if self.sdk_dir.exists():
+                shutil.rmtree(self.sdk_dir)
+            self.sdk_dir.mkdir(parents=True)
+            with zipfile.ZipFile(bundled) as zf:
+                zf.extractall(self.sdk_dir)
+            marker.write_text(bundled.name, encoding="utf-8")
+            root = find_sdk_root(self.sdk_dir)
+            if not root:
+                raise InstallError("The bundled ReXGlue SDK doesn't have the expected layout.")
+            self.log(f"ReXGlue SDK: {root}")
+            return root
         if root:
             self.log(f"ReXGlue SDK already present: {root}")
             return root
@@ -427,7 +457,10 @@ class Installer:
         self.ui.put(("progress", 0.55))
         # Always (re)configure, so a build configured before codegen picks up the sources.
         self.status("Configuring the build...")
-        self.run_logged(base + f'cmake --preset {PRESET} -DCMAKE_PREFIX_PATH="{prefix}"')
+        # rexglue_DIR too: a build folder configured earlier keeps its SDK location in its cache,
+        # which wins over CMAKE_PREFIX_PATH, so a changed SDK would otherwise be ignored.
+        self.run_logged(base + f'cmake --preset {PRESET} -DCMAKE_PREFIX_PATH="{prefix}" '
+                               f'-Drexglue_DIR="{prefix}/lib/cmake/rexglue"')
         self.status("Building the game (compiling: this takes a while)...")
         prog = self.stage(0.56, 0.98)
 

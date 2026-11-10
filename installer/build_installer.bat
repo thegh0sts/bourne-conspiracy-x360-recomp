@@ -1,8 +1,21 @@
 @echo off
 rem Builds BourneConspiracy.exe (launcher + installer) from tbc_launcher.py and the project files.
 rem Run from this folder (installer\) in any terminal with Python on PATH.
+rem
+rem   build_installer.bat [SDK folder]
+rem
+rem The SDK folder is a ReXGlue SDK install made by ..\tools\build_sdk.bat (FSR/CAS and
+rem performance patches). It's zipped into the exe, so the installer needs no SDK download.
+rem Default: C:\rexglue-src\rexglue-sdk\out\install\win-amd64 if it exists. Without one, the
+rem installer downloads the stock SDK from GitHub instead.
 setlocal
 cd /d "%~dp0"
+
+set "SDK_FOLDER=%~1"
+if "%SDK_FOLDER%"=="" if exist "C:\rexglue-src\rexglue-sdk\out\install\win-amd64\lib\cmake\rexglue" set "SDK_FOLDER=C:\rexglue-src\rexglue-sdk\out\install\win-amd64"
+rem Name of the bundled SDK: bump the suffix whenever the SDK build changes, so existing
+rem installs replace their SDK on the next install or repair.
+set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc1-win-amd64.zip"
 
 echo Collecting project files into payload\project ...
 if exist payload rmdir /s /q payload
@@ -11,6 +24,18 @@ for %%F in (tbc_manifest.toml default_functions.toml default_functions_scan.toml
 copy /y ..\src\*.* payload\project\src\ >nul || goto :missing
 copy /y ..\generated\rexglue.cmake payload\project\generated\ >nul || goto :missing
 copy /y ..\tools\tbc_config.py tbc_config.py >nul || goto :missing
+
+if "%SDK_FOLDER%"=="" (
+  echo No SDK folder: the installer will download the stock ReXGlue SDK.
+) else (
+  if not exist "%SDK_FOLDER%\lib\cmake\rexglue" (
+    echo "%SDK_FOLDER%" doesn't look like a ReXGlue SDK install.
+    exit /b 1
+  )
+  echo Packing the SDK from %SDK_FOLDER% ...
+  mkdir payload\sdk
+  python -c "import os,sys,zipfile; src=sys.argv[1]; z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(d,f), os.path.relpath(os.path.join(d,f),src)) for d,_,fs in os.walk(src) for f in fs]; z.close()" "%SDK_FOLDER%" "payload\sdk\%SDK_BUNDLE%" || goto :fail
+)
 
 echo Installing PyInstaller (first time only) ...
 python -m pip install --upgrade pyinstaller || goto :fail

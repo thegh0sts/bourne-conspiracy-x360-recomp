@@ -1,0 +1,99 @@
+@echo off
+rem Build the ReXGlue SDK v0.10.1 from source, with AMD FidelityFX (FSR and CAS filters)
+rem and Skullburglar's performance patches. See docs/ROADMAP.md.
+rem
+rem Run from an "x64 Native Tools Command Prompt for VS" (it provides clang, cmake and ninja).
+rem Needs git and an internet connection. Takes a while: the SDK is a large build.
+rem
+rem   tools\build_sdk.bat [work folder]      (default C:\rexglue-src)
+rem
+rem Afterwards, point this project at the new SDK by reconfiguring with
+rem   -DCMAKE_PREFIX_PATH=<work folder>/rexglue-sdk/out/install/win-amd64
+setlocal EnableDelayedExpansion
+
+set "SDK_TAG=v0.10.1"
+rem Skullburglar commit the patch list below was checked against.
+set "SKULL_COMMIT=67aacb28670077e839f84931dee9b162526bbdb2"
+rem 0003 is a Vulkan change, but it also carries header declarations that 0006 and 0008 need.
+set "PATCHES=0002 0003 0004 0006 0008 0009 0026 0029 0030"
+
+set "WORK=%~1"
+if "%WORK%"=="" set "WORK=C:\rexglue-src"
+set "SDK=%WORK%\rexglue-sdk"
+set "SKULL=%WORK%\skullburglar"
+
+where clang >nul 2>&1 || (echo clang not found. Run this from the x64 Native Tools Command Prompt. & exit /b 1)
+where cmake >nul 2>&1 || (echo cmake not found. & exit /b 1)
+where git >nul 2>&1 || (echo git not found. & exit /b 1)
+
+if not exist "%WORK%" mkdir "%WORK%"
+
+rem The patches have Unix (LF) line endings. Git for Windows normally converts checkouts to
+rem CRLF (core.autocrlf), which makes "git apply" fail, so both repos are checked out as-is.
+echo === 1/4 Getting the SDK source (%SDK_TAG%)
+if not exist "%SDK%\.git" (
+  git -c core.autocrlf=false clone --recursive --branch %SDK_TAG% https://github.com/rexglue/rexglue-sdk "%SDK%" || exit /b 1
+) else (
+  echo Already there: %SDK%
+)
+rem Patches are applied once to a clean checkout; a marker file records which set. If the
+rem set changes, the SDK checkout is reset and patched again.
+set "MARKER=%SDK%\.tbc_patches"
+set "APPLIED="
+if exist "%MARKER%" set /p APPLIED=<"%MARKER%"
+set "NEED_PATCH=1"
+if "%APPLIED%"=="%PATCHES%" set "NEED_PATCH=0"
+if "%NEED_PATCH%"=="1" (
+  call :lf_checkout "%SDK%" || exit /b 1
+)
+
+echo === 2/4 Getting Skullburglar's patches
+if not exist "%SKULL%\.git" (
+  git -c core.autocrlf=false clone --filter=blob:none https://github.com/nlwstein/skullburglar "%SKULL%" || exit /b 1
+)
+git -C "%SKULL%" -c advice.detachedHead=false checkout --quiet %SKULL_COMMIT% || exit /b 1
+call :lf_checkout "%SKULL%" || exit /b 1
+
+echo === 3/4 Applying patches
+if "%NEED_PATCH%"=="0" (
+  echo Already applied: %PATCHES%
+) else (
+  for %%P in (%PATCHES%) do (
+    set "FILE="
+    for %%F in ("%SKULL%\patches\rexglue-sdk\%%P-*.patch") do set "FILE=%%~fF"
+    if "!FILE!"=="" (echo Patch %%P not found & exit /b 1)
+    git -C "%SDK%" apply "!FILE!" || (echo Patch %%P failed to apply & exit /b 1)
+    echo %%P applied
+  )
+  >"%MARKER%" echo %PATCHES%
+)
+
+rem Symbolic links in the SDK's submodules (libmspack) come out as text stubs on Windows.
+set "FIX=%~dp0fix_symlinks.sh"
+set "FIX=%FIX:\=/%"
+git -C "%SDK%" submodule foreach --quiet --recursive "sh '%FIX%'" || exit /b 1
+
+echo === 4/4 Building and installing (RelWithDebInfo and Release)
+pushd "%SDK%"
+cmake --preset win-amd64 -DREXGLUE_ENABLE_FIDELITYFX=ON || (popd & exit /b 1)
+cmake --build out\build\win-amd64 --config RelWithDebInfo --target install --parallel || (popd & exit /b 1)
+cmake --build out\build\win-amd64 --config Release --target install --parallel || (popd & exit /b 1)
+popd
+
+echo.
+echo Done. SDK installed to:
+echo   %SDK%\out\install\win-amd64
+echo Reconfigure this project against it, from the project folder:
+echo   cmake --preset win-amd64-relwithdebinfo -DCMAKE_PREFIX_PATH=%SDK:\=/%/out/install/win-amd64
+echo   cmake --build out\build\win-amd64-relwithdebinfo
+endlocal
+exit /b 0
+
+rem Set a repo to keep LF line endings and rewrite its working files that way. This also
+rem discards any earlier patches (local changes to tracked files).
+:lf_checkout
+git -C "%~1" config core.autocrlf false
+git -C "%~1" config core.eol lf
+git -C "%~1" rm --cached -r -q . >nul 2>&1
+git -C "%~1" reset --hard --quiet || exit /b 1
+exit /b 0

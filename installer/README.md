@@ -2,7 +2,7 @@
 
 `BourneConspiracy.exe` is a single program for players:
 
-- **Not installed yet:** shows the installer. The player picks their own Xbox 360 disc image and it builds the game on their PC (reads the ISO, checks it's The Bourne Conspiracy, finds or installs the C++ build tools, downloads ReXGlue SDK 0.10.1, builds `tbc.exe`, creates a desktop shortcut to the launcher).
+- **Not installed yet:** shows the installer. The player picks their own Xbox 360 disc image and it builds the game on their PC (reads the ISO, checks it's The Bourne Conspiracy, finds or installs the C++ build tools, uses the ReXGlue SDK packed into it (or downloads the stock SDK 0.10.1 if none is packed), builds `tbc.exe`, creates a desktop shortcut to the launcher).
 - **Installed:** shows the settings screen and a Play button.
 
 Nothing from the game ships with it. Running the installer again resumes where it stopped.
@@ -15,6 +15,7 @@ Nothing from the game ships with it. Running the installer again resumes where i
 | VSync | Display vsync. Unticked passes `--d3d12_allow_variable_refresh_rate_and_tearing=true`: frames may tear, but a present can no longer stall the graphics queue the emulation uses (the Table Tennis port measured 47 FPS instead of 60 without it). |
 | Original Xbox 360 frame pacing | Off by default: the launcher passes `--vsync=false`, which turns off the plugin's imitation of the Xbox 360 vblank wait (it slept on every GPU wait), and `tbc.exe`'s own frame limiter holds the frame rate. Ticked passes `--vsync=true` and the limiter stays off. For troubleshooting. |
 | Render resolution | 1280×720 (original), 2560×1440 or 3840×2160: the size the game draws at (`--resolution_scale` 1/2/3). Output resolution only sets the final picture size. Scaling is expensive in this runtime: on an RTX 4080 Super one heavy street scene ran about 48 FPS at 1x, about 20 at 2x and under 10 at 3x. For 60 FPS, use 1x with FXAA. |
+| Upscaling filter | `--present_effect fsr` or `cas`: AMD FidelityFX filters on the finished picture. FSR upscales the 720p image to the screen with sharpening; CAS only sharpens. They cost almost nothing, but the game draws its menus and HUD into the same picture, so text gets softer; Bilinear (original) is the default. Needs the SDK built with FidelityFX (`tools/build_sdk.bat`); the stock SDK ignores the setting. |
 | Frame rate | `--frame_rate` (30, 60, 120, 144 or 0 for unlimited), handled by `src/fps_unlock.cpp`: it changes the game's Direct3D present interval (two vblanks, 30 FPS, originally) and sets the frame limiter in `src/frame_pacing.cpp`. For 120/144/unlimited the launcher also raises `[Engine.GameEngine] MaxSmoothedFrameRate`, the engine's own limiter. |
 | Show FPS counter | `--show_fps=true`: the game's frame rate in a small separate window over the game's top-left corner (`src/fps_overlay.cpp`). It isn't an ImGui overlay, because those make the SDK repaint every display refresh. F3 opens the SDK's full debug overlay. |
 | Motion blur, depth of field, bloom, lens flares, heat haze / distortion | Game config `[SystemSettings]` (`MotionBlur`, `DepthOfField`, `Bloom`, `LensFlares`, `Distortion`) |
@@ -35,6 +36,8 @@ build_installer.bat
 ```
 
 It gathers the project files into `payload/`, copies in `..\tools\tbc_config.py`, installs PyInstaller and writes `dist\BourneConspiracy.exe`. Rebuild whenever the function lists change.
+
+If an SDK built by `..\tools\build_sdk.bat` exists (default `C:\rexglue-src\rexglue-sdk\out\install\win-amd64`, or pass a folder: `build_installer.bat <SDK folder>`), it's zipped into the exe (about 40-50 MB) and the installer unpacks it instead of downloading the stock SDK. That gives players FSR/CAS and the performance patches. Change `SDK_BUNDLE` in the script when the SDK build changes, so existing installs replace their SDK. The launcher and installer are one exe, so it unpacks the bundle on every start; launching takes a moment longer.
 
 To run without packaging: `python tbc_launcher.py` (after running `build_installer.bat` once, so `payload/` and `tbc_config.py` exist).
 

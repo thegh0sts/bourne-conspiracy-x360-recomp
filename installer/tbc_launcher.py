@@ -42,6 +42,13 @@ SCALES = ["1280×720 (original)", "2560×1440 (demanding)", "3840×2160 (very de
 SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 2, SCALES[2]: 3}
 OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
                    "2560×1440": SCALES[1], "3840×2160": SCALES[2]}
+# Output filter, applied by the runtime to the finished picture (--present_effect). FSR and
+# CAS exist only in an SDK built with AMD FidelityFX (tools/build_sdk.bat); the stock SDK
+# ignores the setting and keeps bilinear. They also treat the game's menus and HUD as part of
+# the picture (the game draws them into the same image), so text gets softer: bilinear stays
+# the default for that reason.
+UPSCALE = ["Bilinear (original)", "FSR (sharper 3D, softer text)", "CAS (sharpen only)"]
+UPSCALE_FLAG = {UPSCALE[1]: "fsr", UPSCALE[2]: "cas"}
 AA = ["Off", "FXAA", "FXAA (strong)"]
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
 # Frame rate. tbc.exe's --frame_rate (src/fps_unlock.cpp) sets both the game's present
@@ -70,6 +77,7 @@ DEFAULTS = {
     "resolution": "Original (720p)",
     "render_scale": SCALES[0],
     "aa": "Off",
+    "upscale": UPSCALE[0],
     "vsync": True,
     "original_pacing": False,
     "show_fps": False,
@@ -254,6 +262,8 @@ def game_args(s, screen=None):
     # own config file, written by its F4 settings overlay) can't override the launcher.
     args += ["--resolution_scale", str(SCALE_FACTOR.get(s["render_scale"], 1))]
     args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
+    if s.get("upscale") in UPSCALE_FLAG:
+        args += ["--present_effect", UPSCALE_FLAG[s["upscale"]]]
     # Guest vsync (the plugin's imitation of the Xbox 360 vblank): off, with tbc.exe's own
     # frame limiter holding the frame rate, unless "original frame pacing" is ticked.
     args.append("--vsync=true" if s.get("original_pacing") else "--vsync=false")
@@ -297,10 +307,11 @@ class SettingsView(tk.Frame):
         self._check(box, 0, "fullscreen", "Fullscreen")
         self._combo(box, 1, "resolution", "Output resolution", RESOLUTIONS)
         self._combo(box, 2, "render_scale", "Render resolution (sharper, slower)", SCALES)
-        self._combo(box, 3, "aa", "Anti-aliasing", AA)
-        self._combo(box, 4, "fps", "Frame rate", FPS)
-        self._checks(box, 5, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
-        self._check(box, 6, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        self._combo(box, 3, "upscale", "Upscaling filter", UPSCALE)
+        self._combo(box, 4, "aa", "Anti-aliasing", AA)
+        self._combo(box, 5, "fps", "Frame rate", FPS)
+        self._checks(box, 6, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
+        self._check(box, 7, "original_pacing", "Original Xbox 360 frame pacing (slower)")
 
         box = self._section("Graphics and camera")
         self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
@@ -431,7 +442,7 @@ class SettingsView(tk.Frame):
 class Launcher:
     def __init__(self):
         self.root = make_root(APP_NAME)
-        self.root.geometry("780x890")
+        self.root.geometry("780x920")
         self.root.minsize(700, 760)
         self.view = None
         info = load_install()

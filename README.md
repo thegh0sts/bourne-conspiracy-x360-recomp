@@ -102,6 +102,7 @@ git config core.hooksPath .githooks
 
 - Function `0x825EADC8` is reported as 1.27 MB, which suggests several functions merged into one. Not yet investigated.
 - 60 FPS and higher render resolutions are limited by graphics performance (see above).
+- Keyboard and mouse is controller emulation: the mouse drives the right stick, so the camera can feel heavier than a PC game. Use a low stick dead zone and the camera turn speed option.
 
 ## Credits
 

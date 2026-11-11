@@ -27,7 +27,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
@@ -72,6 +72,214 @@ FPS_MODE = {  # label: (--frame_rate, MaxSmoothedFrameRate or None to keep the o
 INTRO_MOVIES = ["THXLogo51Mix.bik", "SierraHighMoonLogos.bik"]
 SKIPPED_SUFFIX = ".skipped"
 
+# Keyboard and mouse: the SDK's driver that acts as a virtual Xbox controller (--mnk_mode),
+# with the mouse on the right stick (--mnk_mouse). It merges with a real controller on
+# player 1. Every bind is passed, so none of the SDK's own defaults (Semicolon for A, Shift+arrows
+# for the d-pad...) clash with this layout. Key names are the SDK's (src/ui/keybinds.cpp);
+# a comma separates alternatives.
+KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.ini)
+    ("keybind_lstick_up", "W", "Move forward"),
+    ("keybind_lstick_down", "S", "Move back"),
+    ("keybind_lstick_left", "A", "Move left"),
+    ("keybind_lstick_right", "D", "Move right"),
+    ("keybind_right_trigger", "LMB", "Fire"),
+    ("keybind_left_trigger", "RMB", "Aim / targeting"),
+    ("keybind_a", "Space", "Action / block"),
+    ("keybind_b", "F", "Takedown / skip cutscene"),
+    ("keybind_x", "E,R", "Light attack / reload"),
+    ("keybind_y", "Q", "Heavy attack / Bourne Instinct"),
+    ("keybind_right_shoulder", "Shift", "Sprint"),
+    ("keybind_left_shoulder", "G", "Weapon"),
+    ("keybind_lstick_press", "Control", "Crouch"),
+    ("keybind_rstick_press", "MMB", "Recentre camera / switch shoulder"),
+    ("keybind_start", "Escape,Return", "Pause"),
+    ("keybind_back", "Tab", "Back"),
+    ("keybind_rstick_up", "Up", "Camera up (as well as the mouse)"),
+    ("keybind_rstick_down", "Down", "Camera down"),
+    ("keybind_rstick_left", "Left", "Camera left"),
+    ("keybind_rstick_right", "Right", "Camera right"),
+    ("keybind_dpad_up", "1", "D-pad up"),
+    ("keybind_dpad_down", "2", "D-pad down"),
+    ("keybind_dpad_left", "3", "D-pad left"),
+    ("keybind_dpad_right", "4", "D-pad right"),
+]
+KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
+# Keys the runtime keeps for itself: debug overlay, console, settings, achievements.
+RESERVED_KEYS = {"F3": "the debug overlay", "Backtick": "the console", "F4": "the settings overlay",
+                 "F7": "the achievements overlay"}
+KEY_NAMES = {"LMB": "Left mouse", "RMB": "Right mouse", "MMB": "Middle mouse", "Return": "Enter",
+             "Escape": "Esc", "Control": "Ctrl", "Backtick": "`", "LBracket": "[", "RBracket": "]",
+             "Quote": "'", "Semicolon": ";", "Comma": ",", "Period": ".", "Slash": "/",
+             "Backslash": "\\", "Minus": "-", "Plus": "="}
+# Tk key names (keysyms) to the SDK's key names (src/ui/keybinds.cpp).
+TK_KEYS = {"space": "Space", "Return": "Return", "Escape": "Escape", "Tab": "Tab", "BackSpace": "Backspace",
+           "Delete": "Delete", "Insert": "Insert", "Home": "Home", "End": "End", "Prior": "PageUp",
+           "Next": "PageDown", "Left": "Left", "Right": "Right", "Up": "Up", "Down": "Down",
+           "Shift_L": "Shift", "Shift_R": "Shift", "Control_L": "Control", "Control_R": "Control",
+           "Alt_L": "Alt", "Alt_R": "Alt", "grave": "Backtick", "minus": "Minus", "equal": "Plus",
+           "comma": "Comma", "period": "Period", "semicolon": "Semicolon", "slash": "Slash",
+           "backslash": "Backslash", "bracketleft": "LBracket", "bracketright": "RBracket",
+           "apostrophe": "Quote", "KP_Enter": "NumpadEnter", "KP_Add": "NumpadPlus",
+           "KP_Subtract": "NumpadMinus", "KP_Multiply": "NumpadStar", "KP_Divide": "NumpadSlash",
+           "Caps_Lock": "CapsLock", "Num_Lock": "NumLock", "Scroll_Lock": "ScrollLock", "Pause": "Pause",
+           "Print": "PrintScreen"}
+
+
+def tk_key_name(keysym):
+    """SDK key name for a Tk keysym, or None if the SDK can't bind it."""
+    if keysym in TK_KEYS:
+        return TK_KEYS[keysym]
+    if len(keysym) == 1 and keysym.isascii() and keysym.isalnum():
+        return keysym.upper()
+    if keysym.startswith("KP_") and keysym[3:].isdigit():
+        return "Numpad" + keysym[3:]
+    if keysym[:1] == "F" and keysym[1:].isdigit() and 1 <= int(keysym[1:]) <= 24:
+        return keysym
+    return None
+
+
+def key_label(keys):
+    return " or ".join(KEY_NAMES.get(k, k) for k in keys.split(",") if k) or "(none)"
+
+
+def kbm_binds(s):
+    """The player's key binds, filled in from the defaults."""
+    binds = dict(KBM_DEFAULT)
+    saved = s.get("kbm_binds") or {}
+    binds.update({k: v for k, v in saved.items() if k in KBM_DEFAULT and isinstance(v, str)})
+    return binds
+
+
+def kbm_layout_text(binds):
+    return "\n".join(f"{key_label(binds[name])}: {what}" for name, _, what in KBM_BINDS)
+
+
+class KeyBindDialog(tk.Toplevel):
+    """Rebind the keyboard-and-mouse controls: two keys per action."""
+
+    def __init__(self, master, binds, on_save):
+        super().__init__(master, bg=BG)
+        self.title("Keyboard and mouse controls")
+        self.transient(master)
+        self.binds = dict(binds)
+        self.on_save = on_save
+        self.buttons = {}
+        self.waiting = None  # (setting, slot) while waiting for a key
+        self.note = tk.StringVar(value="Click a key, then press the new key or click the new mouse button. "
+                                       "The mouse always moves the camera.")
+        tk.Label(self, textvariable=self.note, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=520,
+                 justify="left").pack(anchor="w", padx=16, pady=(12, 6))
+        grid = tk.Frame(self, bg=PANEL, padx=12, pady=8)
+        grid.pack(fill="both", expand=True, padx=16)
+        for row, (name, _, what) in enumerate(KBM_BINDS):
+            tk.Label(grid, text=what, font=("Segoe UI", 9), fg=FG, bg=PANEL, anchor="w").grid(
+                row=row, column=0, sticky="w", padx=(0, 12))
+            for slot in (0, 1):
+                b = tk.Button(grid, width=14, font=("Segoe UI", 9), bd=0, relief="flat",
+                              command=lambda n=name, sl=slot: self.start(n, sl))
+                b.grid(row=row, column=1 + slot, padx=2, pady=1)
+                self.buttons[(name, slot)] = b
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", padx=16, pady=12)
+        tk.Button(foot, text="Save", width=10, command=self.save, bg=ACCENT, fg="white", bd=0,
+                  font=("Segoe UI", 10, "bold")).pack(side="right")
+        tk.Button(foot, text="Cancel", width=10, command=self.destroy, bd=0,
+                  font=("Segoe UI", 10)).pack(side="right", padx=8)
+        tk.Button(foot, text="Defaults", width=10, command=self.defaults, bd=0,
+                  font=("Segoe UI", 10)).pack(side="left")
+        tk.Button(foot, text="Clear key", width=10, command=self.clear, bd=0,
+                  font=("Segoe UI", 10)).pack(side="left", padx=8)
+        self.bind("<KeyPress>", self.on_key)
+        self.refresh()
+        self.grab_set()
+        self.focus_set()
+
+    def keys_of(self, name):
+        return [k for k in self.binds[name].split(",") if k]
+
+    def refresh(self):
+        for (name, slot), b in self.buttons.items():
+            keys = self.keys_of(name)
+            waiting = self.waiting == (name, slot)
+            b.config(text="Press a key..." if waiting else (KEY_NAMES.get(keys[slot], keys[slot])
+                                                            if slot < len(keys) else "-"),
+                     bg=ACCENT if waiting else "#2a2f38", fg="white" if waiting else FG,
+                     activebackground=ACCENT)
+
+    def start(self, name, slot):
+        self.unbind_mouse()
+        self.waiting = (name, slot)
+        self.note.set("Press the new key, or click this button with the mouse button you want "
+                      "(left, right or middle). Clear key removes it.")
+        b = self.buttons[(name, slot)]
+        # Mouse buttons are caught on the button itself: 1 left, 2 middle, 3 right.
+        for n, key in (("1", "LMB"), ("2", "MMB"), ("3", "RMB")):
+            b.bind(f"<ButtonRelease-{n}>", lambda e, k=key: self.assign(k), add=False)
+        self.after(1, self.refresh)
+        self.focus_set()
+
+    def on_key(self, event):
+        if not self.waiting:
+            return
+        key = tk_key_name(event.keysym)
+        if key is None:
+            self.note.set(f"That key ({event.keysym}) can't be bound. Try another.")
+            return
+        self.assign(key)
+        return "break"
+
+    def assign(self, key):
+        if not self.waiting:
+            return
+        if key in RESERVED_KEYS:
+            self.note.set(f"{KEY_NAMES.get(key, key)} is kept for {RESERVED_KEYS[key]}. Choose another key.")
+            return "break"
+        name, slot = self.waiting
+        # A key does one thing: take it off any other action first.
+        moved = []
+        for other in self.binds:
+            if other != name and key in self.keys_of(other):
+                self.binds[other] = ",".join(k for k in self.keys_of(other) if k != key)
+                moved.append(dict((n, w) for n, _, w in KBM_BINDS)[other])
+        keys = [k for k in self.keys_of(name) if k != key]
+        keys.insert(min(slot, len(keys)), key)
+        self.binds[name] = ",".join(keys[:2])
+        self.note.set(f"{KEY_NAMES.get(key, key)} moved here from: {', '.join(moved)}." if moved
+                      else "Saved when you click Save. Click another key to change it.")
+        self.stop()
+        return "break"
+
+    def unbind_mouse(self):
+        if self.waiting:
+            b = self.buttons[self.waiting]
+            for n in ("1", "2", "3"):
+                b.unbind(f"<ButtonRelease-{n}>")
+
+    def stop(self):
+        self.unbind_mouse()
+        self.waiting = None
+        self.refresh()
+
+    def clear(self):
+        if not self.waiting:
+            self.note.set("Click the key you want to clear first, then Clear key.")
+            return
+        name, slot = self.waiting
+        keys = self.keys_of(name)
+        if slot < len(keys):
+            del keys[slot]
+        self.binds[name] = ",".join(keys)
+        self.stop()
+
+    def defaults(self):
+        self.binds = dict(KBM_DEFAULT)
+        self.stop()
+
+    def save(self):
+        self.on_save(self.binds)
+        self.destroy()
+
+
 DEFAULTS = {
     "fullscreen": False,
     "resolution": "Original (720p)",
@@ -89,6 +297,9 @@ DEFAULTS = {
     "distortion": True,
     "fov": 100,
     "deadzone": 25,
+    "kbm": False,
+    "mouse_sensitivity": 100,
+    "turn_speed": 100,
     "close_on_play": True,
 }
 
@@ -138,6 +349,33 @@ def _scale_fov(body, factor):
     return re.sub(r"(?m)^(Fov|ReverseFov)=([0-9]+(?:\.[0-9]+)?)\r?$", repl, body)
 
 
+# Bourne's camera turn rates, one [<Mode>LookScales BnLookScales] section per camera mode
+# (navigation, jogging, sprinting, crouching, over the shoulder...), in Xe-BourneGame.ini.
+LOOK_RATE_KEYS = ("LookRightScale", "LookUpScale", "RawJoyLookRightModifier")
+
+
+def _edit_look_scales(body, factor, linear):
+    """Scale every mode's turn rates by `factor`; with `linear`, drop the aiming slow zone
+    (over the shoulder: 30% turn speed until the stick is past 95%, which a mouse rarely reaches)."""
+    lines = body.split("\r\n")
+    in_look = False
+    for i, line in enumerate(lines):
+        if line.startswith("["):
+            in_look = "LookScales" in line
+            continue
+        if not in_look or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in LOOK_RATE_KEYS and factor != 1:
+            try:
+                lines[i] = f"{key}={float(value) * factor:.6f}"
+            except ValueError:
+                pass
+        elif key == "BelowStepMultiplier" and linear:
+            lines[i] = f"{key}=1.000000"
+    return "\r\n".join(lines)
+
+
 def apply_game_config(game: Path, s) -> str:
     """Rewrite Coalesced.ini from the original with settings applied. Returns a short summary."""
     conf = game / cfg.CONFIG_REL
@@ -166,8 +404,16 @@ def apply_game_config(game: Path, s) -> str:
     if int(s["deadzone"]) != 25:
         edits.append(("Xe-BourneInput.ini", "HM_Engine.HmPlayerInput", "DeadZone", f"{int(s['deadzone']) / 100:.2f}"))
     fov = int(s["fov"])
+    turn = int(s.get("turn_speed", 100))
+    linear_aim = bool(s.get("kbm"))  # the mouse gets the full turn speed while aiming
+    look_edit = turn != 100 or linear_aim
 
-    if not edits and fov == 100:
+    if turn != 100:
+        # The camera's top yaw rate (100 in the original): a cap on how fast it can turn,
+        # whatever the mode's turn rate, so it scales with the turn speed too.
+        edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
+
+    if not edits and fov == 100 and not look_edit:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
@@ -186,9 +432,13 @@ def apply_game_config(game: Path, s) -> str:
                 continue
             name, body = files[i]
             files[i] = (name, _scale_fov(body, fov / 100))
+    if look_edit:
+        i = cfg.find_file(files, "Xe-BourneGame.ini")
+        name, body = files[i]
+        files[i] = (name, _edit_look_scales(body, turn / 100, linear_aim))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
-    return f"{len(edits) + (fov != 100)} config change(s)"
+    return f"{len(edits) + (fov != 100) + look_edit} config change(s)"
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -274,6 +524,14 @@ def game_args(s, screen=None):
     args.append(f"--frame_rate={rate}")
     if s.get("show_fps"):
         args.append("--show_fps=true")
+    if s.get("kbm"):
+        args += ["--mnk_mode=true", "--mnk_mouse=true",
+                 "--mnk_sensitivity", f"{int(s.get('mouse_sensitivity', 100)) / 100:.2f}"]
+        for name, keys in kbm_binds(s).items():
+            if keys:  # an empty value would leave the SDK's own default for that button
+                args.append(f"--{name}={keys}")
+            else:
+                args.append(f"--{name}=F24")  # unbound: park it on a key keyboards don't have
     return args
 
 
@@ -319,8 +577,16 @@ class SettingsView(tk.Frame):
         self._checks(box, 1, [("lens_flares", "Lens flares"), ("distortion", "Heat haze / distortion")])
         self._slider(box, 2, "fov", "Field of view (%)", 80, 140, 5)
 
-        box = self._section("Controller")
+        box = self._section("Controls")
         self._slider(box, 0, "deadzone", "Stick dead zone (%)", 5, 40, 1)
+        line = tk.Frame(box, bg=PANEL)
+        line.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
+        tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
+                       selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
+        self._link(line, "Edit keys...", self.edit_keys).pack(side="left", padx=14)
+        self._slider(box, 2, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 1000, 10)
+        self._slider(box, 3, "turn_speed", "Camera turn speed (%)", 50, 300, 10)
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)
@@ -391,6 +657,15 @@ class SettingsView(tk.Frame):
     def reset(self):
         for k, v in self.vars.items():
             v.set(DEFAULTS[k])
+        self.s["kbm_binds"] = {}  # key binds back to the default layout too
+
+    def edit_keys(self):
+        def saved(binds):
+            changed = {k: v for k, v in binds.items() if v != KBM_DEFAULT[k]}
+            self.s["kbm_binds"] = changed
+            save_settings(self.collect())
+            self.status.set("Key binds saved." if changed else "Key binds back to defaults.")
+        KeyBindDialog(self.winfo_toplevel(), kbm_binds(self.s), saved)
 
     def open_logs(self):
         folder = logs_dir(self.info)
@@ -442,7 +717,8 @@ class SettingsView(tk.Frame):
 class Launcher:
     def __init__(self):
         self.root = make_root(APP_NAME)
-        self.root.geometry("780x920")
+        height = min(980, self.root.winfo_screenheight() - 80)
+        self.root.geometry(f"780x{height}")
         self.root.minsize(700, 760)
         self.view = None
         info = load_install()

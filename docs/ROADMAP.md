@@ -65,7 +65,7 @@ cmake --build out\build\win-amd64-relwithdebinfo
 
 For players, the installer would then download our patched SDK build (a zip on this repo's Releases page, checked against a fixed SHA-256, as the Table Tennis installer does) instead of the stock one.
 
-## 0.3.0: keyboard and mouse (done, needs testing)
+## 0.2.1: keyboard and mouse (released, needs testing)
 
 The SDK's keyboard-and-mouse driver is already in our runtime, switched off (`--mnk_mode=true --mnk_mouse=true`). It acts as a virtual Xbox controller: keys and mouse buttons (LMB, RMB, MMB) bind to pad buttons with `--keybind_*` settings, the mouse drives the right stick (`--mnk_sensitivity`), and it merges with a real controller on player 1. The launcher's **Controls** section has a **Keyboard and mouse** switch, mouse sensitivity, and **Edit keys...** for rebinding. Defaults, from the game's controller bindings:
 
@@ -87,6 +87,8 @@ The SDK's keyboard-and-mouse driver is already in our runtime, switched off (`--
 | Back | Tab |
 
 It's controller emulation, so the game's stick dead zone and acceleration still apply to the mouse. Native mouse look through the engine's PC input (Skullburglar's approach) would be a later, bigger step, if Bourne's Xbox 360 build includes that code. Keys can be changed in the launcher (**Edit keys...**).
+
+Camera tuning for the mouse (0.2.1): **Camera turn speed** scales every `[<Mode>LookScales BnLookScales]` turn rate in `Xe-BourneGame.ini` and `[BourneNative.BnPlayerInput] MaxYawRate` (100) in `Xe-BourneInput.ini`; with keyboard and mouse on, `BelowStepMultiplier` goes to 1 (over the shoulder: 0.3 below 95% stick). Confirmed written to the game's config; not yet confirmed that the game reads them at runtime (test: a controller at 300% turn speed should turn visibly faster). If it doesn't, the next options are a mouse-only dead-zone offset in the SDK's keyboard-and-mouse driver (`mnk_input_driver.cpp`, an SDK rebuild) or finding Bourne's look code. Also worth a look: `CameraSensitivity=4` (the in-game option's default) and the running camera's `MaxStickResistance`, which pulls the camera back behind Jason.
 
 ## Experimental: ReGPU renderer (shelved: renders incorrectly)
 

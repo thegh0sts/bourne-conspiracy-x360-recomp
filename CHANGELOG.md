@@ -1,10 +1,27 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## 0.2.1 (2026-11-11)
+
+Keyboard and mouse, and camera turn speed.
 
 ### New
-- **Keyboard and mouse.** Tick **Keyboard and mouse** under Controls in the launcher: W A S D to move, the mouse for the camera, left mouse to fire, right mouse to aim, and keys for every other action. **Edit keys...** lets you change any of them: two keys per action, mouse buttons included, with **Defaults** to go back. A controller keeps working alongside. The mouse acts like a controller stick, so the game's stick dead zone and acceleration still apply; a lower dead zone makes small mouse movements count.
-- **Experimental: ReGPU renderer.** A second, optional renderer: [ReGPU](https://github.com/zer0ducksgiven/ReGPU), a Direct3D 12 Xbox 360 GPU, through an adapted [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) plugin. In Forza Horizon it roughly doubled the frame rate at 4K, Not bundled yet: build it with `tools\build_regpu.bat`, then start with `--gpu_plugin=regpu`. It boots and plays on Bourne but renders world surfaces incorrectly, so it is shelved for now (see docs/ROADMAP.md); the default renderer is unchanged.
+- **Keyboard and mouse** (experimental). Tick **Keyboard and mouse** under Controls in the launcher: W A S D to move, the mouse for the camera, left mouse to fire, right mouse to aim, and keys for every other action. A controller keeps working alongside. The mouse acts as a controller stick, so the game's stick dead zone still applies: a lower **Stick dead zone** makes small mouse movements count.
+- **Editable key binds.** **Edit keys...** next to the switch lets you change any action: two keys per action, mouse buttons included, with **Defaults** to go back. A key already in use moves to the new action; F3, F4, F7 and \` stay reserved for the runtime's overlays.
+- **Camera turn speed** (Controls, 50-300%). Scales the camera's turn rate in every mode (walking, jogging, sprinting, crouching, aiming) and its top yaw rate, for mouse and controller alike.
+- **Full-speed aiming with the mouse.** With **Keyboard and mouse** ticked, aiming over the shoulder no longer has its slow zone (the game turns at 30% speed until the stick is pushed past 95%, which a mouse rarely reaches).
+- **Mouse sensitivity** goes up to 1000% (was 300%).
+
+### Known issues
+- Mouse camera can still feel sluggish. The turn-speed and aiming changes reach the game's config, but whether Bourne uses those values at runtime is still being confirmed; if a controller turns no faster at 300% turn speed, they're baked into the game data and a code-level fix is needed.
+- Skipping the intro logos still isn't possible.
+
+### Under the hood
+- **Experimental ReGPU renderer, shelved.** A second, optional renderer: [ReGPU](https://github.com/zer0ducksgiven/ReGPU), a Direct3D 12 Xbox 360 GPU, through an adapted [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) plugin (`regpu-plugin/`, `tools\build_regpu.bat`, `--gpu_plugin=regpu`). Not built or shipped by the installer. It boots and plays but renders world surfaces incorrectly; what was ruled out is in docs/ROADMAP.md. The default renderer is unchanged.
+- The graphics plugin preload now follows `--gpu_plugin` (default xenos), so two plugins' settings never clash.
+- `.gitattributes` keeps patch files byte-exact.
+
+### Credits
+ReGPU and Glue2GPU by zer0ducksgiven (MIT). Licence texts in `licenses/`.
 
 ## 0.2.0 (2026-11-10)
 

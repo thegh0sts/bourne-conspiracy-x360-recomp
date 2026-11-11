@@ -1,0 +1,75 @@
+diff --git a/src/gpu/hlsl.cpp b/src/gpu/hlsl.cpp
+index a256b45..370c5c3 100644
+--- a/src/gpu/hlsl.cpp
++++ b/src/gpu/hlsl.cpp
+@@ -1112,6 +1112,19 @@ std::string Preamble()
+ }
+ } // namespace
+ 
++// Vertex positions computed bit-identically by every shader that draws the same geometry, as on the
++// console (Xenia marks the position invariant for the same reason). Multipass renderers (UE3: a depth
++// pass, then a pass per light with an EQUAL depth test) otherwise lose pixels wherever two translated
++// shaders round the position differently: speckled, smeared surfaces. The position is `precise`, and
++// vertex shaders carrying the mark below compile with IEEE strictness (renderer.cpp), so neither fxc
++// nor the driver fuses or reorders that math per shader. REGPU_NO_PRECISE_POSITION=1: off (A/B; read
++// at translation, so the two forms cache apart).
++bool PrecisePosition()
++{
++    static const bool on = getenv("REGPU_NO_PRECISE_POSITION") == nullptr;
++    return on;
++}
++
+ // Read at first use (the renderer's root signature), not at load: a port may set it before Start.
+ bool LeanFetch()
+ {
+@@ -1356,7 +1369,10 @@ TranslatedShader TranslateShader(const Shader& shader)
+              "        zc = r.pos.z * ((vte.x & 16u) ? vscale.z : 1.0) + ((vte.x & 32u) ? voffset.z : 0.0) * w;\n"
+              "    // The polygon offset's constant part (vdepth.x, renderer.cpp PolygonOffsetDepth).\n"
+              "    zc += vdepth.x * w;\n"
+-             "    r.pos = float4(ndc * w, zc, w);\n"
++             + std::string(PrecisePosition()
++                 ? "    precise float4 finalPos = float4(ndc * w, zc, w); // " REGPU_PRECISE_POSITION_MARK "\n"
++                   "    r.pos = finalPos;\n"
++                 : "    r.pos = float4(ndc * w, zc, w);\n") +
+              "    return r;\n}\n";
+     }
+     else
+diff --git a/src/gpu/hlsl.h b/src/gpu/hlsl.h
+index e0b30c6..7e10ec3 100644
+--- a/src/gpu/hlsl.h
++++ b/src/gpu/hlsl.h
+@@ -54,3 +54,7 @@ bool BakedVertexFetch();
+ const char* HlslPreamble();
+ // REGPU_LEAN_FETCH=1: lean 2D pixel fetches through a sampler table (root parameter 4, space1).
+ bool LeanFetch();
++// Positions computed bit-identically across shaders (hlsl.cpp): `precise`, and vertex shaders with
++// this mark in their source compile with IEEE strictness. REGPU_NO_PRECISE_POSITION=1: off.
++bool PrecisePosition();
++#define REGPU_PRECISE_POSITION_MARK "regpu: precise position"
+diff --git a/src/gpu/renderer.cpp b/src/gpu/renderer.cpp
+index 8d4a881..ce5d017 100644
+--- a/src/gpu/renderer.cpp
++++ b/src/gpu/renderer.cpp
+@@ -3365,8 +3365,9 @@ struct ShaderOptimizer
+             }
+             const D3D_SHADER_MACRO vertexStage[] = { { "REGPU_VERTEX_STAGE", "1" }, { nullptr, nullptr } };
+             ComPtr<ID3DBlob> code, errors;
++            const UINT strict = !job.pixel && job.hlsl.find(REGPU_PRECISE_POSITION_MARK) != std::string::npos ? D3DCOMPILE_IEEE_STRICTNESS : 0;
+             if (FAILED(D3DCompile(job.hlsl.data(), job.hlsl.size(), nullptr, job.pixel ? nullptr : vertexStage, nullptr, "main",
+-                    job.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL1 | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0,
++                    job.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL1 | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES | strict, 0,
+                     &code, &errors)))
+                 continue; // the unoptimised build stays
+             // Written under a temporary name: a run that reads it never sees half a file.
+@@ -3513,8 +3514,10 @@ struct ShaderCompiler
+         // The translated source picks its sampling form per stage (see hlsl.cpp: a vertex
+         // shader cannot sample with an implicit LOD).
+         const D3D_SHADER_MACRO vertexStage[] = { { "REGPU_VERTEX_STAGE", "1" }, { nullptr, nullptr } };
++        // Vertex shaders with a precise position: IEEE-strict throughout (hlsl.cpp PrecisePosition).
++        const UINT strict = !cs.pixel && cs.info.hlsl.find(REGPU_PRECISE_POSITION_MARK) != std::string::npos ? D3DCOMPILE_IEEE_STRICTNESS : 0;
+         const HRESULT hr = D3DCompile(cs.info.hlsl.data(), cs.info.hlsl.size(), nullptr, cs.pixel ? nullptr : vertexStage, nullptr, "main",
+-            cs.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES, 0, &cs.code, &errors);
++            cs.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES | strict, 0, &cs.code, &errors);
+         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+         if (FAILED(hr))
+         {

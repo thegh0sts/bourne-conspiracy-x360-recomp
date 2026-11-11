@@ -1,3 +1,5 @@
 # Hook scripts run under sh, so they must keep LF line endings on Windows too.
 .githooks/* text eol=lf
 *.sh text eol=lf
+# Patches applied to other repos with git apply: keep them byte-exact.
+tools/regpu-patches/*.patch -text

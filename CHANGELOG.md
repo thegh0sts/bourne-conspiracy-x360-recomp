@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+### New
+- **Keyboard and mouse.** Tick **Keyboard and mouse** under Controls in the launcher: W A S D to move, the mouse for the camera, left mouse to fire, right mouse to aim, and keys for every other action. **Edit keys...** lets you change any of them: two keys per action, mouse buttons included, with **Defaults** to go back. A controller keeps working alongside. The mouse acts like a controller stick, so the game's stick dead zone and acceleration still apply; a lower dead zone makes small mouse movements count.
+- **Experimental: ReGPU renderer.** A second, optional renderer: [ReGPU](https://github.com/zer0ducksgiven/ReGPU), a Direct3D 12 Xbox 360 GPU, through an adapted [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) plugin. In Forza Horizon it roughly doubled the frame rate at 4K, Not bundled yet: build it with `tools\build_regpu.bat`, then start with `--gpu_plugin=regpu`. It boots and plays on Bourne but renders world surfaces incorrectly, so it is shelved for now (see docs/ROADMAP.md); the default renderer is unchanged.
+
 ## 0.2.0 (2026-11-10)
 
 Performance, frame rate and image options, built on a patched ReXGlue SDK.

@@ -108,6 +108,7 @@ git config core.hooksPath .githooks
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and the Xenia project, whose work this is built on.
 - [Skullburglar](https://github.com/nlwstein/skullburglar) (BSD 3-Clause): crash reports and the leak scanner are adapted from its code, and its notes on SDK performance pointed at the FPS counter cost.
 - [Table Tennis PC](https://github.com/davidptrssvea/Table-Tennis-Rockstar-PC) (MIT): the frame pacing approach (guest vsync off, host frame limiter, tearing).
+- [ReGPU](https://github.com/zer0ducksgiven/ReGPU) and [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) (MIT): the experimental Direct3D 12 renderer and its ReXGlue plugin (`regpu-plugin/`).
 - Function recovery, installer and tooling developed with help from Claude (Anthropic).
 
 ## Disclaimer

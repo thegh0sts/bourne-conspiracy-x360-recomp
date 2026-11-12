@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.2 (2026-11-12)
+
+Much faster at higher render resolutions, easier mouse aiming, ideas from WetRecomp, and fixes to our SDK build.
+
+### Updating from 0.2.1
+Run the new exe. The **Graphics path** setting works straight away. Everything else here is in the game code or the SDK, so click **Reinstall from a disc image...** on the launcher's settings screen to rebuild the game with them. The installer replaces its bundled SDK (now `tbc2`) on that run.
+
+### New
+- **Much faster above 720p.** New **Graphics path** setting under Display. The runtime's default way of imitating the Xbox 360's on-chip framebuffer (EDRAM) copied pixels between render targets about 1,800 times a frame. At 2x render resolution those copies took 54 of 68 ms per frame on an RTX 4080 Super. The shader-based path (ROV) needs no copies: 2x went from the mid-teens to the mid-40s FPS. **Auto** (default) uses ROV whenever the render resolution is above 720p and the runtime's default at 1x; RTV and ROV can also be forced (`--render_target_path_d3d12=rtv|rov`).
+- **Easier mouse aiming.** Any mouse movement now starts just past the game's stick dead zone, so slow, small movements turn the camera instead of being ignored. The launcher passes the **Stick dead zone** setting to the mouse conversion automatically (`--mnk_mouse_deadzone`); `--mnk_mouse_curve` shapes the response. Needs the SDK with patch 0004.
+- **Less CPU while waiting on the GPU.** The game's GPU-wait loop (`sub_822F0108`, the XDK poll) now yields the CPU core between polls instead of spinning it flat out (`--gpu_wait_mode`: 0 original, 1 yield (default), 2 sleep).
+- **Match the monitor's refresh rate** (`--match_display_refresh=true`, off by default): with original pacing, the game's vblank follows your monitor (for example 120 Hz instead of 60). The SDK caps it at 240 Hz.
+- **Developer tool:** `--dev_debug_runtime=true` lists every code address without a recompiled function (`logs\missed_functions.txt`) and stubs them, logging the first call to each (`logs\stub_sweep.txt`) instead of aborting. Development only.
+
+### SDK fixes (tools\sdk-patches, applied by tools\build_sdk.bat)
+- **0001, 0002: jump tables.** The code generator now finds a jump table's index in either operand order and reads past unused (zero) entries. Found while porting 007: Quantum of Solace, where both crashed the game; Bourne picks the fixes up on its next code generation.
+- **0003: XMA audio decoder.** Input checks from WetRecomp's SDK: a garbled frame size could make the decoder copy far past its buffer.
+- **0004: mouse dead-zone compensation and response curve** (above).
+
+### Credits
+WetRecomp by nikolaygorb (MIT): the GPU-wait hook, display refresh matching, the stub sweep and the XMA decoder fixes.
+
 ## 0.2.1 (2026-11-11)
 
 Keyboard and mouse, and camera turn speed.

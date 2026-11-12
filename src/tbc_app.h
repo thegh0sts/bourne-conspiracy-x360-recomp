@@ -10,6 +10,8 @@
 #include <rex/rex_app.h>
 
 #include "crash_win.h"
+#include "debug_tools.h"
+#include "display_refresh.h"
 #include "fps_overlay.h"
 
 // --show_fps=true shows the game's frame rate in a small window at the top-left corner.
@@ -30,16 +32,20 @@ class TbcApp : public rex::ReXApp {
 
   void OnPostInitLogging() override { tbc::crash::Install(); }
 
+  // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
+  void OnPreSetup(rex::RuntimeConfig&) override { tbc::display::MatchDisplayRefreshRate(); }
+
   void OnPostSetup() override {
     if (REXCVAR_GET(show_fps)) {
       tbc::overlay::StartFpsOverlay();
     }
+    // --dev_debug_runtime: log and stub code addresses with no function (debug_tools.h).
+    tbc::debug::RunIfEnabled(PPCImageConfig.code_base, PPCImageConfig.code_size);
   }
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
 
   // Other hooks available for customization:
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}

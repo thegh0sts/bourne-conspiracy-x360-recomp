@@ -1,0 +1,133 @@
+ReXGlue codegen: find the index register of an indexed jump-table load in either operand order.
+
+detectJumpTable() took rB of lwzx/lbzx/lhzx rD, rA, rB as the index. Compilers can also emit
+the table in rB and the scaled index in rA, as in 007: Quantum of Solace's sub_821C1B90:
+
+    lis    r11, table@ha
+    rlwinm r10, r3, 2, 0, 29      ; index * 4
+    addi   r9, r11, table@l       ; table address
+    lwzx   r8, r10, r9            ; rA = index, rB = table
+    mtctr  r8
+    bctr
+
+The generated switch then tested the table address (r9) instead of the index (r3), always fell
+to the default case and hit __builtin_trap() (illegal instruction, 0xC000001D). Both operands
+are now traced back; the one built by lis/addi/ori is the table, the other the index. Tables in
+the usual order (table in rA) come out as before.
+
+diff --git a/src/codegen/function_scanner.cpp b/src/codegen/function_scanner.cpp
+index d7ba519..52bf329 100644
+--- a/src/codegen/function_scanner.cpp
++++ b/src/codegen/function_scanner.cpp
+@@ -1396,6 +1396,11 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+   uint8_t indexReg = 0xFF;       // Current reg being traced (0xFF = stop tracing)
+   uint8_t finalIndexReg = 0xFF;  // Last valid indexReg for scanForBounds/output
+   int shiftAmount = 0;
++  // The indexed load's other operand (lwzx/lbzx/lhzx rD, rA, rB). Compilers usually put the
++  // table in rA and the index in rB, but not always (lwzx r8,r10,r9 with r9 = table): both are
++  // traced, and the one built from lis/addi/ori (the table address) is not the index.
++  uint8_t altIndexReg = 0xFF, altFinalIndexReg = 0xFF;
++  bool indexIsTable = false, altIsTable = false;
+ 
+   // Backward scan from bctr
+   uint32_t scanAddr = bctrAddr;
+@@ -1431,6 +1436,8 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+         tableType = JumpTableType::kAbsolute;
+         indexReg = insn->X.RB;
+         finalIndexReg = indexReg;
++        altIndexReg = insn->X.RA;
++        altFinalIndexReg = altIndexReg;
+         foundLoad = true;
+         REXCODEGEN_TRACE("detectJumpTable: bctr=0x{:08X} found lwzx at 0x{:08X}", bctrAddr,
+                          scanAddr);
+@@ -1445,6 +1452,8 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+         }
+         indexReg = insn->X.RB;
+         finalIndexReg = indexReg;
++        altIndexReg = insn->X.RA;
++        altFinalIndexReg = altIndexReg;
+         foundLoad = true;
+         REXCODEGEN_TRACE("detectJumpTable: bctr=0x{:08X} found lbzx at 0x{:08X}", bctrAddr,
+                          scanAddr);
+@@ -1459,6 +1468,8 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+         }
+         indexReg = insn->X.RB;
+         finalIndexReg = indexReg;
++        altIndexReg = insn->X.RA;
++        altFinalIndexReg = altIndexReg;
+         foundLoad = true;
+         REXCODEGEN_TRACE("detectJumpTable: bctr=0x{:08X} found lhzx at 0x{:08X}", bctrAddr,
+                          scanAddr);
+@@ -1507,6 +1518,44 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+     // DON'T trace back through extrwi/other rlwinm variants - those transform the value
+     // NOTE: SH must be > 0 for a real shift; SH=0 is just a move/no-op (clrlwi r,r,0)
+     // IMPORTANT: Stop tracing if another instruction writes to indexReg (breaks the chain)
++    if (foundLoad && altIndexReg != 0xFF && altIndexReg != indexReg) {
++      // The other operand, traced the same way (see altIndexReg): follow slwi, stop at any other
++      // write, and note whether it was the table address (lis/addi/ori, before any slwi).
++      uint8_t dest = 0xFF;
++      if (insn->opcode == Opcode::rlwinm) {
++        dest = insn->M.RA;
++      } else if (insn->opcode == Opcode::srawi || insn->opcode == Opcode::sraw ||
++                 insn->opcode == Opcode::srw || insn->opcode == Opcode::slw ||
++                 insn->opcode == Opcode::or_ || insn->opcode == Opcode::and_ ||
++                 insn->opcode == Opcode::xor_ || insn->opcode == Opcode::mr ||
++                 insn->opcode == Opcode::ori) {
++        dest = insn->opcode == Opcode::ori ? insn->D.RA : insn->X.RA;
++      } else if (insn->opcode == Opcode::lbz || insn->opcode == Opcode::lhz ||
++                 insn->opcode == Opcode::lwz || insn->opcode == Opcode::li ||
++                 insn->opcode == Opcode::lis || insn->opcode == Opcode::addi) {
++        dest = insn->D.RT;
++      } else if (insn->opcode == Opcode::lbzx || insn->opcode == Opcode::lhzx ||
++                 insn->opcode == Opcode::lwzx) {
++        dest = insn->X.RT;
++      } else if (insn->opcode == Opcode::add || insn->opcode == Opcode::subf) {
++        dest = insn->XO.RT;
++      }
++      if (dest == altIndexReg) {
++        const bool untouched = altIndexReg == altFinalIndexReg;
++        if (insn->opcode == Opcode::rlwinm && insn->M.SH > 0 && insn->M.MB == 0 &&
++            insn->M.ME == 31 - insn->M.SH) {
++          altIndexReg = insn->M.RS;
++          altFinalIndexReg = altIndexReg;
++        } else {
++          if (untouched && (insn->opcode == Opcode::addi || insn->opcode == Opcode::lis ||
++                            insn->opcode == Opcode::ori)) {
++            altIsTable = true;
++          }
++          altIndexReg = 0xFF;
++        }
++      }
++    }
++
+     if (foundLoad && indexReg != 0xFF) {
+       // Check if this instruction writes to indexReg
+       bool writesToIndexReg = false;
+@@ -1561,7 +1610,12 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+             indexReg = 0xFF;  // Mark as invalid to stop further tracing
+           }
+         } else {
+-          // Another instruction writes to indexReg, stop tracing
++          // Another instruction writes to indexReg, stop tracing. Written by lis/addi/ori before
++          // any slwi: it holds the table address, so it isn't the index (see altIndexReg).
++          if (indexReg == finalIndexReg && finalIndexReg != 0xFF &&
++              (insn->opcode == Opcode::addi || insn->opcode == Opcode::lis)) {
++            indexIsTable = true;
++          }
+           REXCODEGEN_TRACE(
+               "detectJumpTable: bctr=0x{:08X} indexReg r{} overwritten at 0x{:08X}, stop tracing",
+               bctrAddr, indexReg, scanAddr);
+@@ -1676,6 +1730,13 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+     baseAddr = containingRegion.start;  // Fallback to region start
+   }
+ 
++  // rB was the table and rA the index (lwzx rD, rIndex, rTable): use rA's chain.
++  if (indexIsTable && !altIsTable && altFinalIndexReg != 0xFF) {
++    REXCODEGEN_TRACE("detectJumpTable: bctr=0x{:08X} index is rA: r{} (r{} is the table)", bctrAddr,
++                     altFinalIndexReg, finalIndexReg);
++    finalIndexReg = altFinalIndexReg;
++  }
++
+   // Find bounds
+   auto bounds = scanForBounds(decoded, bctrAddr, containingRegion, finalIndexReg, funcStart);
+   // If bounds not found (e.g., state machine pattern with forward bounds check),

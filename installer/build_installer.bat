@@ -15,7 +15,7 @@ set "SDK_FOLDER=%~1"
 if "%SDK_FOLDER%"=="" if exist "C:\rexglue-src\rexglue-sdk\out\install\win-amd64\lib\cmake\rexglue" set "SDK_FOLDER=C:\rexglue-src\rexglue-sdk\out\install\win-amd64"
 rem Name of the bundled SDK: bump the suffix whenever the SDK build changes, so existing
 rem installs replace their SDK on the next install or repair.
-set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc1-win-amd64.zip"
+set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc2-win-amd64.zip"
 
 echo Collecting project files into payload\project ...
 if exist payload rmdir /s /q payload

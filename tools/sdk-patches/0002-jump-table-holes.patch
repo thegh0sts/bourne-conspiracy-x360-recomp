@@ -1,0 +1,47 @@
+ReXGlue codegen: keep reading an absolute jump table past zero entries (holes).
+
+detectJumpTable() ended a table at its first zero entry. MSVC-built Xbox 360 code leaves zeros
+for switch cases it knows are never taken: 007: Quantum of Solace's asset-type size switch
+(sub_821C1B90, table 0x825E81B8) has 39 entries with zeros at 20 and 29-32, so only types 0-19
+were generated and type 26 hit the default __builtin_trap() (illegal instruction, 0xC000001D).
+
+A zero after at least one valid entry is now kept as a hole (a trapping case, as the existing
+null-padding sentinel) and reading continues; without bounds the table still ends at the first
+non-zero entry that isn't code, and zeros left at the end are dropped. Tables without holes come
+out as before. Applies after 0001.
+
+diff --git a/src/codegen/function_scanner.cpp b/src/codegen/function_scanner.cpp
+index 52bf329..3c983f2 100644
+--- a/src/codegen/function_scanner.cpp
++++ b/src/codegen/function_scanner.cpp
+@@ -1805,6 +1805,18 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+       break;
+     }
+ 
++    // A zero entry after valid ones is a hole: a case the compiler knew was never taken (an
++    // unused value in an enum switch, e.g. 007: Quantum of Solace's asset-type tables, with holes
++    // at 20 and 29-32 of 39). Keep reading; the hole becomes a trapping case, and zeros left at
++    // the end of the table are dropped below. Without bounds, the table still ends at the first
++    // non-zero entry that isn't code.
++    if (target == 0 && tableType == JumpTableType::kAbsolute && !jt.targets.empty()) {
++      REXCODEGEN_TRACE("detectJumpTable: bctr=0x{:08X} entry[{}] is 0: hole, reading on", bctrAddr,
++                       i);
++      jt.targets.push_back(0);
++      continue;
++    }
++
+     // Validate target is within code region - jump table targets help DEFINE function extent
+     // Don't constrain by funcEnd since that's just PDATA which may not include out-of-line code
+     if (target == 0 || !containingRegion.contains(target)) {
+@@ -1856,6 +1868,11 @@ std::optional<JumpTable> detectJumpTable(DecodedBinary& decoded, uint32_t bctrAd
+     jt.targets.push_back(target);
+   }
+ 
++  // Holes at the end aren't part of the table (padding before whatever follows it).
++  while (!jt.targets.empty() && jt.targets.back() == 0) {
++    jt.targets.pop_back();
++  }
++
+   if (jt.targets.empty()) {
+     REXCODEGEN_TRACE(
+         "detectJumpTable: bctr=0x{:08X} table=0x{:08X} NO VALID TARGETS (funcStart=0x{:08X} "

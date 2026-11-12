@@ -90,6 +90,15 @@ It's controller emulation, so the game's stick dead zone and acceleration still 
 
 Camera tuning for the mouse (0.2.1): **Camera turn speed** scales every `[<Mode>LookScales BnLookScales]` turn rate in `Xe-BourneGame.ini` and `[BourneNative.BnPlayerInput] MaxYawRate` (100) in `Xe-BourneInput.ini`; with keyboard and mouse on, `BelowStepMultiplier` goes to 1 (over the shoulder: 0.3 below 95% stick). Confirmed written to the game's config; not yet confirmed that the game reads them at runtime (test: a controller at 300% turn speed should turn visibly faster). If it doesn't, the next options are a mouse-only dead-zone offset in the SDK's keyboard-and-mouse driver (`mnk_input_driver.cpp`, an SDK rebuild) or finding Bourne's look code. Also worth a look: `CameraSensitivity=4` (the in-game option's default) and the running camera's `MaxStickResistance`, which pulls the camera back behind Jason.
 
+## Native mouse look (next)
+
+The mouse still drives a virtual right stick, so the game's dead zone, turn rates and acceleration shape it. 0.2.2 compensates for the dead zone; the real fix is WetRecomp's approach: feed mouse movement straight into the camera's yaw and pitch (1:1, as an angle), with `[[midasm_hook]]`s in the camera code (supported by SDK 0.10.1), and keep the stick emulation for menus and cutscenes.
+
+Finding the camera code in Bourne needs a run with the game: its camera classes (`BnPlayerInput`, `BnCamera`, `BnLookScales`) are native, but their property layout comes from the cooked script packages, and none of the turning code is a named native (`int<Class>exec<Function>`). Plan:
+1. Hook the game's controller read (its caller of `XamInputGetState`) to log where the right-stick values are stored.
+2. Watch that memory: the code that reads it and writes the camera's rotation (UE3 `FRotator`, 16-bit units) is the target.
+3. Hook there: replace the stick-driven yaw/pitch change with the mouse's, behind a `mouse_look` setting (sensitivity, invert), with the stick emulation as fallback.
+
 ## Experimental: ReGPU renderer (shelved: renders incorrectly)
 
 [ReGPU](https://github.com/zer0ducksgiven/ReGPU) is a Direct3D 12 Xbox 360 GPU, written for XenonRecomp ports; [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) wraps it as a ReXGlue GPU plugin (both MIT). In Forza Horizon 1 it took 4K from 36 to about 80 FPS, where our 2x render scale is held back by the stock renderer's EDRAM emulation.

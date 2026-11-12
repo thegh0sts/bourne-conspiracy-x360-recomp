@@ -1,6 +1,6 @@
 @echo off
-rem Build the ReXGlue SDK v0.10.1 from source, with AMD FidelityFX (FSR and CAS filters)
-rem and Skullburglar's performance patches. See docs/ROADMAP.md.
+rem Build the ReXGlue SDK v0.10.1 from source, with AMD FidelityFX (FSR and CAS filters),
+rem Skullburglar's performance patches and our own fixes in tools\sdk-patches. See docs/ROADMAP.md.
 rem
 rem Run from an "x64 Native Tools Command Prompt for VS" (it provides clang, cmake and ninja).
 rem Needs git and an internet connection. Takes a while: the SDK is a large build.
@@ -16,6 +16,10 @@ rem Skullburglar commit the patch list below was checked against.
 set "SKULL_COMMIT=67aacb28670077e839f84931dee9b162526bbdb2"
 rem 0003 is a Vulkan change, but it also carries header declarations that 0006 and 0008 need.
 set "PATCHES=0002 0003 0004 0006 0008 0009 0026 0029 0030"
+rem Our own SDK fixes (tools\sdk-patches\*.patch), applied after Skullburglar's. Change this tag
+rem when that folder changes, so an existing SDK checkout is patched again.
+set "OWN_PATCHES=own4"
+set "PATCH_SET=%PATCHES% %OWN_PATCHES%"
 
 set "WORK=%~1"
 if "%WORK%"=="" set "WORK=C:\rexglue-src"
@@ -42,7 +46,7 @@ set "MARKER=%SDK%\.tbc_patches"
 set "APPLIED="
 if exist "%MARKER%" set /p APPLIED=<"%MARKER%"
 set "NEED_PATCH=1"
-if "%APPLIED%"=="%PATCHES%" set "NEED_PATCH=0"
+if "%APPLIED%"=="%PATCH_SET%" set "NEED_PATCH=0"
 if "%NEED_PATCH%"=="1" (
   call :lf_checkout "%SDK%" || exit /b 1
 )
@@ -56,7 +60,7 @@ call :lf_checkout "%SKULL%" || exit /b 1
 
 echo === 3/4 Applying patches
 if "%NEED_PATCH%"=="0" (
-  echo Already applied: %PATCHES%
+  echo Already applied: %PATCH_SET%
 ) else (
   for %%P in (%PATCHES%) do (
     set "FILE="
@@ -65,7 +69,11 @@ if "%NEED_PATCH%"=="0" (
     git -C "%SDK%" apply "!FILE!" || (echo Patch %%P failed to apply & exit /b 1)
     echo %%P applied
   )
-  >"%MARKER%" echo %PATCHES%
+  for %%F in ("%~dp0sdk-patches\*.patch") do (
+    git -C "%SDK%" apply "%%~fF" || (echo Patch %%~nxF failed to apply & exit /b 1)
+    echo %%~nxF applied
+  )
+  >"%MARKER%" echo %PATCH_SET%
 )
 
 rem Symbolic links in the SDK's submodules (libmspack) come out as text stubs on Windows.

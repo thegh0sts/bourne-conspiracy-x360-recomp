@@ -27,7 +27,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
@@ -36,8 +36,9 @@ RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
 RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
 # Render resolution: the size the game actually draws at (the runtime's --resolution_scale
 # multiplies the Xbox 360's 1280x720). Shown as resolutions rather than 1x/2x/3x.
-# Scaling is expensive in this runtime: on an RTX 4080 Super, one heavy street scene ran
-# about 48 FPS at 1x, about 20 at 2x and under 10 at 3x, with the GPU near full load.
+# Scaling was expensive in this runtime: on an RTX 4080 Super, one heavy street scene ran
+# about 48 FPS at 1x, about 20 at 2x and under 10 at 3x, with the GPU near full load. Most of
+# that was EDRAM copies; the ROV graphics path (RENDER_PATHS below) avoids them.
 SCALES = ["1280×720 (original)", "2560×1440 (demanding)", "3840×2160 (very demanding)"]
 SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 2, SCALES[2]: 3}
 OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
@@ -47,6 +48,16 @@ OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
 # ignores the setting and keeps bilinear. They also treat the game's menus and HUD as part of
 # the picture (the game draws them into the same image), so text gets softer: bilinear stays
 # the default for that reason.
+# How the runtime imitates the Xbox 360's 10 MB of on-chip framebuffer memory (EDRAM),
+# --render_target_path_d3d12. "rtv" (the runtime's default on NVIDIA/AMD) gives each image the
+# game draws its own render target and copies pixels between them whenever the game reuses a
+# piece of EDRAM for another image; Bourne does that ~1,800 times a frame. A PIX capture of the
+# first street (RTX 4080 Super) put those copies at 12 ms of a 22.5 ms frame at 1x and 54 of 68
+# ms at 2x, since each has 4x the pixels. "rov" keeps EDRAM as one buffer and blends in the
+# pixel shaders (rasterizer-ordered views), so there are no copies: 2x went from the mid-teens
+# to the mid-40s FPS. Auto uses rov above the original resolution.
+RENDER_PATHS = ["Auto (ROV above 720p)", "Render targets (RTV)", "Shader EDRAM (ROV)"]
+RENDER_PATH_FLAG = {RENDER_PATHS[1]: "rtv", RENDER_PATHS[2]: "rov"}
 UPSCALE = ["Bilinear (original)", "FSR (sharper 3D, softer text)", "CAS (sharpen only)"]
 UPSCALE_FLAG = {UPSCALE[1]: "fsr", UPSCALE[2]: "cas"}
 AA = ["Off", "FXAA", "FXAA (strong)"]
@@ -286,6 +297,7 @@ DEFAULTS = {
     "render_scale": SCALES[0],
     "aa": "Off",
     "upscale": UPSCALE[0],
+    "render_path": RENDER_PATHS[0],
     "vsync": True,
     "original_pacing": False,
     "show_fps": False,
@@ -510,7 +522,11 @@ def game_args(s, screen=None):
         args += ["--window_width", str(ww), "--window_height", str(wh)]
     # Graphics-plugin settings are always passed, so a value left in tbc.toml (the runtime's
     # own config file, written by its F4 settings overlay) can't override the launcher.
-    args += ["--resolution_scale", str(SCALE_FACTOR.get(s["render_scale"], 1))]
+    scale = SCALE_FACTOR.get(s["render_scale"], 1)
+    args += ["--resolution_scale", str(scale)]
+    path = RENDER_PATH_FLAG.get(s.get("render_path"), "rov" if scale > 1 else None)
+    if path:
+        args += ["--render_target_path_d3d12", path]
     args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
     if s.get("upscale") in UPSCALE_FLAG:
         args += ["--present_effect", UPSCALE_FLAG[s["upscale"]]]
@@ -526,7 +542,11 @@ def game_args(s, screen=None):
         args.append("--show_fps=true")
     if s.get("kbm"):
         args += ["--mnk_mode=true", "--mnk_mouse=true",
-                 "--mnk_sensitivity", f"{int(s.get('mouse_sensitivity', 100)) / 100:.2f}"]
+                 "--mnk_sensitivity", f"{int(s.get('mouse_sensitivity', 100)) / 100:.2f}",
+                 # Mouse movement starts just past the game's stick dead zone (the same value
+                 # written to Xe-BourneInput.ini above), so slow aiming isn't swallowed by it.
+                 # Needs SDK patch 0004; a stock SDK ignores it.
+                 "--mnk_mouse_deadzone", f"{int(s['deadzone']) / 100:.2f}"]
         for name, keys in kbm_binds(s).items():
             if keys:  # an empty value would leave the SDK's own default for that button
                 args.append(f"--{name}={keys}")
@@ -565,11 +585,12 @@ class SettingsView(tk.Frame):
         self._check(box, 0, "fullscreen", "Fullscreen")
         self._combo(box, 1, "resolution", "Output resolution", RESOLUTIONS)
         self._combo(box, 2, "render_scale", "Render resolution (sharper, slower)", SCALES)
-        self._combo(box, 3, "upscale", "Upscaling filter", UPSCALE)
-        self._combo(box, 4, "aa", "Anti-aliasing", AA)
-        self._combo(box, 5, "fps", "Frame rate", FPS)
-        self._checks(box, 6, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
-        self._check(box, 7, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        self._combo(box, 3, "render_path", "Graphics path (ROV: faster above 720p)", RENDER_PATHS)
+        self._combo(box, 4, "upscale", "Upscaling filter", UPSCALE)
+        self._combo(box, 5, "aa", "Anti-aliasing", AA)
+        self._combo(box, 6, "fps", "Frame rate", FPS)
+        self._checks(box, 7, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
+        self._check(box, 8, "original_pacing", "Original Xbox 360 frame pacing (slower)")
 
         box = self._section("Graphics and camera")
         self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),

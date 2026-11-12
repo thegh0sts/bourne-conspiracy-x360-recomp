@@ -1,0 +1,62 @@
+ReXGlue input: mouse-to-stick dead-zone compensation and response curve.
+
+The keyboard-and-mouse driver turns each poll's mouse movement into right-stick deflection,
+mouse counts x mnk_sensitivity x 200. Games ignore deflection inside their stick dead zone
+(The Bourne Conspiracy: 25% by default), so slow, small movements never turned the camera and
+aiming felt heavy, whatever the sensitivity.
+
+Two settings, both off by default (stock behaviour):
+- mnk_mouse_deadzone (0-0.9): any mouse movement starts at this deflection, then grows with
+  the movement to full. Set it to the game's dead zone.
+- mnk_mouse_curve (0.2-3, 1 = linear): response exponent past the dead zone.
+Only the mouse's share of the stick changes; keys bound to the right stick and controllers
+are untouched.
+
+Idea: WetRecomp (nikolaygorb), which goes further with a native mouse look in its game.
+
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3d2c378..8033b09 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -29,6 +29,14 @@ REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
+                     "from the keybind_rstick_* keys only");
+ REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
+     .range(0.01, 10.0);
++REXCVAR_DEFINE_DOUBLE(mnk_mouse_deadzone, 0.0, "Input",
++                      "Stick deflection any mouse movement starts at (0-0.9): set it to the "
++                      "game's stick dead zone so small movements still turn the camera")
++    .range(0.0, 0.9);
++REXCVAR_DEFINE_DOUBLE(mnk_mouse_curve, 1.0, "Input",
++                      "Mouse response exponent past the dead zone: 1 linear, below 1 faster "
++                      "small movements, above 1 finer small movements")
++    .range(0.2, 3.0);
+ 
+ REXCVAR_DEFINE_STRING(keybind_a, "Semicolon,Space", "Input/Keybinds/Controller", "A button");
+ REXCVAR_DEFINE_STRING(keybind_b, "Quote,Backspace", "Input/Keybinds/Controller", "B button");
+@@ -510,8 +518,24 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+     double sensitivity = REXCVAR_GET(mnk_sensitivity);
+     constexpr double kBaseScale = 200.0;
+-    rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
+-    ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
++    double mx = double(mouse_dx_) * sensitivity * kBaseScale;
++    double my = double(-mouse_dy_) * sensitivity * kBaseScale;
++    // Games ignore stick deflection inside their dead zone, so slow mouse movements
++    // (a few counts per poll) never turned the camera at all. Past mnk_mouse_deadzone,
++    // the deflection grows with the movement (shaped by mnk_mouse_curve) up to full.
++    const double deadzone = REXCVAR_GET(mnk_mouse_deadzone);
++    const double curve = REXCVAR_GET(mnk_mouse_curve);
++    const double magnitude = std::sqrt(mx * mx + my * my);
++    if (magnitude > 0.0 && (deadzone > 0.0 || curve != 1.0)) {
++      constexpr double kFull = double(INT16_MAX);
++      const double t = std::min(magnitude / kFull, 1.0);
++      const double shaped = deadzone + (1.0 - deadzone) * std::pow(t, curve);
++      const double scale = shaped * kFull / magnitude;
++      mx *= scale;
++      my *= scale;
++    }
++    rx += static_cast<int32_t>(mx);
++    ry += static_cast<int32_t>(my);
+   }
+   // Drained unconditionally: deltas keep accumulating in OnMouseMove while the
+   // mouse is off, and toggling it on would otherwise dump the whole backlog

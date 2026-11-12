@@ -18,6 +18,9 @@ set(TBC_SOURCES
     src/frame_pacing.cpp
     src/fps_overlay.cpp
     src/crash_win.cpp
+    src/gpu_wait_hook.cpp
+    src/display_refresh.cpp
+    src/debug_tools.cpp
 )
 
 if(WIN32)

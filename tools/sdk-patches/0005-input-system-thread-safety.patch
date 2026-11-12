@@ -1,0 +1,84 @@
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 0c27eed..e09b712 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -14,6 +14,7 @@
+ #include <atomic>
+ #include <bitset>
+ #include <memory>
++#include <mutex>
+ #include <utility>
+ #include <vector>
+ 
+@@ -88,6 +89,11 @@ class InputSystem : public system::IInputSystem {
+   std::unique_ptr<DeviceAssignment> assignment_;
+   ActiveDeviceTracker active_devices_;
+ 
++  // Guest code calls XamInput* from several threads, and the overlay polls too; every entry
++  // point re-enumerates devices_ / device_owners_. Unguarded, two threads rebuilding the lists
++  // at once corrupt the heap (the likely cause of a Quantum of Solace crash: 0xC0000374 freeing a DeviceInfo
++  // vector under XamInputSetState). Recursive: GetState calls GetStateForUI.
++  std::recursive_mutex mutex_;
+   // Ordered by ordinal. Ordinals are never recycled, so unplugging pad one
+   // does not renumber pad two.
+   std::vector<DeviceInfo> devices_;
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 40740ee..d896e77 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -62,6 +62,7 @@ X_STATUS InputSystem::Setup() {
+ }
+ 
+ void InputSystem::Shutdown() {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   // device_owners_ holds raw driver pointers.
+   devices_.clear();
+   device_owners_.clear();
+@@ -86,6 +87,7 @@ void InputSystem::SetActiveCallback(std::function<bool()> callback) {
+ }
+ 
+ void InputSystem::SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   assignment_ = std::move(assignment);
+   if (assignment_) {
+     assignment_->OnDevicesChanged(devices_);
+@@ -218,6 +220,7 @@ DeviceId InputSystem::ChooseDeviceForUser(uint32_t user_index) const {
+ 
+ X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
+                                       X_INPUT_CAPABILITIES* out_caps) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   SCOPE_profile_cpu_f("hid");
+   if (!out_caps || !assignment_) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+@@ -270,6 +273,7 @@ void InputSystem::UpdateConnectedUser(uint32_t user_index, bool connected) {
+ }
+ 
+ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   SCOPE_profile_cpu_f("hid");
+ 
+   // A dialog owns the controller.
+@@ -294,6 +298,7 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+ }
+ 
+ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, X_INPUT_STATE* out_state) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+@@ -416,6 +421,7 @@ X_INPUT_VIBRATION InputSystem::ModifyVibrationLevel(const X_INPUT_VIBRATION* vib
+ }
+ 
+ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_ || !vibration) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+@@ -461,6 +467,7 @@ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration
+ 
+ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+                                    X_INPUT_KEYSTROKE* out_keystroke) {
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
+   SCOPE_profile_cpu_f("hid");
+   if (!assignment_) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;

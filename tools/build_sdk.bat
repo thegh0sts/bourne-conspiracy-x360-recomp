@@ -18,7 +18,7 @@ rem 0003 is a Vulkan change, but it also carries header declarations that 0006 a
 set "PATCHES=0002 0003 0004 0006 0008 0009 0026 0029 0030"
 rem Our own SDK fixes (tools\sdk-patches\*.patch), applied after Skullburglar's. Change this tag
 rem when that folder changes, so an existing SDK checkout is patched again.
-set "OWN_PATCHES=own4"
+set "OWN_PATCHES=own5"
 set "PATCH_SET=%PATCHES% %OWN_PATCHES%"
 
 set "WORK=%~1"

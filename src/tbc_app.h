@@ -32,8 +32,15 @@ class TbcApp : public rex::ReXApp {
 
   void OnPostInitLogging() override { tbc::crash::Install(); }
 
-  // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
-  void OnPreSetup(rex::RuntimeConfig&) override { tbc::display::MatchDisplayRefreshRate(); }
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    // The runtime loads no graphics plugin unless --gpu_plugin names one, and then the game
+    // runs with a black window. gpu_preload.cpp already loads xenos by default; match it.
+    if (config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
+    }
+    // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
+    tbc::display::MatchDisplayRefreshRate();
+  }
 
   void OnPostSetup() override {
     if (REXCVAR_GET(show_fps)) {

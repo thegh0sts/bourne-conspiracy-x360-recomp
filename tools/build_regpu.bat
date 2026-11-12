@@ -16,7 +16,7 @@ rem   out\build\win-amd64-relwithdebinfo\tbc.exe --gpu_plugin=regpu ...
 setlocal EnableDelayedExpansion
 
 rem Pinned sources.
-set "REGPU_COMMIT=9171c2f7a0942f2fef963bcd6c69fe7e61054495"
+set "REGPU_COMMIT=7320e6a56eae64f42bdd7e4565b35317249ec050"
 set "FFX_TAG=v2.1.0"
 
 set "WORK=%~1"

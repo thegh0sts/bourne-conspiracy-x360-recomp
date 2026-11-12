@@ -1,8 +1,8 @@
 diff --git a/src/gpu/hlsl.cpp b/src/gpu/hlsl.cpp
-index a256b45..370c5c3 100644
+index b31e64e..e7c0512 100644
 --- a/src/gpu/hlsl.cpp
 +++ b/src/gpu/hlsl.cpp
-@@ -1112,6 +1112,19 @@ std::string Preamble()
+@@ -1294,6 +1294,19 @@ std::string Preamble()
  }
  } // namespace
  
@@ -22,7 +22,7 @@ index a256b45..370c5c3 100644
  // Read at first use (the renderer's root signature), not at load: a port may set it before Start.
  bool LeanFetch()
  {
-@@ -1356,7 +1369,10 @@ TranslatedShader TranslateShader(const Shader& shader)
+@@ -1538,7 +1551,10 @@ TranslatedShader TranslateShader(const Shader& shader)
               "        zc = r.pos.z * ((vte.x & 16u) ? vscale.z : 1.0) + ((vte.x & 32u) ? voffset.z : 0.0) * w;\n"
               "    // The polygon offset's constant part (vdepth.x, renderer.cpp PolygonOffsetDepth).\n"
               "    zc += vdepth.x * w;\n"
@@ -35,10 +35,10 @@ index a256b45..370c5c3 100644
      }
      else
 diff --git a/src/gpu/hlsl.h b/src/gpu/hlsl.h
-index e0b30c6..7e10ec3 100644
+index e5aed8b..7edaaef 100644
 --- a/src/gpu/hlsl.h
 +++ b/src/gpu/hlsl.h
-@@ -54,3 +54,7 @@ bool BakedVertexFetch();
+@@ -91,3 +91,7 @@ bool BakedVertexFetch();
  const char* HlslPreamble();
  // REGPU_LEAN_FETCH=1: lean 2D pixel fetches through a sampler table (root parameter 4, space1).
  bool LeanFetch();
@@ -47,10 +47,10 @@ index e0b30c6..7e10ec3 100644
 +bool PrecisePosition();
 +#define REGPU_PRECISE_POSITION_MARK "regpu: precise position"
 diff --git a/src/gpu/renderer.cpp b/src/gpu/renderer.cpp
-index 8d4a881..ce5d017 100644
+index 4b29896..e6c293f 100644
 --- a/src/gpu/renderer.cpp
 +++ b/src/gpu/renderer.cpp
-@@ -3365,8 +3365,9 @@ struct ShaderOptimizer
+@@ -3695,8 +3695,9 @@ struct ShaderOptimizer
              }
              const D3D_SHADER_MACRO vertexStage[] = { { "REGPU_VERTEX_STAGE", "1" }, { nullptr, nullptr } };
              ComPtr<ID3DBlob> code, errors;
@@ -60,8 +60,8 @@ index 8d4a881..ce5d017 100644
 +                    job.pixel ? "ps_5_1" : "vs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL1 | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES | strict, 0,
                      &code, &errors)))
                  continue; // the unoptimised build stays
-             // Written under a temporary name: a run that reads it never sees half a file.
-@@ -3513,8 +3514,10 @@ struct ShaderCompiler
+             WriteCacheFile(ShaderCachePath(job.key, true), code->GetBufferPointer(), code->GetBufferSize());
+@@ -3850,8 +3851,10 @@ struct ShaderCompiler
          // The translated source picks its sampling form per stage (see hlsl.cpp: a vertex
          // shader cannot sample with an implicit LOD).
          const D3D_SHADER_MACRO vertexStage[] = { { "REGPU_VERTEX_STAGE", "1" }, { nullptr, nullptr } };

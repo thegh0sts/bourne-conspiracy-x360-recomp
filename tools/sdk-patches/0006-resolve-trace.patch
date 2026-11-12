@@ -1,0 +1,276 @@
+diff --git a/include/rex/graphics/resolve_trace.h b/include/rex/graphics/resolve_trace.h
+new file mode 100644
+index 0000000..383a9c1
+--- /dev/null
++++ b/include/rex/graphics/resolve_trace.h
+@@ -0,0 +1,32 @@
++/**
++ * @file        graphics/resolve_trace.h
++ * @brief       --resolve_trace: log the resolves (EDRAM -> texture copies) of one frame,
++ *              and whether anything samples what they write. Development only.
++ */
++#pragma once
++
++#include <cstdint>
++
++namespace rex::graphics::resolve_trace {
++
++struct Resolve {
++  uint32_t width = 0, height = 0;  // in guest pixels, before the draw resolution scale
++  uint32_t scale_x = 1, scale_y = 1;
++  bool depth = false;          // copying the depth buffer (else a color render target)
++  uint32_t source_format = 0;  // xenos::ColorRenderTargetFormat / DepthRenderTargetFormat
++  uint32_t msaa_samples = 1;
++  uint32_t edram_base_tiles = 0;
++  bool copies = false;  // false: a clear only
++  uint32_t dest_start = 0, dest_length = 0;
++  uint32_t dest_format = 0;  // xenos::ColorFormat
++  int32_t dest_exp_bias = 0;
++  bool clears_color = false, clears_depth = false;
++};
++
++// All three run on the GPU command processor thread.
++void OnFrame();
++void OnResolve(const Resolve& resolve);
++// A texture binding at [start, start + length) of guest memory.
++void OnSample(uint32_t start, uint32_t length);
++
++}  // namespace rex::graphics::resolve_trace
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index da7ae1a..a09093c 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -25,6 +25,7 @@ set(REXGPU_XENOS_SOURCES
+     pipeline/render_target/cache.cpp
+     shared_memory.cpp
+     pipeline/texture/cache.cpp
++    pipeline/texture/resolve_trace.cpp
+     pipeline/shader/interpreter.cpp
+     pipeline/shader/translator.cpp
+     pipeline/shader/translator_disasm.cpp
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..b0c5d96 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -30,6 +30,7 @@
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/format/dxbc.h>
+ #include <rex/graphics/pipeline/shader/dxbc_translator.h>
++#include <rex/graphics/resolve_trace.h>
+ #include <rex/graphics/util/draw.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+@@ -1180,6 +1181,28 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+     return true;
+   }
+ 
++  {
++    resolve_trace::Resolve traced;
++    traced.width = resolve_info.coordinate_info.width_div_8 * 8;
++    traced.height = resolve_info.height_div_8 * 8;
++    traced.scale_x = draw_resolution_scale_x();
++    traced.scale_y = draw_resolution_scale_y();
++    traced.depth = resolve_info.IsCopyingDepth();
++    const draw_util::ResolveEdramInfo& edram =
++        traced.depth ? resolve_info.depth_edram_info : resolve_info.color_edram_info;
++    traced.source_format = edram.format;
++    traced.msaa_samples = 1u << uint32_t(edram.msaa_samples);
++    traced.edram_base_tiles = edram.base_tiles;
++    traced.copies = resolve_info.copy_dest_extent_length != 0;
++    traced.dest_start = resolve_info.copy_dest_extent_start;
++    traced.dest_length = resolve_info.copy_dest_extent_length;
++    traced.dest_format = uint32_t(resolve_info.copy_dest_info.copy_dest_format);
++    traced.dest_exp_bias = resolve_info.copy_dest_info.copy_dest_exp_bias;
++    traced.clears_color = resolve_info.IsClearingColor();
++    traced.clears_depth = resolve_info.IsClearingDepth();
++    resolve_trace::OnResolve(traced);
++  }
++
+   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+ 
+   // Copying.
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..8de0093 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -22,6 +22,7 @@
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/register_file.h>
++#include <rex/graphics/resolve_trace.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+@@ -316,6 +317,7 @@ void TextureCache::BeginFrame() {
+   // sure bindings are reset so a new attempt will surely be made if the texture
+   // is requested again.
+   ResetTextureBindings();
++  resolve_trace::OnFrame();
+ }
+ 
+ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled) {
+@@ -553,6 +555,9 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+       }
+       binding.texture_signed = nullptr;
+     }
++    if (binding.texture) {
++      resolve_trace::OnSample(binding.key.base_page << 12, binding.texture->GetGuestBaseSize());
++    }
+     if (load_unsigned_data) {
+       queue_pending_texture_load(binding.texture);
+     }
+diff --git a/src/graphics/pipeline/texture/resolve_trace.cpp b/src/graphics/pipeline/texture/resolve_trace.cpp
+new file mode 100644
+index 0000000..0cd51dc
+--- /dev/null
++++ b/src/graphics/pipeline/texture/resolve_trace.cpp
+@@ -0,0 +1,149 @@
++/**
++ * @file        graphics/pipeline/texture/resolve_trace.cpp
++ * @brief       --resolve_trace (see resolve_trace.h).
++ *
++ * Every --resolve_trace_interval frames, records each resolve of one frame and counts the
++ * texture bindings that overlap what it wrote, in that frame and the next. A resolve that
++ * nothing binds before another resolve overwrites the same memory, or before the frame after
++ * ends, did work nobody used. The summary is logged when the frame after ends.
++ */
++
++#include <algorithm>
++#include <string>
++#include <vector>
++
++#include <fmt/format.h>
++
++#include <rex/cvar.h>
++#include <rex/graphics/resolve_trace.h>
++#include <rex/graphics/xenos.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_BOOL(resolve_trace, false, "GPU",
++                    "Log each resolve of one frame every --resolve_trace_interval frames, with "
++                    "its size, formats and whether its result is sampled; development only");
++REXCVAR_DEFINE_INT32(resolve_trace_interval, 600, "GPU",
++                     "Frames between two --resolve_trace frames");
++
++namespace rex::graphics::resolve_trace {
++namespace {
++
++struct Record {
++  Resolve resolve;
++  uint32_t bound_same_frame = 0;
++  uint32_t bound_next_frame = 0;
++  int32_t overwritten_by = -1;  // index of a later resolve that rewrote the range unread
++  bool closed = false;          // rewritten: stop counting
++};
++
++uint64_t g_frame = 0;
++// 0: idle; 1: recording the traced frame; 2: the frame after (counting samples only).
++int g_phase = 0;
++uint64_t g_traced_frame = 0;
++std::vector<Record> g_records;
++
++bool Overlaps(const Resolve& r, uint32_t start, uint32_t length) {
++  return r.copies && r.dest_length && start < r.dest_start + r.dest_length &&
++         r.dest_start < start + length;
++}
++
++std::string FormatName(const Resolve& r) {
++  return r.depth ? xenos::GetDepthRenderTargetFormatName(
++                       xenos::DepthRenderTargetFormat(r.source_format))
++                 : xenos::GetColorRenderTargetFormatName(
++                       xenos::ColorRenderTargetFormat(r.source_format));
++}
++
++void Flush() {
++  uint32_t copies = 0, unread = 0;
++  uint64_t pixels = 0, unread_pixels = 0;
++  for (const Record& rec : g_records) {
++    const Resolve& r = rec.resolve;
++    if (!r.copies) continue;
++    ++copies;
++    const uint64_t px = uint64_t(r.width) * r.scale_x * r.height * r.scale_y;
++    pixels += px;
++    if (!rec.bound_same_frame && !rec.bound_next_frame) {
++      ++unread;
++      unread_pixels += px;
++    }
++  }
++  REXGPU_INFO(
++      "resolve_trace: frame {}: {} resolves, {} copies ({:.2f} Mpx written at scale), {} clear "
++      "only; {} copies ({:.2f} Mpx) never bound as a texture in this or the next frame",
++      g_traced_frame, g_records.size(), copies, pixels / 1e6, g_records.size() - copies, unread,
++      unread_pixels / 1e6);
++  for (size_t i = 0; i < g_records.size(); ++i) {
++    const Record& rec = g_records[i];
++    const Resolve& r = rec.resolve;
++    std::string what =
++        r.copies ? fmt::format("-> {:08X} +{} KB, dest fmt {} bias {}", r.dest_start,
++                               r.dest_length / 1024, r.dest_format, r.dest_exp_bias)
++                 : std::string("(no copy)");
++    std::string use;
++    if (r.copies) {
++      use = fmt::format("bound {} times this frame, {} next frame", rec.bound_same_frame,
++                        rec.bound_next_frame);
++      if (rec.overwritten_by >= 0) {
++        use += fmt::format(", rewritten unread by #{}", rec.overwritten_by);
++      }
++    }
++    REXGPU_INFO("resolve_trace: #{} {} {} {}x {}x{} (x{}) tile {} {}{}{} {}", i,
++                r.depth ? "depth" : "color", FormatName(r), r.msaa_samples, r.width, r.height,
++                r.scale_x, r.edram_base_tiles, what, r.clears_color ? " +clear color" : "",
++                r.clears_depth ? " +clear depth" : "", use);
++  }
++  g_records.clear();
++}
++
++}  // namespace
++
++void OnFrame() {
++  ++g_frame;
++  if (g_phase == 2) {
++    Flush();
++    g_phase = 0;
++  } else if (g_phase == 1) {
++    g_phase = 2;
++  }
++  if (g_phase == 0 && REXCVAR_GET(resolve_trace)) {
++    const int32_t interval = std::max<int32_t>(REXCVAR_GET(resolve_trace_interval), 3);
++    if (g_frame % uint64_t(interval) == 0) {
++      g_phase = 1;
++      g_traced_frame = g_frame;
++      g_records.clear();
++    }
++  }
++}
++
++void OnResolve(const Resolve& resolve) {
++  if (g_phase == 0) return;
++  const int32_t index = int32_t(g_records.size());
++  for (Record& rec : g_records) {
++    if (rec.closed || !Overlaps(rec.resolve, resolve.dest_start, resolve.dest_length) ||
++        !resolve.copies) {
++      continue;
++    }
++    rec.closed = true;
++    if (!rec.bound_same_frame && !rec.bound_next_frame && g_phase == 1) {
++      rec.overwritten_by = index;
++    }
++  }
++  if (g_phase == 1 && g_records.size() < 4096) {
++    g_records.push_back(Record{resolve});
++  }
++}
++
++void OnSample(uint32_t start, uint32_t length) {
++  if (g_phase == 0) return;
++  for (Record& rec : g_records) {
++    if (rec.closed || !Overlaps(rec.resolve, start, length)) continue;
++    if (g_phase == 1) {
++      ++rec.bound_same_frame;
++    } else {
++      ++rec.bound_next_frame;
++    }
++  }
++}
++
++}  // namespace rex::graphics::resolve_trace

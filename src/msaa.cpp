@@ -168,10 +168,11 @@ extern "C" REX_FUNC(sub_827B5B48) {
 // with --msaa=false shows that copy landing in the top-left quarter of the scene depth
 // texture and the scene's lighting dark there afterwards. With tiling the strips redraw the
 // depth from scratch after it; without, the damage stays. This skips the half-resolution copy
-// to confirm it is the cause (effects that use it, such as soft particles, may look off).
-REXCVAR_DEFINE_BOOL(msaa_skip_small_depth, false, "GPU",
-                    "With --msaa=false: skip the half-resolution depth copy (experiment for "
-                    "the box in the top-left corner)");
+// (confirmed: no box). Effects that read it, such as soft particles, may look off; set it
+// to false to bring the copy (and the box) back.
+REXCVAR_DEFINE_BOOL(msaa_skip_small_depth, true, "GPU",
+                    "With --msaa=false: skip the half-resolution depth copy, which otherwise "
+                    "leaves a dark box in the top-left corner");
 
 REX_EXTERN(__imp__sub_82A3F460);
 

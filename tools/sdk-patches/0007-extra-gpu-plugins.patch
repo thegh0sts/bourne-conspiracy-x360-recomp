@@ -1,0 +1,21 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c9dfc17..fdd7425 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -290,6 +290,16 @@ message(STATUS "  Tracy: ${REXGLUE_ENABLE_TRACY}")
+ message(STATUS "  Perf Counters: ${REXGLUE_ENABLE_PERF_COUNTERS}")
+ message(STATUS "===========================================")
+ 
++# Extra GPU plugins built in this tree, against the SDK's own targets (glslang, VMA, Vulkan
++# headers, rexruntime) and sources: each folder's CMakeLists.txt defines a rexgpu-<name> target
++# and installs it next to rexgpu-xenos. (tbc: Skullburglar's native renderer, native-plugin/.)
++set(REXGLUE_EXTRA_GPU_PLUGINS "" CACHE STRING
++    "Folders (;-separated) with a CMakeLists.txt that builds another GPU plugin")
++foreach(_rexglue_plugin_dir IN LISTS REXGLUE_EXTRA_GPU_PLUGINS)
++    get_filename_component(_rexglue_plugin_name "${_rexglue_plugin_dir}" NAME)
++    add_subdirectory("${_rexglue_plugin_dir}" "${CMAKE_BINARY_DIR}/extra-gpu-plugins/${_rexglue_plugin_name}")
++endforeach()
++
+ include(cmake/rexglue_export_targets.cmake)
+ 
+ # SDK install/export rules (skipped when consumed as a subdirectory)

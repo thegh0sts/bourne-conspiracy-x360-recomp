@@ -7,6 +7,9 @@ rem Needs git and an internet connection. Takes a while: the SDK is a large buil
 rem
 rem   tools\build_sdk.bat [work folder]      (default C:\rexglue-src)
 rem
+rem With TBC_NATIVE=1 set (tools\build_native.bat does it), the SDK is also built with Vulkan
+rem and with Skullburglar's native renderer as a second GPU plugin (native-plugin\).
+rem
 rem Afterwards, point this project at the new SDK by reconfiguring with
 rem   -DCMAKE_PREFIX_PATH=<work folder>/rexglue-sdk/out/install/win-amd64
 setlocal EnableDelayedExpansion
@@ -15,10 +18,12 @@ set "SDK_TAG=v0.10.1"
 rem Skullburglar commit the patch list below was checked against.
 set "SKULL_COMMIT=67aacb28670077e839f84931dee9b162526bbdb2"
 rem 0003 is a Vulkan change, but it also carries header declarations that 0006 and 0008 need.
-set "PATCHES=0002 0003 0004 0006 0008 0009 0026 0029 0030"
+rem 0024 (VK_EXT_external_memory_host) and 0027 (prefer a discrete GPU) are for the native
+rem renderer plugin (tools\build_native.bat); they change nothing in a D3D12-only build.
+set "PATCHES=0002 0003 0004 0006 0008 0009 0024 0026 0027 0029 0030"
 rem Our own SDK fixes (tools\sdk-patches\*.patch), applied after Skullburglar's. Change this tag
 rem when that folder changes, so an existing SDK checkout is patched again.
-set "OWN_PATCHES=own6"
+set "OWN_PATCHES=own7"
 set "PATCH_SET=%PATCHES% %OWN_PATCHES%"
 
 set "WORK=%~1"
@@ -82,8 +87,20 @@ set "FIX=%FIX:\=/%"
 git -C "%SDK%" submodule foreach --quiet --recursive "sh '%FIX%'" || exit /b 1
 
 echo === 4/4 Building and installing (RelWithDebInfo and Release)
+rem Both settings are always passed: CMake keeps cached values, so a build without TBC_NATIVE
+rem turns the native plugin (and Vulkan) off again.
+set "NATIVE_DIR=%~dp0..\native-plugin"
+for %%I in ("%NATIVE_DIR%") do set "NATIVE_DIR=%%~fI"
+set "NATIVE_DIR=%NATIVE_DIR:\=/%"
+set "SKULL_FWD=%SKULL:\=/%"
+if "%TBC_NATIVE%"=="1" (
+  echo Including the native renderer plugin from %NATIVE_DIR%
+  set "EXTRA=-DREXGLUE_USE_VULKAN=ON -DREXGLUE_EXTRA_GPU_PLUGINS=%NATIVE_DIR% -DTBC_SKULL_DIR=%SKULL_FWD%"
+) else (
+  set "EXTRA=-DREXGLUE_USE_VULKAN=OFF -DREXGLUE_EXTRA_GPU_PLUGINS="
+)
 pushd "%SDK%"
-cmake --preset win-amd64 -DREXGLUE_ENABLE_FIDELITYFX=ON || (popd & exit /b 1)
+cmake --preset win-amd64 -DREXGLUE_ENABLE_FIDELITYFX=ON !EXTRA! || (popd & exit /b 1)
 cmake --build out\build\win-amd64 --config RelWithDebInfo --target install --parallel || (popd & exit /b 1)
 cmake --build out\build\win-amd64 --config Release --target install --parallel || (popd & exit /b 1)
 popd

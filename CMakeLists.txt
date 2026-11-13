@@ -53,10 +53,13 @@ endif()
 
 # Skullburglar's native renderer plugin (--gpu_plugin=native), when the SDK was built with it
 # (tools/build_native.bat). Checked when the build runs, so building the plugin later needs no
-# reconfigure.
+# reconfigure. The copy script is written into the build folder, so the installer's copy of the
+# project (src and CMakeLists only, no native-plugin/) builds too.
+file(WRITE ${CMAKE_BINARY_DIR}/copy_if_exists.cmake
+    "if(EXISTS \"\${SRC}\")\n  file(COPY \"\${SRC}\" DESTINATION \"\${DST}\")\nendif()\n")
 add_custom_command(TARGET tbc POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         "-DSRC=${TBC_SDK_BIN}/rexgpu-native$<$<CONFIG:RelWithDebInfo>:rd>$<$<CONFIG:Debug>:d>.dll"
         "-DDST=$<TARGET_FILE_DIR:tbc>"
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/native-plugin/copy_if_exists.cmake
+        -P ${CMAKE_BINARY_DIR}/copy_if_exists.cmake
     VERBATIM)

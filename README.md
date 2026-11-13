@@ -57,6 +57,8 @@ The original game runs at 30 FPS: it asks Direct3D to wait two screen refreshes 
 
 The launcher also turns off the graphics plugin's imitation of the Xbox 360 vblank wait (`--vsync=false`), which slept on every GPU wait and cost a lot of frame rate, and lets `tbc.exe`'s own frame limiter (`src/frame_pacing.cpp`) hold the chosen rate instead. This approach comes from the Table Tennis PC port. Together with an FPS counter that no longer forces extra repaints, it took the busiest scene from about 48 to the mid-50s FPS at 1x.
 
+**Native renderer (0.2.3, the default).** The launcher's **Renderer** setting picks between Skullburglar's native Vulkan renderer and ReXGlue's Xenos (Direct3D 12). Native draws the game's graphics as ordinary Vulkan rendering instead of imitating the Xbox 360's EDRAM, and in testing it held the 62 FPS cap at 720p, 1080p, 1440p and 4K render resolution on an RTX 4080 Super, where Xenos dropped to the 40s at 1440p and about 22 at 4K (figures below). It needs the game's 2x MSAA off, which is now the default (`src/msaa.cpp`). The FPS figures and caveats below were measured with Xenos.
+
 **60 FPS is experimental.** Keep these caveats in mind:
 
 - The game was only ever tuned and tested at 30 FPS. Gameplay speed, physics, animation and cutscene timing at 60 FPS have only been lightly tested, through the first level. If anything looks too fast, too slow or broken, switch back to 30.
@@ -105,7 +107,9 @@ git config core.hooksPath .githooks
 ## Known issues
 
 - Function `0x825EADC8` is reported as 1.27 MB, which suggests several functions merged into one. Not yet investigated.
-- 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
+- With Xenos, 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
+- The native renderer is new and hasn't been played through yet. If something looks wrong, switch **Renderer** to Xenos and report it.
+- With the native renderer in fullscreen, the FPS counter isn't shown.
 - Keyboard and mouse is controller emulation: the mouse drives the right stick, so the camera can feel heavier than a PC game. Use a low stick dead zone and the camera turn speed option.
 
 ## Credits

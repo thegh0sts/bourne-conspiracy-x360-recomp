@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.3
+## 0.2.3 (2026-11-13)
 
 A new default renderer that keeps high render resolutions at full speed, the console's 2x anti-aliasing turned off to make that possible, and keyboard prompts.
 

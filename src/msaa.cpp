@@ -46,7 +46,7 @@ REXCVAR_DEFINE_BOOL(msaa_inner_as_tiled, false, "GPU",
                     "tiling on; experiment for the half-resolution box in the top-left corner");
 
 REXCVAR_DEFINE_INT32(msaa_off_color_base, 1024, "GPU",
-                     "With --msaa=false: EDRAM tile where the scene colour (DefaultBB) is placed; "
+                     "With --msaa=false: EDRAM tile where the scene colour (DefaultColor) is placed; "
                      "0 keeps the game's own (720, under the half-resolution depth)");
 
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
@@ -134,8 +134,9 @@ extern "C" REX_FUNC(sub_82E537D0) {
 }
 
 // The engine's EDRAM placement table (sub_827B5B48: name, size in tiles -> base tile), used
-// when its render targets are created. Depth starts at tile 0 and the scene colour,
-// "DefaultBB", falls to the default: right after a 1280x720 depth, tile 720 (0x2D0). With
+// when its render targets are created. Depth starts at tile 0 and the scene colour
+// ("DefaultColor", "DefaultColorRaw", and the back buffer "DefaultBB") sits right after a
+// 1280x720 depth, tile 720 (0x2D0). With
 // tiling the console's runtime puts the strip's colour at 0x400 instead, so the
 // half-resolution effects can use 720 as scratch: "AuxDepth" is not in the table either and
 // lands on 720 too. Without tiling the half-resolution depth pre-pass draws straight over the
@@ -152,7 +153,7 @@ extern "C" REX_FUNC(sub_827B5B48) {
   const std::string name = ReadWide(base, name_addr);
   const uint32_t game = ctx.r3.u32;
   const int32_t moved = REXCVAR_GET(msaa_off_color_base);
-  if (off && moved > 0 && name == "DefaultBB" && uint32_t(moved) + tiles <= 2048) {
+  if (off && moved > 0 && (name == "DefaultColor" || name == "DefaultColorRaw" || name == "DefaultBB") && uint32_t(moved) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(moved);
   }
   if (log || ctx.r3.u32 != game) {

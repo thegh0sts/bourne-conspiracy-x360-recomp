@@ -15,7 +15,7 @@ Run the new exe, then click **Reinstall from a disc image...** on the launcher's
 - **The log starts with the version**, build time and launch options, so a log someone sends shows which build it came from.
 
 ### Changes
-- Graphics path and anti-aliasing (FXAA) are Xenos settings and are now labelled that way. The upscaling filter (FSR / CAS) works with both renderers: it scales the finished picture to your screen, so it matters when the render resolution is below the output resolution.
+- Graphics path and anti-aliasing (FXAA) are Xenos settings and are now labelled that way. The upscaling filter (FSR / CAS) works with both renderers: it scales the finished picture to your screen, so it matters when the render resolution is below the output resolution. **FSR is now the default** for new settings (bilinear looked very pixelated next to it at 720p on a 4K screen); existing settings keep their choice.
 - The installer installs third-party licences in a `licenses` folder next to the game.
 
 ### Fixes

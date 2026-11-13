@@ -57,8 +57,9 @@ OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
 # Output filter, applied by the runtime to the finished picture (--present_effect). FSR and
 # CAS exist only in an SDK built with AMD FidelityFX (tools/build_sdk.bat); the stock SDK
 # ignores the setting and keeps bilinear. They also treat the game's menus and HUD as part of
-# the picture (the game draws them into the same image), so text gets softer: bilinear stays
-# the default for that reason.
+# the picture (the game draws them into the same image), so text gets softer. FSR is still the
+# default: with the native renderer at the original render resolution on a 1440p or 4K screen,
+# bilinear looked very pixelated next to it.
 # How the runtime imitates the Xbox 360's 10 MB of on-chip framebuffer memory (EDRAM),
 # --render_target_path_d3d12. "rtv" (the runtime's default on NVIDIA/AMD) gives each image the
 # game draws its own render target and copies pixels between them whenever the game reuses a
@@ -327,7 +328,7 @@ DEFAULTS = {
     "resolution": "Original (720p)",
     "render_scale": SCALES[0],
     "aa": "Off",
-    "upscale": UPSCALE[0],
+    "upscale": UPSCALE[1],
     "render_path": RENDER_PATHS[0],
     "vsync": True,
     "original_pacing": False,

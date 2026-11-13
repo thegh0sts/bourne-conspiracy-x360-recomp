@@ -27,7 +27,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
@@ -104,15 +104,15 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
     ("keybind_lstick_right", "D", "Move right"),
     ("keybind_right_trigger", "LMB", "Fire"),
     ("keybind_left_trigger", "RMB", "Aim / targeting"),
-    ("keybind_a", "Space", "Action / block"),
-    ("keybind_b", "F", "Takedown / skip cutscene"),
+    ("keybind_a", "Space,Return", "Action / block; accept in menus"),
+    ("keybind_b", "F,Backspace", "Takedown / skip cutscene; back in menus"),
     ("keybind_x", "E,R", "Light attack / reload"),
     ("keybind_y", "Q", "Heavy attack / Bourne Instinct"),
     ("keybind_right_shoulder", "Shift", "Sprint"),
     ("keybind_left_shoulder", "G", "Weapon"),
     ("keybind_lstick_press", "Control", "Crouch"),
     ("keybind_rstick_press", "MMB", "Recentre camera / switch shoulder"),
-    ("keybind_start", "Escape,Return", "Pause"),
+    ("keybind_start", "Escape", "Pause"),
     ("keybind_back", "Tab", "Back"),
     ("keybind_rstick_up", "Up", "Camera up (as well as the mouse)"),
     ("keybind_rstick_down", "Down", "Camera down"),
@@ -124,6 +124,13 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
     ("keybind_dpad_right", "4", "D-pad right"),
 ]
 KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
+# The layout is fixed: tbc.exe uses these binds as they are and never changes them while the
+# game runs, so every key can be rebound. The prompts show the key bound to each button, and in
+# menus Enter / Backspace when A / B have them (keyboard_prompts.cpp). QTEs show the Xbox
+# button in the 3D scene, so the editor names the button beside the face buttons' keys.
+KBM_NOTES = {
+    "keybind_a": "QTE: A", "keybind_b": "QTE: B", "keybind_x": "QTE: X", "keybind_y": "QTE: Y",
+}
 # Keys the runtime keeps for itself: debug overlay, console, settings, achievements.
 RESERVED_KEYS = {"F3": "the debug overlay", "Backtick": "the console", "F4": "the settings overlay",
                  "F7": "the achievements overlay"}
@@ -167,6 +174,14 @@ def kbm_binds(s):
     binds = dict(KBM_DEFAULT)
     saved = s.get("kbm_binds") or {}
     binds.update({k: v for k, v in saved.items() if k in KBM_DEFAULT and isinstance(v, str)})
+    # From the earlier layout, where Enter was on Start (and moved to A by tbc.exe in menus):
+    # Enter now goes on A and Backspace on B, unless the player put them elsewhere.
+    if binds.get("keybind_start") == "Escape,Return":
+        binds["keybind_start"] = "Escape"
+    for name, key in (("keybind_a", "Return"), ("keybind_b", "Backspace")):
+        keys = [k for k in binds[name].split(",") if k]
+        if len(keys) < 2 and not any(key in v.split(",") for v in binds.values()):
+            binds[name] = ",".join(keys + [key])
     return binds
 
 
@@ -186,19 +201,23 @@ class KeyBindDialog(tk.Toplevel):
         self.buttons = {}
         self.waiting = None  # (setting, slot) while waiting for a key
         self.note = tk.StringVar(value="Click a key, then press the new key or click the new mouse button. "
-                                       "The mouse always moves the camera.")
+                                       "The mouse always moves the camera. QTEs show Xbox buttons: the keys of "
+                                       "A, B, X and Y answer them.")
         tk.Label(self, textvariable=self.note, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=520,
                  justify="left").pack(anchor="w", padx=16, pady=(12, 6))
         grid = tk.Frame(self, bg=PANEL, padx=12, pady=8)
         grid.pack(fill="both", expand=True, padx=16)
         for row, (name, _, what) in enumerate(KBM_BINDS):
-            tk.Label(grid, text=what, font=("Segoe UI", 9), fg=FG, bg=PANEL, anchor="w").grid(
-                row=row, column=0, sticky="w", padx=(0, 12))
+            tk.Label(grid, text=what, font=("Segoe UI", 9), fg=FG, bg=PANEL,
+                     anchor="w").grid(row=row, column=0, sticky="w", padx=(0, 12))
             for slot in (0, 1):
                 b = tk.Button(grid, width=14, font=("Segoe UI", 9), bd=0, relief="flat",
                               command=lambda n=name, sl=slot: self.start(n, sl))
                 b.grid(row=row, column=1 + slot, padx=2, pady=1)
                 self.buttons[(name, slot)] = b
+            if name in KBM_NOTES:
+                tk.Label(grid, text=KBM_NOTES[name], font=("Segoe UI", 8), fg=DIM, bg=PANEL,
+                         anchor="w").grid(row=row, column=3, sticky="w", padx=(6, 0))
         foot = tk.Frame(self, bg=BG)
         foot.pack(fill="x", padx=16, pady=12)
         tk.Button(foot, text="Save", width=10, command=self.save, bg=ACCENT, fg="white", bd=0,
@@ -320,6 +339,7 @@ DEFAULTS = {
     "fov": 100,
     "deadzone": 25,
     "kbm": False,
+    "mouse_attacks": True,
     "mouse_sensitivity": 100,
     "turn_speed": 100,
     "close_on_play": True,
@@ -398,6 +418,36 @@ def _edit_look_scales(body, factor, linear):
     return "\r\n".join(lines)
 
 
+# Hand-to-hand fights on the mouse buttons. Bourne's own input config (Xe-BourneInput.ini,
+# [Engine.PlayerInput]; the last binding of a button wins) has X = "MeleeAttackLight | ...",
+# Y = "... MeleeAttackHeavy ...", RT = fire, LT = aim. The game only carries out the melee
+# commands in a fight and the gun ones with a gun out, so adding the attacks to the triggers
+# (left / right mouse) makes the mouse buttons attack in fights and shoot outside them. The
+# attacks also come off X and Y, so in fights only the mouse buttons attack. This is the
+# game's input config, so with the option on a controller's X / Y don't attack either: its
+# triggers do.
+FIGHT_MOUSE_EDITS = [
+    ('Bindings=(Name="XboxTypeS_RightTrigger",Command="StartFire | OnRelease StopFire | Axis aBaseZ Speed=+1.0")',
+     'Bindings=(Name="XboxTypeS_RightTrigger",Command="StartFire | OnRelease StopFire | MeleeAttackLight | '
+     'OnRelease MeleeReleaseLight | Axis aBaseZ Speed=+1.0")'),
+    ('Bindings=(Name="XboxTypeS_LeftTrigger",Command="EnterWallworkShooting |OnRelease ExitWallworkShooting | Axis aBaseZ Speed=-1.0")',
+     'Bindings=(Name="XboxTypeS_LeftTrigger",Command="EnterWallworkShooting |OnRelease ExitWallworkShooting | '
+     'MeleeAttackHeavy | OnRelease MeleeReleaseHeavy | Axis aBaseZ Speed=-1.0")'),
+    # ...and off X and Y, so in fights E / Q (X / Y) no longer attack; outside fights they keep
+    # reload (X) and Bourne Instinct (Y).
+    ('Bindings=(Name="XboxTypeS_X",Command="MeleeAttackLight | OnRelease MeleeReleaseLight | ReloadWeapon")',
+     'Bindings=(Name="XboxTypeS_X",Command="ReloadWeapon")'),
+    ('Bindings=(Name="XboxTypeS_Y",Command="StartAwareness | OnRelease StopAwareness | MeleeAttackHeavy | OnRelease MeleeReleaseHeavy")',
+     'Bindings=(Name="XboxTypeS_Y",Command="StartAwareness | OnRelease StopAwareness")'),
+]
+
+
+def _edit_fight_mouse(body):
+    for old, new in FIGHT_MOUSE_EDITS:
+        body = body.replace(old, new, 1)
+    return body
+
+
 def apply_game_config(game: Path, s) -> str:
     """Rewrite Coalesced.ini from the original with settings applied. Returns a short summary."""
     conf = game / cfg.CONFIG_REL
@@ -429,13 +479,14 @@ def apply_game_config(game: Path, s) -> str:
     turn = int(s.get("turn_speed", 100))
     linear_aim = bool(s.get("kbm"))  # the mouse gets the full turn speed while aiming
     look_edit = turn != 100 or linear_aim
+    fight_mouse = bool(s.get("kbm")) and bool(s.get("mouse_attacks", True))
 
     if turn != 100:
         # The camera's top yaw rate (100 in the original): a cap on how fast it can turn,
         # whatever the mode's turn rate, so it scales with the turn speed too.
         edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
 
-    if not edits and fov == 100 and not look_edit:
+    if not edits and fov == 100 and not look_edit and not fight_mouse:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
@@ -458,9 +509,13 @@ def apply_game_config(game: Path, s) -> str:
         i = cfg.find_file(files, "Xe-BourneGame.ini")
         name, body = files[i]
         files[i] = (name, _edit_look_scales(body, turn / 100, linear_aim))
+    if fight_mouse:
+        i = cfg.find_file(files, "Xe-BourneInput.ini")
+        name, body = files[i]
+        files[i] = (name, _edit_fight_mouse(body))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
-    return f"{len(edits) + (fov != 100) + look_edit} config change(s)"
+    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse} config change(s)"
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -557,6 +612,10 @@ def game_args(s, screen=None):
                  # written to Xe-BourneInput.ini above), so slow aiming isn't swallowed by it.
                  # Needs SDK patch 0004; a stock SDK ignores it.
                  "--mnk_mouse_deadzone", f"{int(s['deadzone']) / 100:.2f}"]
+        if s.get("mouse_attacks", True):
+            # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp),
+            # to match the trigger bindings written to Xe-BourneInput.ini above.
+            args.append("--keyboard_mouse_attacks=true")
         for name, keys in kbm_binds(s).items():
             if keys:  # an empty value would leave the SDK's own default for that button
                 args.append(f"--{name}={keys}")
@@ -631,6 +690,7 @@ class SettingsView(tk.Frame):
         self._link(line, "Edit keys...", self.edit_keys).pack(side="left", padx=14)
         self._slider(box, 2, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 1000, 10)
         self._slider(box, 3, "turn_speed", "Camera turn speed (%)", 50, 300, 10)
+        self._check(box, 4, "mouse_attacks", "Fights: left / right mouse = light / heavy attack")
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)

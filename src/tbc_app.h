@@ -14,6 +14,11 @@
 #include "display_refresh.h"
 #include "fps_overlay.h"
 
+namespace tbc {
+// The log's first lines: the release, the build time and the launch options (version_log.cpp).
+void LogVersion();
+}  // namespace tbc
+
 // --show_fps=true shows the game's frame rate in a small window at the top-left corner.
 // It's a separate native window, not an ImGui overlay: the SDK's ImGui overlays cost
 // about 20% of the frame rate (see fps_overlay.cpp). F3 still opens the SDK's full
@@ -30,16 +35,20 @@ class TbcApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  void OnPostInitLogging() override { tbc::crash::Install(); }
+  void OnPostInitLogging() override {
+    tbc::crash::Install();
+    tbc::LogVersion();
+  }
 
-  // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
-  // Without --gpu_plugin, use Skullburglar's native Vulkan renderer (native-plugin/); the
-  // runtime itself has no default and would start without graphics.
   void OnPreSetup(rex::RuntimeConfig& config) override {
-    tbc::display::MatchDisplayRefreshRate();
+    // The runtime loads no graphics plugin unless --gpu_plugin names one, and then the game
+    // runs with a black window. Default to Skullburglar's native Vulkan renderer
+    // (native-plugin/), as gpu_preload.cpp does.
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "native";
     }
+    // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
+    tbc::display::MatchDisplayRefreshRate();
   }
 
   void OnPostSetup() override {

@@ -1,13 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.2.3
+
+A new default renderer that keeps high render resolutions at full speed, the console's 2x anti-aliasing turned off to make that possible, and keyboard prompts.
+
+### Updating from 0.2.2
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game has to be rebuilt, and the installer replaces its bundled SDK (now `tbc3`, which includes the native renderer) on that run. Your settings and key binds are kept.
 
 ### New
-- **Native renderer, now the default.** Skullburglar's Vulkan renderer (pre-1.0, built by `native-plugin/` with `tools\build_native.bat`) draws the game as ordinary Vulkan rendering instead of emulating the Xbox 360's EDRAM. It renders the whole game correctly at 1x, 2x and 3x. Choose **Renderer** under Display in the launcher; ReXGlue's **Xenos** (Direct3D 12) stays as the second option, and the launcher falls back to it if the native plugin isn't installed. The render resolution reaches the native renderer through `BOTS_GFX_RENDER_SCALE`; graphics path, upscaling and anti-aliasing apply to Xenos only.
-- **The game's 2x MSAA is off by default** (`--msaa`, `src/msaa.cpp`). The console draws the 720p HDR scene with 2x MSAA in two strips (predicated tiling), which the native renderer can't draw and which costs Xenos frame rate at higher render resolutions. Running without it needed three fixes to the engine's untested non-tiled path: the shadow mask's half-resolution depth is moved off the scene depth in EDRAM (it caused a dark box in the top-left quarter), the scene renderer's second scene-depth resolve is skipped (it copied the shadow mask's depth instead: stripes, a split down the middle, and a resolve error every frame on Xenos), and no extra depth clear is made at the scene start. `--msaa=true` brings the console's anti-aliasing back.
+- **Native renderer (default).** Skullburglar's Vulkan renderer draws the game's graphics as ordinary Vulkan rendering instead of imitating the Xbox 360's on-chip framebuffer (EDRAM), the main cost at higher render resolutions. In testing (streets, an alley, interiors, a fight) it held the 62 FPS cap at 1x, 2x and 3x render resolution. Choose it under **Display > Renderer**. ReXGlue's renderer stays available as **Xenos (Direct3D 12)**; if the native renderer isn't installed, the launcher says so and starts with Xenos.
+- **The console's 2x anti-aliasing is off by default.** The Xbox 360 draws the 3D scene with 2x MSAA in two strips (predicated tiling). The native renderer can't draw that, and it also cost Xenos frame rate (frame drops at 2x with it on). The game now draws the scene in one pass. That path was never finished in the engine, so three of its bugs are fixed here: a dark box in the top-left quarter of the screen, black stripes and a split down the middle of the picture, and an over-dark image on Xenos. `--msaa=true` brings the anti-aliasing back (Xenos only).
+- **Keyboard prompts (experimental).** With keyboard and mouse on, button prompts show your keys (for example `[F]`) instead of Xbox buttons, and menus show Enter / Backspace. The default layout now puts Enter on A (accept) and Backspace on B (back), with Esc for pause.
+- **Mouse buttons attack in fights** (keyboard and mouse, on by default): left and right mouse are light and heavy attacks in hand-to-hand fights and fire / aim outside them.
+- **The log starts with the version**, build time and launch options, so a log someone sends shows which build it came from.
+
+### Changes
+- Graphics path, upscaling filter (FSR / CAS) and anti-aliasing (FXAA) are Xenos settings and are now labelled that way; the native renderer scales the picture itself. FSR for the native renderer is planned.
+- The installer installs third-party licences in a `licenses` folder next to the game.
+
+### Fixes
+- SDK patch 0005: the input system is locked against two threads reading controllers at once, which could corrupt memory and crash (seen in 007: Quantum of Solace).
+- Running `tbc.exe` without `--gpu_plugin` no longer gives a black window: it uses the native renderer.
+
+### Known issues
+- Keyboard prompts are still being tested: some keys may show wrong, and quick-time events show Xbox buttons (press the key bound to that button).
+- With the native renderer the launcher's upscaling and FXAA settings have no effect.
+- The first time an area is shown, some objects can appear black for a moment while their shaders compile.
+
+### For developers
+- `native-plugin/` builds the native renderer from Skullburglar's pre-1.0 sources as `rexgpu-native`; `tools\build_native.bat` builds the SDK with it. Build the installer's SDK with that script, or players only get Xenos.
+- New diagnostics: `--msaa_edram_log` (EDRAM placement and resolves), `--resolve_trace` (SDK patch 0006), `--script_trace` (UnrealScript events), `BOTS_DRAW_TRACE` / `BOTS_DUMP_RESOLVES` (native renderer).
 
 ### Credits
-Skullburglar (BSD 3-Clause): the native renderer. Its licence is installed with the game (`licenses\`).
+[Skullburglar](https://github.com/nlwstein/skullburglar) (BSD 3-Clause): the native renderer. Its licence is installed with the game (`licenses\skullburglar-LICENSE.txt`).
 
 ## 0.2.2 (2026-11-12)
 

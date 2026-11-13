@@ -3,7 +3,9 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(tbc LANGUAGES CXX)
+# The release number. Shown in the log's first line (version_log.cpp); keep it the same as VERSION in
+# installer/tbc_launcher.py.
+project(tbc VERSION 0.2.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +23,12 @@ set(TBC_SOURCES
     src/gpu_wait_hook.cpp
     src/display_refresh.cpp
     src/debug_tools.cpp
+    src/prompt_trace.cpp
+    src/keyboard_prompts.cpp
+    src/input_trace.cpp
+    src/version_log.cpp
+    src/script_trace.cpp
+    src/msaa.cpp
 )
 
 if(WIN32)
@@ -30,6 +38,7 @@ else()
 endif()
 
 rexglue_setup_target(tbc GPU_PLUGINS xenos)
+target_compile_definitions(tbc PRIVATE TBC_VERSION="${PROJECT_VERSION}")
 
 # AMD FidelityFX runtime (FSR / CAS output filters). Only present when the SDK was built with
 # REXGLUE_ENABLE_FIDELITYFX (tools/build_sdk.bat); the runtime DLL needs it next to tbc.exe.
@@ -41,3 +50,13 @@ if(TBC_FFX_DLLS)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TBC_FFX_DLLS} $<TARGET_FILE_DIR:tbc>
         COMMENT "Copying FidelityFX runtime")
 endif()
+
+# Skullburglar's native renderer plugin (--gpu_plugin=native), when the SDK was built with it
+# (tools/build_native.bat). Checked when the build runs, so building the plugin later needs no
+# reconfigure.
+add_custom_command(TARGET tbc POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        "-DSRC=${TBC_SDK_BIN}/rexgpu-native$<$<CONFIG:RelWithDebInfo>:rd>$<$<CONFIG:Debug>:d>.dll"
+        "-DDST=$<TARGET_FILE_DIR:tbc>"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/native-plugin/copy_if_exists.cmake
+    VERBATIM)

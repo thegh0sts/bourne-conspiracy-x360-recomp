@@ -63,7 +63,8 @@ REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, false, "GPU",
                     "it, seen as stripes)");
 
 REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
-REX_EXTERN(__imp__sub_827C4D68);  // RHICopyToResolveTarget
+REX_EXTERN(sub_827C4D68);  // RHICopyToResolveTarget (hooked below)
+REX_EXTERN(__imp__sub_827C4D68);
 
 REXCVAR_DEFINE_BOOL(msaa_off_skip_mask_depth_resolve, true, "GPU",
                     "With --msaa=false: skip the shadow mask's resolve of its half-resolution "

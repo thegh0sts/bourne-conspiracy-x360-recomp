@@ -114,6 +114,8 @@ Finding the camera code in Bourne needs a run with the game: its camera classes 
 
 ## Later
 
+- **Linux build (native renderer only, no Direct3D 12).** The SDK builds on Linux (`linux-amd64` presets) and Skullburglar's native Vulkan renderer is cross-platform; Xenos (D3D12) is left out entirely, so the launcher's Renderer setting and the Xenos-only options (graphics path, FXAA) are hidden there. Work: Linux versions of the Windows-only pieces (crash reports `crash_win.cpp`, the Win32 FPS counter window, `gpu_preload.cpp`, parts of frame pacing), a shell version of `tools/build_native.bat` that applies the same SDK and native-plugin patches with Vulkan on and no D3D12, a Linux path in the installer (clang/gcc, no Visual Studio) or prebuilt binaries, and testing on real hardware (a Linux PC or Steam Deck). First check: whether the Windows build already runs under Proton with the native renderer.
+
 - **Native renderer: FPS counter in fullscreen.** The counter is a separate always-on-top window (`src/fps_overlay.cpp`); over the native renderer's Vulkan fullscreen it isn't shown. Draw it into the picture instead (the runtime presenter's UI drawers, or the native renderer's present pass). FSR needs no work: the runtime's presenter applies `--present_effect` (FSR / CAS, with Vulkan shaders) to the native renderer's output too.
 
 - Skip intro logos. Renaming the THX and Sierra / High Moon movies left the game stuck on the first level's loading screen, and the Unreal Engine and PhysX logos aren't separate movie files. Needs a code-level skip instead (Bourne's UE3 build has no `-nostartupmovies` switch).

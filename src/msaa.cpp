@@ -45,9 +45,14 @@ REXCVAR_DEFINE_BOOL(msaa_inner_as_tiled, false, "GPU",
                     "With --msaa=false: let the scene's inner pass (sub_82E537D0) still see "
                     "tiling on; experiment for the half-resolution box in the top-left corner");
 
-REXCVAR_DEFINE_INT32(msaa_off_color_base, 1024, "GPU",
+REXCVAR_DEFINE_INT32(msaa_off_color_base, 0, "GPU",
                      "With --msaa=false: EDRAM tile where the scene colour (DefaultColor) is placed; "
-                     "0 keeps the game's own (720, under the half-resolution depth)");
+                     "0 (default) keeps the game's own, 720");
+
+REXCVAR_DEFINE_INT32(msaa_off_mask_depth_base, 0x388, "GPU",
+                     "With --msaa=false: EDRAM tile for the half-resolution shadow-mask depth "
+                     "(ShadowMaskDepthZ); the game puts it at 0, on top of the scene depth. "
+                     "0 keeps the game's own");
 
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
                     "Log every EDRAM placement the engine looks up (sub_827B5B48)");
@@ -156,6 +161,10 @@ extern "C" REX_FUNC(sub_827B5B48) {
   if (off && moved > 0 && (name == "DefaultColor" || name == "DefaultColorRaw" || name == "DefaultBB") && uint32_t(moved) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(moved);
   }
+  const int32_t mask_depth = REXCVAR_GET(msaa_off_mask_depth_base);
+  if (off && mask_depth > 0 && name == "ShadowMaskDepthZ" && uint32_t(mask_depth) + tiles <= 2048) {
+    ctx.r3.u64 = uint32_t(mask_depth);
+  }
   if (log || ctx.r3.u32 != game) {
     REXLOG_INFO("msaa: EDRAM {} ({} tiles) at {:#x}{}", name, tiles, ctx.r3.u32,
                 ctx.r3.u32 != game ? " (moved from the game's)" : "");
@@ -170,7 +179,7 @@ extern "C" REX_FUNC(sub_827B5B48) {
 // depth from scratch after it; without, the damage stays. This skips the half-resolution copy
 // (confirmed: no box). Effects that read it, such as soft particles, may look off; set it
 // to false to bring the copy (and the box) back.
-REXCVAR_DEFINE_BOOL(msaa_skip_small_depth, true, "GPU",
+REXCVAR_DEFINE_BOOL(msaa_skip_small_depth, false, "GPU",
                     "With --msaa=false: skip the half-resolution depth copy, which otherwise "
                     "leaves a dark box in the top-left corner");
 
@@ -182,3 +191,15 @@ extern "C" REX_FUNC(sub_82A3F460) {
   }
   __imp__sub_82A3F460(ctx, base);
 }
+
+// What the box really is (a native-renderer draw trace and resolve dump, --msaa=false):
+// before the scene, in its depth pre-pass, the engine builds the half-resolution shadow mask.
+// It draws a half-resolution depth ("ShadowMaskDepthZ", 640 wide) from the scene depth
+// texture, then the shadow volumes into its stencil, and resolves it. The table puts that
+// depth at EDRAM tile 0: the same place as the scene depth ("DefaultDepth"). With tiling,
+// BeginTiling clears the depth and each strip redraws it, so nothing is lost. Without tiling
+// the scene is drawn against the depth left in EDRAM, whose top-left quarter is now the
+// half-resolution shadow-mask depth: the lighting fails there (the dark box with a half-size
+// silhouette) and the black area below it gives the stripes. --msaa_off_mask_depth_base puts
+// ShadowMaskDepthZ at 0x388 instead: after the shadow mask's colour (ShadowMask, 0x2D0 + 184
+// tiles) and before the shadow depths (0x5A0), which are all in use at that point.

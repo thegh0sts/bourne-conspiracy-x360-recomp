@@ -43,13 +43,29 @@ PANEL = "#1c2029"
 # shaders too). The graphics path and FXAA are Xenos (Direct3D 12) settings.
 RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
 RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
-# Picture shape (--aspect_ratio, src/ultrawide.cpp): the game draws a wider 720-line picture.
-# Experimental and for the native renderer; the HUD and menus are laid out for 16:9.
-ASPECTS = ["16:9 (original)", "21:9 ultrawide (experimental)", "32:9 super ultrawide (experimental)"]
-ASPECT_VALUE = {ASPECTS[0]: 0.0, ASPECTS[1]: 21 / 9, ASPECTS[2]: 32 / 9}
+# Output resolutions. The ultrawide ones (experimental, native renderer only) also set the
+# picture's shape: the game draws a wider 720-line picture (--aspect_ratio, src/ultrawide.cpp)
+# with a wider view, and the render resolutions offered are that shape too (render_scales), so
+# an ultrawide screen never gets a 16:9 picture stretched or boxed into it, nor the reverse.
 RESOLUTIONS = ["Original (720p)", "1080p", "1440p", "4K"]
+ULTRAWIDE = ["2560×1080 ultrawide (experimental)", "3440×1440 ultrawide (experimental)",
+             "3840×1600 ultrawide (experimental)"]
 RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
-RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
+RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160),
+            ULTRAWIDE[0]: (2560, 1080), ULTRAWIDE[1]: (3440, 1440), ULTRAWIDE[2]: (3840, 1600)}
+
+
+def is_ultrawide(resolution):
+    return resolution in ULTRAWIDE
+
+
+def picture_width(resolution):
+    """The game's 720-line picture width for an output resolution: 1280 for 16:9, wider for
+    ultrawide (720 x the screen's shape, to 8 pixels, as src/ultrawide.cpp rounds it)."""
+    if not is_ultrawide(resolution):
+        return 1280
+    w, h = RES_SIZE[resolution]
+    return round(720 * w / h / 8) * 8
 # Render resolution: the size the game actually draws at (the runtime's --resolution_scale
 # multiplies the Xbox 360's 1280x720). Shown as resolutions rather than 1x/2x/3x.
 # Scaling was expensive in this runtime: on an RTX 4080 Super, one heavy street scene ran
@@ -60,6 +76,45 @@ RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
 SCALES = ["1280×720 (original)", "1920×1080 (Xenos: 1440p)", "2560×1440 (demanding)",
           "3840×2160 (very demanding)"]
 SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 1.5, SCALES[2]: 2, SCALES[3]: 3}
+
+
+def render_scales(resolution):
+    """Render resolutions offered for an output resolution: the 16:9 list for 16:9 outputs; for
+    an ultrawide output, its own shape at 720, 1080, 1440 and 2160 lines plus its exact size."""
+    if not is_ultrawide(resolution):
+        return list(SCALES)
+    pw = picture_width(resolution)
+    w, h = RES_SIZE[resolution]
+    out = []
+    for k in sorted({1, 1.5, 2, 3, h / 720}):
+        label = f"{round(pw * k)}×{round(720 * k)}"
+        if k == 1:
+            label += " (original height)"
+        elif abs(k - h / 720) < 1e-6:
+            label += " (your screen)"
+        elif k == 3:
+            label += " (very demanding)"
+        out.append(label)
+    return out
+
+
+def scale_factor(label):
+    """The render scale a render-resolution label stands for (its height / 720)."""
+    if label in SCALE_FACTOR:
+        return SCALE_FACTOR[label]
+    try:
+        return int(label.split("×")[1].split()[0]) / 720
+    except (IndexError, ValueError):
+        return 1
+
+
+def matching_scale(resolution, label):
+    """The render resolution for this output closest to an earlier choice (by render scale)."""
+    options = render_scales(resolution)
+    if label in options:
+        return label
+    want = scale_factor(label)
+    return min(options, key=lambda o: abs(scale_factor(o) - want))
 OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[2], "3x": SCALES[3],
                    "2560×1440": SCALES[2], "3840×2160": SCALES[3]}
 # Output filter, applied by the runtime to the finished picture (--present_effect). FSR and
@@ -332,7 +387,6 @@ class KeyBindDialog(tk.Toplevel):
 
 DEFAULTS = {
     "renderer": RENDERERS[0],
-    "aspect": ASPECTS[0],
     "fullscreen": False,
     "resolution": "Original (720p)",
     "render_scale": SCALES[0],
@@ -365,6 +419,12 @@ def load_settings():
     except (OSError, ValueError):
         pass
     s["render_scale"] = OLD_SCALE_NAMES.get(s["render_scale"], s["render_scale"])
+    s.pop("aspect", None)  # the old separate "picture shape" setting: now set by the resolution
+    if s.get("resolution") not in RESOLUTIONS + ULTRAWIDE:
+        s["resolution"] = DEFAULTS["resolution"]
+    if is_ultrawide(s["resolution"]) and RENDERER_PLUGIN.get(s.get("renderer")) != "native":
+        s["resolution"] = DEFAULTS["resolution"]
+    s["render_scale"] = matching_scale(s["resolution"], s["render_scale"])
     if s.get("fps") not in FPS:  # labels from older launcher versions
         s["fps"] = DEFAULTS["fps"]
     return s
@@ -568,14 +628,14 @@ def save_crash_report(info) -> Path:
 
 
 def window_size(s, screen):
-    """Window size for windowed mode: the chosen output size, shrunk (16:9) to fit
-    within 85% of the screen so a 1440p/4K window doesn't cover the whole display."""
+    """Window size for windowed mode: the chosen output size, shrunk (keeping its shape) to
+    fit within 85% of the screen so a 1440p/4K window doesn't cover the whole display."""
     w, h = RES_SIZE.get(s["resolution"], (1280, 720))
     if screen:
         sw, sh = int(screen[0] * 0.85), int(screen[1] * 0.85)
         k = min(1.0, sw / w, sh / h)
-        w, h = int(w * k) // 16 * 16, int(h * k) // 9 * 9
-        w, h = min(w, h * 16 // 9), min(h, w * 9 // 16)
+        if k < 1.0:
+            w, h = int(w * k) // 2 * 2, int(h * k) // 2 * 2
     return w, h
 
 
@@ -583,13 +643,16 @@ def game_args(s, screen=None):
     """ReXGlue command-line settings, only when not at default. Valued settings use the
     "--name value" form already used for --gpu_plugin; on/off settings use "--name=value"."""
     args = ["--gpu_plugin", RENDERER_PLUGIN.get(s.get("renderer"), "native")]
-    aspect = ASPECT_VALUE.get(s.get("aspect"), 0.0)
-    if aspect:
-        args += ["--aspect_ratio", f"{aspect:.4f}"]
+    if is_ultrawide(s["resolution"]):
+        w, h = RES_SIZE[s["resolution"]]
+        args += ["--aspect_ratio", f"{w / h:.4f}"]
     # Always pass fullscreen explicitly: the runtime's own default is fullscreen, so
     # leaving the flag out when the box is unticked still opened full screen.
     args.append("--fullscreen=true" if s["fullscreen"] else "--fullscreen=false")
-    if s["resolution"] in RES_FLAG:
+    if is_ultrawide(s["resolution"]):
+        w, h = RES_SIZE[s["resolution"]]
+        args += ["--video_mode_width", str(w), "--video_mode_height", str(h)]
+    elif s["resolution"] in RES_FLAG:
         if s["fullscreen"]:
             args += ["--resolution", RES_FLAG[s["resolution"]]]
         else:
@@ -602,7 +665,7 @@ def game_args(s, screen=None):
         args += ["--window_width", str(ww), "--window_height", str(wh)]
     # Graphics-plugin settings are always passed, so a value left in tbc.toml (the runtime's
     # own config file, written by its F4 settings overlay) can't override the launcher.
-    scale = math.ceil(SCALE_FACTOR.get(s["render_scale"], 1))  # Xenos: whole numbers only
+    scale = math.ceil(scale_factor(s["render_scale"]) - 1e-6)  # Xenos: whole numbers only
     args += ["--resolution_scale", str(scale)]
     path = RENDER_PATH_FLAG.get(s.get("render_path"), "rov" if scale > 1 else None)
     if path:
@@ -644,7 +707,9 @@ def game_env(s):
     from BOTS_GFX_RENDER_SCALE (it ignores --resolution_scale)."""
     env = {}
     if RENDERER_PLUGIN.get(s.get("renderer"), "native") == "native":
-        env["BOTS_GFX_RENDER_SCALE"] = f'{SCALE_FACTOR.get(s["render_scale"], 1):g}'
+        # A hair over the exact scale, so 1600 / 720 gives 1600 lines rather than 1599.
+        k = scale_factor(s["render_scale"])
+        env["BOTS_GFX_RENDER_SCALE"] = f"{k:g}" if k in (1, 1.5, 2, 3) else f"{k + 1e-6:.6f}"
     return env
 
 
@@ -658,6 +723,7 @@ class SettingsView(tk.Frame):
         self.info = info
         self.s = load_settings()
         self.vars = {}
+        self.combos = {}
 
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=28, pady=(20, 4))
@@ -677,9 +743,13 @@ class SettingsView(tk.Frame):
         box = self._section("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
         self._check(box, 1, "fullscreen", "Fullscreen")
-        self._combo(box, 2, "resolution", "Output resolution", RESOLUTIONS)
-        self._combo(box, 3, "aspect", "Picture shape (native renderer)", ASPECTS)
-        self._combo(box, 4, "render_scale", "Render resolution (sharper, slower)", SCALES)
+        self._combo(box, 2, "resolution", "Output resolution", self._resolutions())
+        self._combo(box, 4, "render_scale", "Render resolution (sharper, slower)",
+                    render_scales(self.s["resolution"]))
+        tk.Label(box, text="Ultrawide outputs are experimental and need the native renderer.",
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=3, column=0, columnspan=2, sticky="w")
+        self.vars["renderer"].trace_add("write", lambda *_: self._display_changed())
+        self.vars["resolution"].trace_add("write", lambda *_: self._display_changed())
         self._combo(box, 5, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
         self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
         self._combo(box, 7, "aa", "Anti-aliasing (Xenos only)", AA)
@@ -758,8 +828,30 @@ class SettingsView(tk.Frame):
         v = self.vars[key] = tk.StringVar(value=self.s[key] if self.s[key] in values else DEFAULTS[key])
         tk.Label(box, text=text, font=("Segoe UI", 10), fg=FG, bg=PANEL).grid(row=row, column=0, sticky="w",
                                                                              pady=2)
-        ttk.Combobox(box, textvariable=v, values=values, state="readonly", width=26
-                     ).grid(row=row, column=1, sticky="e", pady=2)
+        combo = ttk.Combobox(box, textvariable=v, values=values, state="readonly", width=32)
+        combo.grid(row=row, column=1, sticky="e", pady=2)
+        self.combos[key] = combo
+
+    def _resolutions(self):
+        """Output resolutions: the ultrawide ones only with the native renderer."""
+        native = RENDERER_PLUGIN.get(self.vars["renderer"].get()) == "native"
+        return RESOLUTIONS + (ULTRAWIDE if native else [])
+
+    def _display_changed(self):
+        """Keep the output and render resolutions consistent with the renderer and each other."""
+        if "render_scale" not in self.combos:
+            return  # still building the screen
+        resolutions = self._resolutions()
+        self.combos["resolution"]["values"] = resolutions
+        if self.vars["resolution"].get() not in resolutions:
+            self.vars["resolution"].set("1440p")  # an ultrawide output with Xenos: nearest 16:9; re-enters
+            return
+        resolution = self.vars["resolution"].get()
+        self.combos["render_scale"]["values"] = render_scales(resolution)
+        current = self.vars["render_scale"].get()
+        wanted = matching_scale(resolution, current)
+        if wanted != current:
+            self.vars["render_scale"].set(wanted)
 
     def _slider(self, box, row, key, text, lo, hi, step):
         v = self.vars[key] = tk.IntVar(value=int(self.s[key]))
@@ -776,7 +868,9 @@ class SettingsView(tk.Frame):
 
     def reset(self):
         for k, v in self.vars.items():
-            v.set(DEFAULTS[k])
+            if k != "render_scale":
+                v.set(DEFAULTS[k])
+        self.vars["render_scale"].set(DEFAULTS["render_scale"])
         self.s["kbm_binds"] = {}  # key binds back to the default layout too
 
     def edit_keys(self):

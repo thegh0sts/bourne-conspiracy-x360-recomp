@@ -12,6 +12,16 @@
 // resolve. The engine has a developer console command for this (TILING, sub_827C8AF0), so it
 // supports running without it.
 //
+// Without tiling the engine doesn't clear the scene's depth: D3DDevice_BeginTiling did that
+// (ClearZ, stencil 0) and the non-tiled path only sets the render targets again. Left alone,
+// depth from the half-resolution effects drawn earlier into the same EDRAM fails the scene's
+// depth test in the top-left quarter, which then shows that half-resolution image (seen with
+// both renderers). So with --msaa=false the depth and stencil are cleared there, as
+// BeginTiling would: D3DDevice_Clear (sub_822FDCD0, called by RHIClear sub_827B4EA0) right
+// after the scene renderer's second SetRenderTargets call (sub_827C4640, returning to
+// 0x82E58360, taken only when tiling is off). ClearZ is BeginTiling's: 0 when the depth is
+// inverted (the global at 0x8365CE38), else 1.
+//
 // The switch is the global at 0x8365CE40 ("use tiling"). sub_827B5908 sets it at start-up
 // (from the RHI's initialisation, sub_8231DDF8): 1 when the display is at least 1280 wide.
 // The scene renderer (sub_82E58198) reads it every frame to choose between BeginTiling with
@@ -31,9 +41,18 @@ REXCVAR_DEFINE_BOOL(msaa, true, "GPU",
                     "false draws it in one pass at one sample per pixel");
 
 REX_EXTERN(__imp__sub_827B5908);
+REX_EXTERN(__imp__sub_827C4640);
 
 namespace {
 constexpr uint32_t kUseTiling = 0x8365CE40;
+constexpr uint32_t kInvertedDepth = 0x8365CE38;
+constexpr uint32_t kDevice = 0x8359F774;          // the D3D device the RHI uses
+constexpr uint32_t kNonTiledReturn = 0x82E58360;  // after the scene's non-tiled SetRenderTargets
+
+uint32_t Load32(const uint8_t* base, uint32_t addr) {
+  return uint32_t(base[addr]) << 24 | uint32_t(base[addr + 1]) << 16 |
+         uint32_t(base[addr + 2]) << 8 | base[addr + 3];
+}
 
 void Store32(uint8_t* base, uint32_t addr, uint32_t value) {
   base[addr] = uint8_t(value >> 24);
@@ -49,4 +68,25 @@ extern "C" REX_FUNC(sub_827B5908) {
     Store32(base, kUseTiling, 0);
     REXLOG_INFO("msaa: off (no predicated tiling)");
   }
+}
+
+// The scene's render targets are set; on the non-tiled path, clear depth and stencil as
+// BeginTiling does on the tiled one.
+extern "C" REX_FUNC(sub_827C4640) {
+  const uint32_t return_to = static_cast<uint32_t>(ctx.lr);
+  __imp__sub_827C4640(ctx, base);
+  if (REXCVAR_GET(msaa) || return_to != kNonTiledReturn) {
+    return;
+  }
+  PPCContext call = ctx;
+  call.r1.u32 = ctx.r1.u32 - 0x200;
+  call.r3.u64 = Load32(base, kDevice);
+  call.r4.u64 = 0;     // Count
+  call.r5.u64 = 0;     // pRects
+  call.r6.u64 = 0x30;  // D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL
+  call.r7.u64 = 0;     // Color (not cleared)
+  call.f1.f64 = Load32(base, kInvertedDepth) ? 0.0 : 1.0;  // Z
+  call.r9.u64 = 0;     // Stencil
+  call.r10.u64 = 0;
+  sub_822FDCD0(call, base);
 }

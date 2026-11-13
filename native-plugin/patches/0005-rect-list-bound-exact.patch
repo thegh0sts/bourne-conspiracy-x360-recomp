@@ -1,0 +1,19 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index b623032..18190a4 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -636,7 +636,13 @@ bool Renderer::RectListBound(const rg::RegisterFile& regs, const ShaderCache::Sh
+     max_x = std::max(max_x, xy[0]), max_y = std::max(max_y, xy[1]);
+   }
+   if (max_x > 16384.0f || max_y > 16384.0f) return false;
+-  x1 = uint32_t(std::ceil(max_x + 0.5f)) + 1, y1 = uint32_t(std::ceil(max_y + 0.5f)) + 1;
++  // Exact: the XDK puts rectangle edges on pixel boundaries (x - 0.5), so ceil(max + 0.5) is the first pixel past
++  // the rectangle. A pixel of slack here is not harmless: the bound becomes the surface's written extent, which a
++  // format transfer copies. XDK Clear() of a surface that isn't a whole number of 80-pixel tiles wide clears the whole
++  // tiles as a 4x surface of half the pitch and the rest with a 1x strip drawn first; with the slack, the 4x clear's
++  // transfer copied one 4x pixel (two columns) of uncleared depth over the strip (ultrawide widths such as 1720:
++  // black columns 1680-1681 in UE3's shadow mask, a dark line on screen).
++  x1 = uint32_t(std::ceil(max_x + 0.5f)), y1 = uint32_t(std::ceil(max_y + 0.5f));
+   return true;
+ }
+ 

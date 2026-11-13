@@ -4,6 +4,7 @@
 
 ### Fixes
 - **Crash about a second after starting** on some installs (0.2.2 and 0.2.3): the game lists its folders at startup, and if a disc extractor had dropped an empty one (the disc's `Engine` folder is empty), the runtime threw "Failed to enumerate directory" instead of reporting the folder missing. The game now creates any missing standard folder before starting.
+- **The installer checks the game files against the disc** after extracting them, and when it finds them already extracted: every folder must exist (empty ones too) and every file must be there at the disc's size. Missing folders are created and missing or damaged files extracted again; if that fails the install stops and says which files. The two files the launcher edits (Coalesced.ini and Xbox360TOC.txt) are only checked for presence.
 
 ## 0.2.3 (2026-11-13)
 

@@ -136,8 +136,11 @@ class XisoReader:
             else:
                 yield rel, False, start, fsize
 
-    def extract(self, dest: Path, progress, skip=("$SystemUpdate",)):
+    def extract(self, dest: Path, progress, skip=("$SystemUpdate",), only=None):
+        """Extract the disc (or, with `only`, just those relative paths) into dest."""
         entries = [e for e in self.walk() if e[0].split("/")[0] not in skip]
+        if only is not None:
+            entries = [e for e in entries if e[0] in only]
         total = sum(e[3] for e in entries if not e[1]) or 1
         done = 0
         for rel, is_dir, start, size in entries:
@@ -312,15 +315,57 @@ class Installer:
             raise InstallError(f"Not enough free space. The install needs about {MIN_FREE_GB} GB, "
                                f"and the chosen drive has {free:.0f} GB free.")
 
+    # Files the launcher edits (settings live in the packed engine config, and the table of
+    # contents records its size and MD5): checked for presence only, never restored from the disc.
+    EDITED_FILES = {"bournegame/config/xenon/cooked/coalesced.ini", "bournegame/xbox360toc.txt"}
+
+    def verify_game(self, reader):
+        """Check the extracted game against the disc: every folder present (empty ones too: a
+        missing game\\Engine crashed the game at startup with "Failed to enumerate directory"),
+        every file present at the disc's size. Missing folders are created and missing or
+        wrong-sized files extracted again; anything still wrong stops the install."""
+        self.status("Checking game files...")
+        entries = [e for e in reader.walk() if e[0].split("/")[0] != "$SystemUpdate"]
+        bad, made = [], 0
+        for rel, is_dir, _start, size in entries:
+            target = self.game / rel
+            if is_dir:
+                if not target.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    made += 1
+                    self.log(f"Created missing folder {rel}")
+                continue
+            if not target.is_file():
+                bad.append(rel)
+            elif rel.lower() not in self.EDITED_FILES and target.stat().st_size != size:
+                bad.append(rel)
+        if bad:
+            self.log(f"{len(bad)} game file(s) missing or the wrong size, extracting them again: "
+                     + ", ".join(bad[:10]) + (" ..." if len(bad) > 10 else ""))
+            reader.extract(self.game, lambda frac, name: None, only=set(bad))
+            still = [r for r in bad if not (self.game / r).is_file()]
+            if still:
+                raise InstallError("Some game files couldn't be extracted from the disc image:\n"
+                                   + "\n".join(still[:10]) + "\nThe image may be incomplete or damaged.")
+        files = sum(1 for e in entries if not e[1])
+        self.log(f"Game files checked: {files} files, {len(entries) - files} folders"
+                 f" ({made} folder(s) created, {len(bad)} file(s) restored)")
+
     def extract_game(self):
         xex = self.game / "default.xex"
         if xex.exists() and (self.game / "BourneGame").exists():
             try:
-                if xex_title_id(xex) == TITLE_ID:
-                    self.log("Game files already extracted, skipping.")
-                    return
+                same_game = xex_title_id(xex) == TITLE_ID
             except InstallError:
-                pass
+                same_game = False
+            if same_game:
+                self.log("Game files already extracted, skipping.")
+                reader = XisoReader(self.iso)
+                try:
+                    self.verify_game(reader)
+                finally:
+                    reader.close()
+                return
         self.status("Reading your disc image...")
         reader = XisoReader(self.iso)
         try:
@@ -340,6 +385,7 @@ class Installer:
                     self.status(f"Extracting game files... {frac * 100:.0f}%")
             n = reader.extract(self.game, p)
             self.log(f"Extracted {n} entries to {self.game}")
+            self.verify_game(reader)
         finally:
             reader.close()
         tid = xex_title_id(xex)

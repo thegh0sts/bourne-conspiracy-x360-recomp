@@ -57,13 +57,17 @@ REXCVAR_DEFINE_INT32(msaa_off_mask_depth_base, 0x388, "GPU",
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
                     "Log every EDRAM placement the engine looks up (sub_827B5B48)");
 
-REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, true, "GPU",
+REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, false, "GPU",
                     "With --msaa=false: copy the full scene depth back into the scene depth "
                     "texture before the scene (the shadow mask leaves half-resolution depth in "
                     "it, seen as stripes)");
 
 REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
-REX_EXTERN(sub_827C4D68);  // RHICopyToResolveTarget
+REX_EXTERN(__imp__sub_827C4D68);  // RHICopyToResolveTarget
+
+REXCVAR_DEFINE_BOOL(msaa_off_skip_mask_depth_resolve, true, "GPU",
+                    "With --msaa=false: skip the shadow mask's resolve of its half-resolution "
+                    "depth into the scene depth texture (seen as stripes)");
 REX_EXTERN(__imp__sub_827B5908);
 REX_EXTERN(__imp__sub_827B5B48);
 REX_EXTERN(__imp__sub_827C4640);
@@ -231,3 +235,40 @@ extern "C" REX_FUNC(sub_82A3F460) {
 // again before anything reads it; without, the scene's lighting reads the texture as it is.
 // So on the non-tiled path the scene depth is resolved again just before the scene draws
 // (from the scene depth still in EDRAM, which the shadow mask no longer overwrites).
+
+// The stripes, fixed (--msaa_off_skip_mask_depth_resolve). Restoring the scene depth with a
+// second resolve before the scene works with the native renderer, but the console's runtime
+// hasn't sent the scene's render targets to the GPU yet at that point, so the resolve still
+// sees the shadow mask's 640 pitch and Xenos rejects it ("Resolve region 0 <= x < 1280 is
+// outside the surface pitch 640"). Instead the shadow mask's own depth resolve is dropped: it
+// is the first RHICopyToResolveTarget after the depth pre-pass resolves the scene depth
+// (sub_827C4D68 returning to 0x82E55F48), and nothing reads it before tiling would overwrite
+// it (the shadow mask's colour pass right after binds no textures).
+namespace {
+bool g_after_prepass_depth = false;
+bool g_logged_mask_skip = false;
+}  // namespace
+
+extern "C" REX_FUNC(sub_827C4D68) {
+  const uint32_t return_to = static_cast<uint32_t>(ctx.lr);
+  if (REXCVAR_GET(msaa) || !REXCVAR_GET(msaa_off_skip_mask_depth_resolve)) {
+    __imp__sub_827C4D68(ctx, base);
+    return;
+  }
+  if (return_to == 0x82E55F48) {  // the depth pre-pass resolving the scene depth
+    __imp__sub_827C4D68(ctx, base);
+    g_after_prepass_depth = true;
+    return;
+  }
+  if (g_after_prepass_depth) {
+    g_after_prepass_depth = false;
+    if (!g_logged_mask_skip) {
+      g_logged_mask_skip = true;
+      REXLOG_INFO("msaa: skipping the shadow mask's depth resolve (surface {:#x}, from {:#x})",
+                  ctx.r3.u32, return_to);
+    }
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_827C4D68(ctx, base);
+}

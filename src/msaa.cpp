@@ -62,13 +62,17 @@ REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, false, "GPU",
                     "texture before the scene (the shadow mask leaves half-resolution depth in "
                     "it, seen as stripes)");
 
+REXCVAR_DEFINE_BOOL(msaa_off_clear_depth, true, "GPU",
+                    "With --msaa=false: clear depth and stencil when the scene starts, as "
+                    "BeginTiling does");
+
 REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
 REX_EXTERN(sub_827C4D68);  // RHICopyToResolveTarget (hooked below)
 REX_EXTERN(__imp__sub_827C4D68);
 
 REXCVAR_DEFINE_BOOL(msaa_off_skip_mask_depth_resolve, true, "GPU",
-                    "With --msaa=false: skip the shadow mask's resolve of its half-resolution "
-                    "depth into the scene depth texture (seen as stripes)");
+                    "With --msaa=false: skip the scene renderer's second scene depth resolve, which "
+                    "copies the shadow mask's half-resolution depth instead (seen as stripes)");
 REX_EXTERN(__imp__sub_827B5908);
 REX_EXTERN(__imp__sub_827B5B48);
 REX_EXTERN(__imp__sub_827C4640);
@@ -133,6 +137,9 @@ extern "C" REX_FUNC(sub_827C4640) {
     resolve.r4.u64 = 1;
     resolve.r5.u64 = params;
     sub_827C4D68(resolve, base);
+  }
+  if (!REXCVAR_GET(msaa_off_clear_depth)) {
+    return;
   }
   PPCContext call = ctx;
   call.r1.u32 = ctx.r1.u32 - 0x200;
@@ -237,18 +244,18 @@ extern "C" REX_FUNC(sub_82A3F460) {
 // So on the non-tiled path the scene depth is resolved again just before the scene draws
 // (from the scene depth still in EDRAM, which the shadow mask no longer overwrites).
 
-// The stripes, fixed (--msaa_off_skip_mask_depth_resolve). Restoring the scene depth with a
-// second resolve before the scene works with the native renderer, but the console's runtime
-// hasn't sent the scene's render targets to the GPU yet at that point, so the resolve still
-// sees the shadow mask's 640 pitch and Xenos rejects it ("Resolve region 0 <= x < 1280 is
-// outside the surface pitch 640"). Instead the shadow mask's own depth resolve is dropped: it
-// is an RHICopyToResolveTarget (sub_827C4D68) of the shadow mask's own depth surface, and
-// nothing reads it before tiling would overwrite
-// it (the shadow mask's colour pass right after binds no textures). It is recognised by its
-// surface: ShadowMaskDepthZ is kept at +0x1F8 in the scene render targets (0x83661D40;
-// stored by sub_82E3F790 at 0x82E3FC28), next to its resolve texture at +0x1F4.
+// The stripes, fixed (--msaa_off_skip_mask_depth_resolve). Logging every
+// RHICopyToResolveTarget (sub_827C4D68) shows the scene depth (surface 0x83661E18) resolved
+// by the depth pre-pass (returning to 0x82E55F48) and again by the scene renderer
+// (0x82E58300), just before it sets the scene's render targets. In between the shadow mask
+// has drawn with its own 640-wide depth, and that is still the surface the GPU has set up,
+// so the second resolve copies the shadow mask's depth into the scene depth texture: the
+// native renderer clamps it to 640x720 (the stripes, left half) and Xenos rejects it every
+// frame ("Resolve region 0 <= x < 1280 is outside the surface pitch 640"). Nothing has
+// changed the scene depth since the first resolve, so with --msaa=false the second one is
+// skipped.
 namespace {
-constexpr uint32_t kShadowMaskDepthSurface = 0x83661F38;  // scene render targets + 0x1F8
+constexpr uint32_t kSecondDepthResolve = 0x82E58300;  // in sub_82E58198, before SetRenderTargets
 bool g_logged_mask_skip = false;
 }  // namespace
 
@@ -260,10 +267,10 @@ extern "C" REX_FUNC(sub_827C4D68) {
                 static_cast<uint32_t>(ctx.lr));
   }
   if (!REXCVAR_GET(msaa) && REXCVAR_GET(msaa_off_skip_mask_depth_resolve) &&
-      ctx.r3.u32 == kShadowMaskDepthSurface) {
+      ctx.r3.u32 == kSceneDepthSurface && static_cast<uint32_t>(ctx.lr) == kSecondDepthResolve) {
     if (!g_logged_mask_skip) {
       g_logged_mask_skip = true;
-      REXLOG_INFO("msaa: skipping the shadow mask's depth resolve (from {:#x})",
+      REXLOG_INFO("msaa: skipping the scene depth's second resolve (from {:#x})",
                   static_cast<uint32_t>(ctx.lr));
     }
     ctx.r3.u64 = 0;

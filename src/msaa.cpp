@@ -52,6 +52,7 @@ REXCVAR_DEFINE_INT32(msaa_off_color_base, 1024, "GPU",
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
                     "Log every EDRAM placement the engine looks up (sub_827B5B48)");
 
+REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
 REX_EXTERN(__imp__sub_827B5908);
 REX_EXTERN(__imp__sub_827B5B48);
 REX_EXTERN(__imp__sub_827C4640);

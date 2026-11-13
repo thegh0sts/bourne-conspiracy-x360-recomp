@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### New
+- **Ultrawide (experimental, native renderer).** Display > Picture shape offers 21:9 and 32:9 (`--aspect_ratio 2.3333` / `3.5556`). The game draws a wider picture (1680×720 at 21:9) with a wider field of view rather than a stretched one, and the HUD and menus spread to the edges without stretching. The game's video memory layout is adjusted so the shadow map and effect buffers still fit; without that, large areas fell into a false shadow. Pre-rendered videos stay 16:9. Xenos can't fit the wider picture in the console's video memory, so it's for the native renderer only.
+
 ### Fixes
 - **Crash about a second after starting** on some installs (0.2.2 and 0.2.3): the game lists its folders at startup, and if a disc extractor had dropped an empty one (the disc's `Engine` folder is empty), the runtime threw "Failed to enumerate directory" instead of reporting the folder missing. The game now creates any missing standard folder before starting.
 - **The installer checks the game files against the disc** after extracting them, and when it finds them already extracted: every folder must exist (empty ones too) and every file must be there at the disc's size. Missing folders are created and missing or damaged files extracted again; if that fails the install stops and says which files. The two files the launcher edits (Coalesced.ini and Xbox360TOC.txt) are only checked for presence.

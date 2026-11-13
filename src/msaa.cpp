@@ -62,9 +62,10 @@ REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, false, "GPU",
                     "texture before the scene (the shadow mask leaves half-resolution depth in "
                     "it, seen as stripes)");
 
-REXCVAR_DEFINE_BOOL(msaa_off_clear_depth, true, "GPU",
+REXCVAR_DEFINE_BOOL(msaa_off_clear_depth, false, "GPU",
                     "With --msaa=false: clear depth and stencil when the scene starts, as "
-                    "BeginTiling does");
+                    "BeginTiling does (off: the scene's lighting tests against the depth "
+                    "pre-pass, so clearing it left Xenos dark)");
 
 REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
 REX_EXTERN(sub_827C4D68);  // RHICopyToResolveTarget (hooked below)

@@ -161,3 +161,23 @@ extern "C" REX_FUNC(sub_827B5B48) {
                 ctx.r3.u32 != game ? " (moved from the game's)" : "");
   }
 }
+
+// Experiment (--msaa_skip_small_depth): the scene's depth pre-pass (sub_82E55C28, called by
+// sub_82E58198 before tiling would start) resolves the scene depth and then makes the
+// half-resolution copy of it (sub_82A3F460, the DownsampleDepthBuffer shaders). A frame dump
+// with --msaa=false shows that copy landing in the top-left quarter of the scene depth
+// texture and the scene's lighting dark there afterwards. With tiling the strips redraw the
+// depth from scratch after it; without, the damage stays. This skips the half-resolution copy
+// to confirm it is the cause (effects that use it, such as soft particles, may look off).
+REXCVAR_DEFINE_BOOL(msaa_skip_small_depth, false, "GPU",
+                    "With --msaa=false: skip the half-resolution depth copy (experiment for "
+                    "the box in the top-left corner)");
+
+REX_EXTERN(__imp__sub_82A3F460);
+
+extern "C" REX_FUNC(sub_82A3F460) {
+  if (!REXCVAR_GET(msaa) && REXCVAR_GET(msaa_skip_small_depth)) {
+    return;
+  }
+  __imp__sub_82A3F460(ctx, base);
+}

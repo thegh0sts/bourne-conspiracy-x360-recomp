@@ -40,8 +40,13 @@ REXCVAR_DEFINE_BOOL(msaa, true, "GPU",
                     "The 3D scene's 2x anti-aliasing (drawn in two strips on the console); "
                     "false draws it in one pass at one sample per pixel");
 
+REXCVAR_DEFINE_BOOL(msaa_inner_as_tiled, false, "GPU",
+                    "With --msaa=false: let the scene's inner pass (sub_82E537D0) still see "
+                    "tiling on; experiment for the half-resolution box in the top-left corner");
+
 REX_EXTERN(__imp__sub_827B5908);
 REX_EXTERN(__imp__sub_827C4640);
+REX_EXTERN(__imp__sub_82E537D0);
 
 namespace {
 constexpr uint32_t kUseTiling = 0x8365CE40;
@@ -89,4 +94,21 @@ extern "C" REX_FUNC(sub_827C4640) {
   call.r9.u64 = 0;     // Stencil
   call.r10.u64 = 0;
   sub_822FDCD0(call, base);
+}
+
+// Experiment (--msaa_inner_as_tiled): with tiling off, a quarter-size copy of the frame shows
+// in the top-left corner with both renderers. The scene renderer (sub_82E58198) calls an inner
+// pass (sub_82E537D0) that reads the tiling flag twice to choose its depth pre-pass setup; the
+// half-resolution depth resolve that lands in the scene depth texture (640x720 into
+// 1A248000) only appears with tiling off. This lets that inner pass see tiling on while the
+// outer renderer, which would start predicated tiling, still sees it off.
+extern "C" REX_FUNC(sub_82E537D0) {
+  if (REXCVAR_GET(msaa) || !REXCVAR_GET(msaa_inner_as_tiled)) {
+    __imp__sub_82E537D0(ctx, base);
+    return;
+  }
+  const uint32_t saved = Load32(base, kUseTiling);
+  Store32(base, kUseTiling, 1);
+  __imp__sub_82E537D0(ctx, base);
+  Store32(base, kUseTiling, saved);
 }

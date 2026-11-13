@@ -36,8 +36,10 @@ PANEL = "#1c2029"
 # ordinary Vulkan drawing instead of emulating the Xbox 360's EDRAM, so higher render
 # resolutions cost far less. It needs the game's 2x MSAA off (src/msaa.cpp, the default).
 # "xenos" is ReXGlue's own Direct3D 12 renderer, kept as the fallback. The render resolution
-# reaches the native renderer through the BOTS_GFX_RENDER_SCALE environment variable; the
-# graphics-path, upscaling and anti-aliasing settings below apply to Xenos only.
+# reaches the native renderer through the BOTS_GFX_RENDER_SCALE environment variable. The
+# upscaling filter (--present_effect) works with both: it's the runtime's presenter, which
+# scales the finished picture to the window for either renderer (FSR / CAS have Vulkan
+# shaders too). The graphics path and FXAA are Xenos (Direct3D 12) settings.
 RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
 RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
 RESOLUTIONS = ["Original (720p)", "1080p", "1440p", "4K"]
@@ -665,7 +667,7 @@ class SettingsView(tk.Frame):
         self._combo(box, 2, "resolution", "Output resolution", RESOLUTIONS)
         self._combo(box, 3, "render_scale", "Render resolution (sharper, slower)", SCALES)
         self._combo(box, 4, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
-        self._combo(box, 5, "upscale", "Upscaling filter (Xenos only)", UPSCALE)
+        self._combo(box, 5, "upscale", "Upscaling filter", UPSCALE)
         self._combo(box, 6, "aa", "Anti-aliasing (Xenos only)", AA)
         self._combo(box, 7, "fps", "Frame rate", FPS)
         self._checks(box, 8, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])

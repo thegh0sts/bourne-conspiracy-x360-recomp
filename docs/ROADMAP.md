@@ -114,7 +114,7 @@ Finding the camera code in Bourne needs a run with the game: its camera classes 
 
 ## Later
 
-- **FSR for the native renderer.** FSR and CAS (`--present_effect`) exist only in ReXGlue's Direct3D 12 output (Xenos), through AMD FidelityFX's DX12 library. The native Vulkan renderer scales with its own filter (Catmull-Rom when drawing below the window size, `BOTS_GFX_UPSCALE=bilinear` for plain bilinear) and downsamples when drawing above it, so FSR would only help players who render below their screen size. Plan: port FSR 1's two passes, EASU (upscale) and RCAS (sharpen), from AMD's portable shader headers into the native renderer's present pass (`src/gfx/vk/present.cpp` in the Skullburglar sources, via a patch in `native-plugin/patches/`), behind a launcher option that today's Upscaling filter setting can drive.
+- **Native renderer: FPS counter in fullscreen.** The counter is a separate always-on-top window (`src/fps_overlay.cpp`); over the native renderer's Vulkan fullscreen it isn't shown. Draw it into the picture instead (the runtime presenter's UI drawers, or the native renderer's present pass). FSR needs no work: the runtime's presenter applies `--present_effect` (FSR / CAS, with Vulkan shaders) to the native renderer's output too.
 
 - Skip intro logos. Renaming the THX and Sierra / High Moon movies left the game stuck on the first level's loading screen, and the Unreal Engine and PhysX logos aren't separate movie files. Needs a code-level skip instead (Bourne's UE3 build has no `-nostartupmovies` switch).
 - Controller feel: stick acceleration off, linear turning, vibration toggle (needs Bourne's input code found).

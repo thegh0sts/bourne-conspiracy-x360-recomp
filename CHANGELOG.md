@@ -15,7 +15,7 @@ Run the new exe, then click **Reinstall from a disc image...** on the launcher's
 - **The log starts with the version**, build time and launch options, so a log someone sends shows which build it came from.
 
 ### Changes
-- Graphics path, upscaling filter (FSR / CAS) and anti-aliasing (FXAA) are Xenos settings and are now labelled that way; the native renderer scales the picture itself. FSR for the native renderer is planned.
+- Graphics path and anti-aliasing (FXAA) are Xenos settings and are now labelled that way. The upscaling filter (FSR / CAS) works with both renderers: it scales the finished picture to your screen, so it matters when the render resolution is below the output resolution.
 - The installer installs third-party licences in a `licenses` folder next to the game.
 
 ### Fixes
@@ -24,7 +24,8 @@ Run the new exe, then click **Reinstall from a disc image...** on the launcher's
 
 ### Known issues
 - Keyboard prompts are still being tested: some keys may show wrong, and quick-time events show Xbox buttons (press the key bound to that button).
-- With the native renderer the launcher's upscaling and FXAA settings have no effect.
+- With the native renderer the launcher's FXAA setting has no effect.
+- With the native renderer in fullscreen the FPS counter isn't shown (it is in a window).
 - The first time an area is shown, some objects can appear black for a moment while their shaders compile.
 
 ### For developers

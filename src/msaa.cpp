@@ -57,7 +57,13 @@ REXCVAR_DEFINE_INT32(msaa_off_mask_depth_base, 0x388, "GPU",
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
                     "Log every EDRAM placement the engine looks up (sub_827B5B48)");
 
+REXCVAR_DEFINE_BOOL(msaa_off_restore_depth, true, "GPU",
+                    "With --msaa=false: copy the full scene depth back into the scene depth "
+                    "texture before the scene (the shadow mask leaves half-resolution depth in "
+                    "it, seen as stripes)");
+
 REX_EXTERN(sub_822FDCD0);  // D3DDevice_Clear
+REX_EXTERN(sub_827C4D68);  // RHICopyToResolveTarget
 REX_EXTERN(__imp__sub_827B5908);
 REX_EXTERN(__imp__sub_827B5B48);
 REX_EXTERN(__imp__sub_827C4640);
@@ -67,6 +73,7 @@ namespace {
 constexpr uint32_t kUseTiling = 0x8365CE40;
 constexpr uint32_t kInvertedDepth = 0x8365CE38;
 constexpr uint32_t kDevice = 0x8359F774;          // the D3D device the RHI uses
+constexpr uint32_t kSceneDepthSurface = 0x83661E18;  // scene render targets + 0xD8
 constexpr uint32_t kNonTiledReturn = 0x82E58360;  // after the scene's non-tiled SetRenderTargets
 
 uint32_t Load32(const uint8_t* base, uint32_t addr) {
@@ -107,6 +114,20 @@ extern "C" REX_FUNC(sub_827C4640) {
   __imp__sub_827C4640(ctx, base);
   if (REXCVAR_GET(msaa) || return_to != kNonTiledReturn) {
     return;
+  }
+  if (REXCVAR_GET(msaa_off_restore_depth)) {
+    // RHICopyToResolveTarget(scene depth, keep, {face 0, whole surface}), exactly as the depth
+    // pre-pass does at 0x82E55F44: puts the full scene depth back in the scene depth texture
+    // after the shadow mask has used it for its half-resolution depth.
+    PPCContext resolve = ctx;
+    const uint32_t params = ctx.r1.u32 - 0x100;
+    Store32(base, params, 0);  // cube face
+    for (uint32_t i = 1; i < 5; ++i) Store32(base, params + 4 * i, 0xFFFFFFFF);  // whole rect
+    resolve.r1.u32 = ctx.r1.u32 - 0x200;
+    resolve.r3.u64 = kSceneDepthSurface;
+    resolve.r4.u64 = 1;
+    resolve.r5.u64 = params;
+    sub_827C4D68(resolve, base);
   }
   PPCContext call = ctx;
   call.r1.u32 = ctx.r1.u32 - 0x200;
@@ -203,3 +224,10 @@ extern "C" REX_FUNC(sub_82A3F460) {
 // silhouette) and the black area below it gives the stripes. --msaa_off_mask_depth_base puts
 // ShadowMaskDepthZ at 0x388 instead: after the shadow mask's colour (ShadowMask, 0x2D0 + 184
 // tiles) and before the shadow depths (0x5A0), which are all in use at that point.
+
+// The stripes (--msaa_off_restore_depth): the shadow mask's half-resolution depth is also
+// resolved into the scene depth texture (resolve 640x720 from ShadowMaskDepthZ into
+// 1A248000, right after the shadow volumes). With tiling the strips resolve the scene depth
+// again before anything reads it; without, the scene's lighting reads the texture as it is.
+// So on the non-tiled path the scene depth is resolved again just before the scene draws
+// (from the scene depth still in EDRAM, which the shadow mask no longer overwrites).

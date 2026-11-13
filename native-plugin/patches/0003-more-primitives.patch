@@ -1,0 +1,71 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 5d36407..eed1214 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -850,21 +850,35 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   const xe::PrimitiveType prim = draw.initiator.prim_type;
+   const bool rect = prim == xe::PrimitiveType::kRectangleList;
+   VkPrimitiveTopology topology;
++  // Which draws are refused, in the log (the first 20 of each kind: primitive type, index source).
++  auto unsupported = [&](const char* why) {
++    static int logged = 0;
++    if (logged < 20) {
++      ++logged;
++      REXLOG_INFO("gfx native: unsupported draw ({}): prim {} source {} count {}", why, uint32_t(prim),
++                  uint32_t(draw.initiator.source_select), uint32_t(draw.initiator.num_indices));
++    }
++    ++stats_.unsupported_primitives;
++  };
+   switch (prim) {
+     case xe::PrimitiveType::kLineList: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
++    // A line loop's closing segment is left out.
++    case xe::PrimitiveType::kLineLoop:
+     case xe::PrimitiveType::kLineStrip: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
+     case xe::PrimitiveType::kTriangleList:
+     case xe::PrimitiveType::kTriangleFan:
++    case xe::PrimitiveType::kPolygon:  // drawn as a fan (convex)
+     case xe::PrimitiveType::kQuadList: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+     case xe::PrimitiveType::kTriangleStrip:
++    case xe::PrimitiveType::kQuadStrip:  // the same vertex order as a triangle strip
+     case xe::PrimitiveType::kRectangleList: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+     default:
+-      ++stats_.unsupported_primitives;
++      unsupported("primitive");
+       return;
+   }
+   const auto source = draw.initiator.source_select;
+   if (source == xe::SourceSelect::kImmediate) {
+-    ++stats_.unsupported_primitives;
++    unsupported("immediate indices");
+     return;
+   }
+   const bool dma = source == xe::SourceSelect::kDMA;
+@@ -1117,7 +1131,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       for (uint32_t k = 0; k < 4; ++k) host.push_back(r * 4 + k);
+     }
+     restart = true;
+-  } else if (dma && prim != xe::PrimitiveType::kQuadList && prim != xe::PrimitiveType::kTriangleFan) {
++  } else if (dma && prim != xe::PrimitiveType::kQuadList && prim != xe::PrimitiveType::kTriangleFan &&
++             prim != xe::PrimitiveType::kPolygon) {
+     // Straight from guest memory into the ring. 16-bit indices stay 16-bit unless a reset index in a list (no
+     // restart) has to become 0xFFFFFFFF, as the 32-bit path makes it.
+     const uint8_t* src = memory_(draw.index_base);
+@@ -1162,7 +1177,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       index_uploads_[key] = {uint32_t(index_offset), count * (index32 ? 4u : 2u),
+                              index_type == VK_INDEX_TYPE_UINT32, restart};
+     }
+-  } else if (prim == xe::PrimitiveType::kQuadList || prim == xe::PrimitiveType::kTriangleFan || dma) {
++  } else if (prim == xe::PrimitiveType::kQuadList || prim == xe::PrimitiveType::kTriangleFan ||
++             prim == xe::PrimitiveType::kPolygon || dma) {
+     if (!load_guest()) {
+       ++stats_.skipped_draws;
+       return;
+@@ -1172,7 +1188,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         for (uint32_t k : {0, 1, 2, 0, 2, 3}) host.push_back(guest[q + k]);
+       }
+       restart = false;
+-    } else if (prim == xe::PrimitiveType::kTriangleFan) {
++    } else if (prim == xe::PrimitiveType::kTriangleFan || prim == xe::PrimitiveType::kPolygon) {
+       for (uint32_t i = 1; i + 1 < count; ++i) host.insert(host.end(), {guest[0], guest[i], guest[i + 1]});
+       restart = false;
+     } else {

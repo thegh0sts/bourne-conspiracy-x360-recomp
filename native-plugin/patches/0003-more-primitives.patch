@@ -1,8 +1,8 @@
 diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
-index 5d36407..eed1214 100644
+index 5d36407..8063354 100644
 --- a/src/gfx/vk/draw.cpp
 +++ b/src/gfx/vk/draw.cpp
-@@ -850,21 +850,35 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+@@ -850,21 +850,37 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
    const xe::PrimitiveType prim = draw.initiator.prim_type;
    const bool rect = prim == xe::PrimitiveType::kRectangleList;
    VkPrimitiveTopology topology;
@@ -11,8 +11,10 @@ index 5d36407..eed1214 100644
 +    static int logged = 0;
 +    if (logged < 20) {
 +      ++logged;
-+      REXLOG_INFO("gfx native: unsupported draw ({}): prim {} source {} count {}", why, uint32_t(prim),
-+                  uint32_t(draw.initiator.source_select), uint32_t(draw.initiator.num_indices));
++      REXLOG_INFO("gfx native: unsupported draw ({}): prim {} source {} count {}, vs {:08X} memexport {:X}, ps {:X}",
++                  why, uint32_t(prim), uint32_t(draw.initiator.source_select), uint32_t(draw.initiator.num_indices),
++                  vs.address, uint32_t(vshader->memexport_eM_written()),
++                  pshader ? uint32_t(pshader->memexport_eM_written()) : 0xFFu);
 +    }
 +    ++stats_.unsupported_primitives;
 +  };
@@ -40,7 +42,7 @@ index 5d36407..eed1214 100644
      return;
    }
    const bool dma = source == xe::SourceSelect::kDMA;
-@@ -1117,7 +1131,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+@@ -1117,7 +1133,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
        for (uint32_t k = 0; k < 4; ++k) host.push_back(r * 4 + k);
      }
      restart = true;
@@ -50,7 +52,7 @@ index 5d36407..eed1214 100644
      // Straight from guest memory into the ring. 16-bit indices stay 16-bit unless a reset index in a list (no
      // restart) has to become 0xFFFFFFFF, as the 32-bit path makes it.
      const uint8_t* src = memory_(draw.index_base);
-@@ -1162,7 +1177,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+@@ -1162,7 +1179,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
        index_uploads_[key] = {uint32_t(index_offset), count * (index32 ? 4u : 2u),
                               index_type == VK_INDEX_TYPE_UINT32, restart};
      }
@@ -60,7 +62,7 @@ index 5d36407..eed1214 100644
      if (!load_guest()) {
        ++stats_.skipped_draws;
        return;
-@@ -1172,7 +1188,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+@@ -1172,7 +1190,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
          for (uint32_t k : {0, 1, 2, 0, 2, 3}) host.push_back(guest[q + k]);
        }
        restart = false;

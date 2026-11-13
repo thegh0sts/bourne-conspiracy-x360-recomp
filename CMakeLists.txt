@@ -29,6 +29,7 @@ set(TBC_SOURCES
     src/version_log.cpp
     src/script_trace.cpp
     src/msaa.cpp
+    src/ultrawide.cpp
 )
 
 if(WIN32)

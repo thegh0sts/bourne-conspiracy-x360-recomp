@@ -22,7 +22,7 @@ set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc3-win-amd64.zip"
 echo Collecting project files into payload\project ...
 if exist payload rmdir /s /q payload
 mkdir payload\project\src payload\project\generated
-for %%F in (tbc_manifest.toml default_functions.toml default_functions_scan.toml CMakeLists.txt CMakePresets.json) do copy /y "..\%%F" payload\project\ >nul || goto :missing
+for %%F in (tbc_manifest.toml default_functions.toml default_functions_scan.toml hooks.toml CMakeLists.txt CMakePresets.json) do copy /y "..\%%F" payload\project\ >nul || goto :missing
 copy /y ..\src\*.* payload\project\src\ >nul || goto :missing
 copy /y ..\generated\rexglue.cmake payload\project\generated\ >nul || goto :missing
 copy /y ..\tools\tbc_config.py tbc_config.py >nul || goto :missing

@@ -50,9 +50,10 @@ REXCVAR_DEFINE_INT32(msaa_off_color_base, 0, "GPU",
                      "With --msaa=false: EDRAM tile where the scene colour (DefaultColor) is placed; "
                      "0 (default) keeps the game's own, 720");
 
-REXCVAR_DEFINE_INT32(msaa_off_mask_depth_base, 0x388, "GPU",
+REXCVAR_DEFINE_INT32(msaa_off_mask_depth_base, -1, "GPU",
                      "With --msaa=false: EDRAM tile for the half-resolution shadow-mask depth "
                      "(ShadowMaskDepthZ); the game puts it at 0, on top of the scene depth. "
+                     "-1 (default): right after the shadow mask's colour (0x388 at 1280 wide); "
                      "0 keeps the game's own");
 
 REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
@@ -196,7 +197,14 @@ extern "C" REX_FUNC(sub_827B5B48) {
   if (off && moved > 0 && (name == "DefaultColor" || name == "DefaultColorRaw" || name == "DefaultBB") && uint32_t(moved) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(moved);
   }
-  const int32_t mask_depth = REXCVAR_GET(msaa_off_mask_depth_base);
+  int32_t mask_depth = REXCVAR_GET(msaa_off_mask_depth_base);
+  if (mask_depth < 0) {
+    // After the shadow mask's colour, which sits after a full-width 720-line depth: the scene
+    // depth's tiles (W x 720 x 4 bytes / 5120), then the half-width mask (80-pixel tiles across,
+    // 23 tile rows for its 368 lines). 0x2D0 + 8 x 23 = 0x388 at 1280; wider with ultrawide.
+    const uint32_t width = Load32(base, 0x8342402C);
+    mask_depth = int32_t(width * 720 * 4 / 5120 + ((width / 2 + 79) / 80) * 23);
+  }
   if (off && mask_depth > 0 && name == "ShadowMaskDepthZ" && uint32_t(mask_depth) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(mask_depth);
   }

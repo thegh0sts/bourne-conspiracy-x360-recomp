@@ -8,4 +8,4 @@ game_root = "../bourne-conspiracy-x360-port/tbc-game"
 [entrypoint]
 file_path = "../bourne-conspiracy-x360-port/tbc-game/default.xex"
 out_directory_path = "generated/default"
-includes = ["default_functions.toml", "default_functions_scan.toml"]
+includes = ["default_functions.toml", "default_functions_scan.toml", "hooks.toml"]

@@ -1,0 +1,10 @@
+# Mid-function hooks: the recompiler calls these C++ functions (src/) at the given guest address,
+# before the instruction there, passing the named registers by reference.
+
+# Render width (src/ultrawide.cpp). sub_827BFB48 (device setup) works out the width from the
+# console's display aspect (720 lines x aspect), clamps it to 900..1280 and stores it at
+# 0x8342402C / 0x83424034 at this address; r31 holds it. Every path through the clamp lands here.
+[[midasm_hook]]
+address = 0x827BFC84
+name = "TbcRenderWidth"
+registers = ["r31"]

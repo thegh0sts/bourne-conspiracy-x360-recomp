@@ -43,6 +43,10 @@ PANEL = "#1c2029"
 # shaders too). The graphics path and FXAA are Xenos (Direct3D 12) settings.
 RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
 RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
+# Picture shape (--aspect_ratio, src/ultrawide.cpp): the game draws a wider 720-line picture.
+# Experimental and for the native renderer; the HUD and menus are laid out for 16:9.
+ASPECTS = ["16:9 (original)", "21:9 ultrawide (experimental)", "32:9 super ultrawide (experimental)"]
+ASPECT_VALUE = {ASPECTS[0]: 0.0, ASPECTS[1]: 21 / 9, ASPECTS[2]: 32 / 9}
 RESOLUTIONS = ["Original (720p)", "1080p", "1440p", "4K"]
 RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
 RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
@@ -328,6 +332,7 @@ class KeyBindDialog(tk.Toplevel):
 
 DEFAULTS = {
     "renderer": RENDERERS[0],
+    "aspect": ASPECTS[0],
     "fullscreen": False,
     "resolution": "Original (720p)",
     "render_scale": SCALES[0],
@@ -578,6 +583,9 @@ def game_args(s, screen=None):
     """ReXGlue command-line settings, only when not at default. Valued settings use the
     "--name value" form already used for --gpu_plugin; on/off settings use "--name=value"."""
     args = ["--gpu_plugin", RENDERER_PLUGIN.get(s.get("renderer"), "native")]
+    aspect = ASPECT_VALUE.get(s.get("aspect"), 0.0)
+    if aspect:
+        args += ["--aspect_ratio", f"{aspect:.4f}"]
     # Always pass fullscreen explicitly: the runtime's own default is fullscreen, so
     # leaving the flag out when the box is unticked still opened full screen.
     args.append("--fullscreen=true" if s["fullscreen"] else "--fullscreen=false")
@@ -670,16 +678,17 @@ class SettingsView(tk.Frame):
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
         self._check(box, 1, "fullscreen", "Fullscreen")
         self._combo(box, 2, "resolution", "Output resolution", RESOLUTIONS)
-        self._combo(box, 3, "render_scale", "Render resolution (sharper, slower)", SCALES)
-        self._combo(box, 4, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
-        self._combo(box, 5, "upscale", "Upscaling filter", UPSCALE)
-        self._combo(box, 6, "aa", "Anti-aliasing (Xenos only)", AA)
-        self._combo(box, 7, "fps", "Frame rate", FPS)
-        self._checks(box, 8, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
-        self._check(box, 9, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        self._combo(box, 3, "aspect", "Picture shape (native renderer)", ASPECTS)
+        self._combo(box, 4, "render_scale", "Render resolution (sharper, slower)", SCALES)
+        self._combo(box, 5, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
+        self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
+        self._combo(box, 7, "aa", "Anti-aliasing (Xenos only)", AA)
+        self._combo(box, 8, "fps", "Frame rate", FPS)
+        self._checks(box, 9, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
+        self._check(box, 10, "original_pacing", "Original Xbox 360 frame pacing (slower)")
         tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
                            "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                 ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         box = self._section("Graphics and camera")
         self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),

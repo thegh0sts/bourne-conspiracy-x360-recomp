@@ -31,6 +31,7 @@
 
 #include "generated/default/tbc_pch.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
@@ -190,9 +191,29 @@ extern "C" REX_FUNC(sub_827B5B48) {
   __imp__sub_827B5B48(ctx, base);
   const bool log = REXCVAR_GET(msaa_edram_log);
   const bool off = !REXCVAR_GET(msaa);
-  if (!log && !off) return;
+  const uint32_t width = Load32(base, 0x8342402C);
+  const bool wide = width > 1280;  // --aspect_ratio (ultrawide.cpp)
+  if (!log && !off && !wide) return;
   const std::string name = ReadWide(base, name_addr);
   const uint32_t game = ctx.r3.u32;
+  // The game's layout is S = one full-width 720-line surface's tiles (W/80 x 45): scene depth at
+  // 0, scene colour (and the shadow mask) at S, then the 864x864 shadow-map depth and the other
+  // effect targets at 2S (ShadowDepthRT after the shadow map, 594 tiles further). At 1280,
+  // S = 720 and the 2S group fits in the 608 tiles left of the 2048. Wider, it doesn't (2S =
+  // 1890 at 21:9): a surface only reaches to the end of EDRAM, so the shadow map was cut to its
+  // top 224 lines and whole areas fell into shadow. With ultrawide the 2S group goes back to
+  // where it is at 1280 (1440), and at 32:9 the colour moves down so its 720 lines fit
+  // (2048 - S). Overlaps don't matter to the native renderer, which keeps each surface on its
+  // own; on Xenos ultrawide doesn't fit EDRAM anyway.
+  const uint32_t scene_tiles = (width + 79) / 80 * 45;
+  const uint32_t colour_base = wide ? std::min(scene_tiles, 2048 - scene_tiles) : scene_tiles;  // S <= 1800
+  if (wide) {
+    if (game == scene_tiles) {
+      ctx.r3.u64 = colour_base;
+    } else if (game >= 2 * scene_tiles && 2 * scene_tiles + 608 > 2048) {
+      ctx.r3.u64 = 1440 + (game - 2 * scene_tiles);
+    }
+  }
   const int32_t moved = REXCVAR_GET(msaa_off_color_base);
   if (off && moved > 0 && (name == "DefaultColor" || name == "DefaultColorRaw" || name == "DefaultBB") && uint32_t(moved) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(moved);
@@ -202,8 +223,7 @@ extern "C" REX_FUNC(sub_827B5B48) {
     // After the shadow mask's colour, which sits after a full-width 720-line depth: the scene
     // depth's tiles (W x 720 x 4 bytes / 5120), then the half-width mask (80-pixel tiles across,
     // 23 tile rows for its 368 lines). 0x2D0 + 8 x 23 = 0x388 at 1280; wider with ultrawide.
-    const uint32_t width = Load32(base, 0x8342402C);
-    mask_depth = int32_t(width * 720 * 4 / 5120 + ((width / 2 + 79) / 80) * 23);
+    mask_depth = int32_t(colour_base + ((width / 2 + 79) / 80) * 23);
   }
   if (off && mask_depth > 0 && name == "ShadowMaskDepthZ" && uint32_t(mask_depth) + tiles <= 2048) {
     ctx.r3.u64 = uint32_t(mask_depth);

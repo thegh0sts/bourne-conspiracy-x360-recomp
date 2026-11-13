@@ -32,6 +32,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include <cstdint>
+#include <string>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -44,7 +45,15 @@ REXCVAR_DEFINE_BOOL(msaa_inner_as_tiled, false, "GPU",
                     "With --msaa=false: let the scene's inner pass (sub_82E537D0) still see "
                     "tiling on; experiment for the half-resolution box in the top-left corner");
 
+REXCVAR_DEFINE_INT32(msaa_off_color_base, 1024, "GPU",
+                     "With --msaa=false: EDRAM tile where the scene colour (DefaultBB) is placed; "
+                     "0 keeps the game's own (720, under the half-resolution depth)");
+
+REXCVAR_DEFINE_BOOL(msaa_edram_log, false, "GPU",
+                    "Log every EDRAM placement the engine looks up (sub_827B5B48)");
+
 REX_EXTERN(__imp__sub_827B5908);
+REX_EXTERN(__imp__sub_827B5B48);
 REX_EXTERN(__imp__sub_827C4640);
 REX_EXTERN(__imp__sub_82E537D0);
 
@@ -64,6 +73,16 @@ void Store32(uint8_t* base, uint32_t addr, uint32_t value) {
   base[addr + 1] = uint8_t(value >> 16);
   base[addr + 2] = uint8_t(value >> 8);
   base[addr + 3] = uint8_t(value);
+}
+// A UTF-16 big-endian guest string, narrowed (the engine's names are ASCII).
+std::string ReadWide(const uint8_t* base, uint32_t addr) {
+  std::string out;
+  for (int i = 0; i < 64; ++i, addr += 2) {
+    const uint16_t c = uint16_t(base[addr]) << 8 | base[addr + 1];
+    if (!c) break;
+    out.push_back(c < 0x80 ? char(c) : '?');
+  }
+  return out;
 }
 }  // namespace
 
@@ -111,4 +130,32 @@ extern "C" REX_FUNC(sub_82E537D0) {
   Store32(base, kUseTiling, 1);
   __imp__sub_82E537D0(ctx, base);
   Store32(base, kUseTiling, saved);
+}
+
+// The engine's EDRAM placement table (sub_827B5B48: name, size in tiles -> base tile), used
+// when its render targets are created. Depth starts at tile 0 and the scene colour,
+// "DefaultBB", falls to the default: right after a 1280x720 depth, tile 720 (0x2D0). With
+// tiling the console's runtime puts the strip's colour at 0x400 instead, so the
+// half-resolution effects can use 720 as scratch: "AuxDepth" is not in the table either and
+// lands on 720 too. Without tiling the half-resolution depth pre-pass draws straight over the
+// finished scene colour, and the distortion pass that reads it back shows a quarter of the
+// screen of depth bits (the dark red box in the top-left). So with --msaa=false the scene
+// colour goes to 0x400 as with tiling: 0x400 + 720 tiles still fits in the 2048.
+extern "C" REX_FUNC(sub_827B5B48) {
+  const uint32_t name_addr = ctx.r3.u32;
+  const uint32_t tiles = ctx.r4.u32;
+  __imp__sub_827B5B48(ctx, base);
+  const bool log = REXCVAR_GET(msaa_edram_log);
+  const bool off = !REXCVAR_GET(msaa);
+  if (!log && !off) return;
+  const std::string name = ReadWide(base, name_addr);
+  const uint32_t game = ctx.r3.u32;
+  const int32_t moved = REXCVAR_GET(msaa_off_color_base);
+  if (off && moved > 0 && name == "DefaultBB" && uint32_t(moved) + tiles <= 2048) {
+    ctx.r3.u64 = uint32_t(moved);
+  }
+  if (log || ctx.r3.u32 != game) {
+    REXLOG_INFO("msaa: EDRAM {} ({} tiles) at {:#x}{}", name, tiles, ctx.r3.u32,
+                ctx.r3.u32 != game ? " (moved from the game's)" : "");
+  }
 }

@@ -57,7 +57,7 @@ The original game runs at 30 FPS: it asks Direct3D to wait two screen refreshes 
 
 The launcher also turns off the graphics plugin's imitation of the Xbox 360 vblank wait (`--vsync=false`), which slept on every GPU wait and cost a lot of frame rate, and lets `tbc.exe`'s own frame limiter (`src/frame_pacing.cpp`) hold the chosen rate instead. This approach comes from the Table Tennis PC port. Together with an FPS counter that no longer forces extra repaints, it took the busiest scene from about 48 to the mid-50s FPS at 1x.
 
-**Native renderer (0.2.3, the default).** The launcher's **Renderer** setting picks between Skullburglar's native Vulkan renderer and ReXGlue's Xenos (Direct3D 12). Native draws the game's graphics as ordinary Vulkan rendering instead of imitating the Xbox 360's EDRAM, and in testing it held the 62 FPS cap at 720p, 1080p, 1440p and 4K render resolution on an RTX 4080 Super, where Xenos dropped to the 40s at 1440p and about 22 at 4K (figures below). It needs the game's 2x MSAA off, which is now the default (`src/msaa.cpp`). The FPS figures and caveats below were measured with Xenos.
+**Native renderer (0.2.3, the default).** The launcher's **Renderer** setting picks between Skullburglar's native Vulkan renderer and ReXGlue's Xenos (Direct3D 12). Native draws the game's graphics as ordinary Vulkan rendering instead of imitating the Xbox 360's EDRAM, and in testing it ran smoothly at 720p, 1440p and 4K render resolution on an RTX 4080 Super, where Xenos drops to the 40s at 1440p and about 22 at 4K (figures below). It needs the game's 2x MSAA off, which is now the default (`src/msaa.cpp`). The FPS figures and caveats below were measured with Xenos.
 
 **60 FPS is experimental.** Keep these caveats in mind:
 

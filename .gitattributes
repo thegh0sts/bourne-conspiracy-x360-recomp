@@ -4,3 +4,4 @@
 # Patches applied to other repos with git apply: keep them byte-exact.
 tools/regpu-patches/*.patch -text
 tools/sdk-patches/*.patch -text
+native-plugin/patches/*.patch -text

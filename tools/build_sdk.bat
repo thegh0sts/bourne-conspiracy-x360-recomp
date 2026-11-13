@@ -62,6 +62,13 @@ if not exist "%SKULL%\.git" (
 )
 git -C "%SKULL%" -c advice.detachedHead=false checkout --quiet %SKULL_COMMIT% || exit /b 1
 call :lf_checkout "%SKULL%" || exit /b 1
+rem The native renderer plugin's sources get our changes for Bourne (native-plugin\patches).
+if "%TBC_NATIVE%"=="1" (
+  for %%F in ("%~dp0..\native-plugin\patches\*.patch") do (
+    git -C "%SKULL%" apply "%%~fF" || (echo Patch %%~nxF failed to apply & exit /b 1)
+    echo %%~nxF applied to the native renderer
+  )
+)
 
 echo === 3/4 Applying patches
 if "%NEED_PATCH%"=="0" (
@@ -115,10 +122,13 @@ endlocal
 exit /b 0
 
 rem Set a repo to keep LF line endings and rewrite its working files that way. This also
-rem discards any earlier patches (local changes to tracked files).
+rem discards any earlier patches (their changes to tracked files and the files they added).
 :lf_checkout
 git -C "%~1" config core.autocrlf false
 git -C "%~1" config core.eol lf
 git -C "%~1" rm --cached -r -q . >nul 2>&1
 git -C "%~1" reset --hard --quiet || exit /b 1
+rem Files an earlier patch set added are untracked, so reset leaves them; remove them too
+rem (only in the source folders: the build output in out\ stays).
+git -C "%~1" clean -fdq -- include src cmake || exit /b 1
 exit /b 0

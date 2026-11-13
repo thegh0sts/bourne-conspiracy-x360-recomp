@@ -1,0 +1,19 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index cb2d82f..a9a91ff 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -344,7 +344,13 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   bool IssueDraw(xe::PrimitiveType prim_type, uint32_t index_count, IndexBufferInfo* index_buffer_info,
+                  bool major_mode_explicit) override {
+     if (!renderer_) return false;
+-    if (indirect_depth_ > 1) {
++    // tbc (Bourne): BOTS_GFX_NESTED_DRAWS=1 draws them. Bourne's 720p scene fits in EDRAM without
++    // predicated tiling, so its nested indirect buffers may hold real draws rather than replays.
++    static const bool nested_draws = [] {
++      const char* v = std::getenv("BOTS_GFX_NESTED_DRAWS");
++      return v && *v == '1';
++    }();
++    if (indirect_depth_ > 1 && !nested_draws) {
+       ++indirect_draws_;
+       return true;
+     }

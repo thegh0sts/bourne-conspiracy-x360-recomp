@@ -11,6 +11,7 @@ Settings are saved in %LOCALAPPDATA%\\BourneConspiracyPC\\settings.json.
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -50,10 +51,13 @@ RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
 # Scaling was expensive in this runtime: on an RTX 4080 Super, one heavy street scene ran
 # about 48 FPS at 1x, about 20 at 2x and under 10 at 3x, with the GPU near full load. Most of
 # that was EDRAM copies; the ROV graphics path (RENDER_PATHS below) avoids them.
-SCALES = ["1280×720 (original)", "2560×1440 (demanding)", "3840×2160 (very demanding)"]
-SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 2, SCALES[2]: 3}
-OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[1], "3x": SCALES[2],
-                   "2560×1440": SCALES[1], "3840×2160": SCALES[2]}
+# 1080p is 1.5x: the native renderer takes any scale from 0.25 to 3 (BOTS_GFX_RENDER_SCALE), but
+# Xenos only whole numbers (--resolution_scale), so there it draws at 2x (1440p).
+SCALES = ["1280×720 (original)", "1920×1080 (Xenos: 1440p)", "2560×1440 (demanding)",
+          "3840×2160 (very demanding)"]
+SCALE_FACTOR = {SCALES[0]: 1, SCALES[1]: 1.5, SCALES[2]: 2, SCALES[3]: 3}
+OLD_SCALE_NAMES = {"1x (original)": SCALES[0], "2x": SCALES[2], "3x": SCALES[3],
+                   "2560×1440": SCALES[2], "3840×2160": SCALES[3]}
 # Output filter, applied by the runtime to the finished picture (--present_effect). FSR and
 # CAS exist only in an SDK built with AMD FidelityFX (tools/build_sdk.bat); the stock SDK
 # ignores the setting and keeps bilinear. They also treat the game's menus and HUD as part of
@@ -590,7 +594,7 @@ def game_args(s, screen=None):
         args += ["--window_width", str(ww), "--window_height", str(wh)]
     # Graphics-plugin settings are always passed, so a value left in tbc.toml (the runtime's
     # own config file, written by its F4 settings overlay) can't override the launcher.
-    scale = SCALE_FACTOR.get(s["render_scale"], 1)
+    scale = math.ceil(SCALE_FACTOR.get(s["render_scale"], 1))  # Xenos: whole numbers only
     args += ["--resolution_scale", str(scale)]
     path = RENDER_PATH_FLAG.get(s.get("render_path"), "rov" if scale > 1 else None)
     if path:
@@ -632,7 +636,7 @@ def game_env(s):
     from BOTS_GFX_RENDER_SCALE (it ignores --resolution_scale)."""
     env = {}
     if RENDERER_PLUGIN.get(s.get("renderer"), "native") == "native":
-        env["BOTS_GFX_RENDER_SCALE"] = str(SCALE_FACTOR.get(s["render_scale"], 1))
+        env["BOTS_GFX_RENDER_SCALE"] = f'{SCALE_FACTOR.get(s["render_scale"], 1):g}'
     return env
 
 

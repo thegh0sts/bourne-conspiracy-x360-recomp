@@ -1,0 +1,112 @@
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 38e64fc..1155319 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -1176,9 +1176,10 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+                  uint32_t(dest_pitch.copy_dest_height), uint32_t(copy.copy_command), int(dest_info.copy_dest_exp_bias),
+                  uint32_t(dest_info.copy_dest_number), uint32_t(dest_info.copy_dest_swap), multisampled ? " msaa" : "", copy.color_clear_enable ? "color " : "", copy.depth_clear_enable ? "depth" : "");
+   }
+-  if (copying && multisampled) {
+-    ++stats_.msaa_resolves;  // would need a downsample; none seen in this game yet
+-  } else if (copying && depth_source) {
++  // An MSAA surface is kept at sample resolution (drawn supersampled); its resolve reads each pixel's block of
++  // samples: colour averaged, depth from the first sample.
++  if (copying && multisampled) ++stats_.msaa_resolves;
++  if (copying && depth_source) {
+     // D3D resolves depth to an 8888 texture holding the raw 24_8 bits; games sample it as 24_8 / 24_8_FLOAT
+     // (the depth value) or as 8888 (to restore depth). Keep both.
+     const bool float_depth =
+@@ -1194,14 +1195,14 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+       // The raw image waits until something samples it (Image::raw_depth_from); one still pending for another
+       // rect is written first, before the value image changes.
+       if (raw->raw_depth_from && std::memcmp(&raw->raw_depth_rect, &rect, sizeof(rect))) MaterializeRawDepth(*raw);
+-      Transfer(*source, kTransferDepth, *value, kTransferDepthValue, &rect);
+-      if (lazy_raw_depth_) {
++      Transfer(*source, kTransferDepth, *value, kTransferDepthValue, &rect, 1.0f, samples_x, samples_y);
++      if (lazy_raw_depth_ && !multisampled) {
+         raw->raw_depth_from = value;
+         raw->raw_depth_float = float_depth;
+         raw->raw_depth_rect = rect;
+       } else {
+         Transfer(*source, float_depth ? kTransferFloatDepth : kTransferDepth, *raw,
+-                 uint32_t(xe::ColorRenderTargetFormat::k_8_8_8_8), &rect);
++                 uint32_t(xe::ColorRenderTargetFormat::k_8_8_8_8), &rect, 1.0f, samples_x, samples_y);
+       }
+       raw->written = value->written = ++write_clock_;
+       DumpResolve(*value, dest_address);
+@@ -1238,8 +1239,12 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+       }();
+       const bool to_alpha = k8_alpha && dest->format == VK_FORMAT_R8_UNORM && dest_info.copy_dest_swap &&
+                             source_format == xe::ColorRenderTargetFormat::k_8_8_8_8;
+-      Transfer(*source, 0, *dest, to_alpha ? kTransferResolveAlpha : kTransferResolve, &rect,
+-               std::ldexp(1.0f, int(dest_info.copy_dest_exp_bias) + (fixed ? 5 : 0)));
++      const uint32_t kind = to_alpha                           ? kTransferResolveAlpha
++                            : samples_x * samples_y >= 4       ? kTransferResolveMsaa4
++                            : samples_x * samples_y == 2       ? kTransferResolveMsaa2
++                                                               : kTransferResolve;
++      Transfer(*source, 0, *dest, kind, &rect, std::ldexp(1.0f, int(dest_info.copy_dest_exp_bias) + (fixed ? 5 : 0)),
++               samples_x, samples_y);
+       dest->swapped = dest_info.copy_dest_swap;
+       if (dest->width == 128 && dest->height == 128) (dest->format == VK_FORMAT_R8_UNORM ? god_mask_ : god_rays_) = dest;
+       dest->written = ++write_clock_;
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index ef190bc..bda30a2 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -486,6 +486,8 @@ class Renderer : public Pm4Sink {
+   static constexpr uint32_t kTransferDepthValue = 200;  // Transfer destination: the depth value as R32_SFLOAT
+   static constexpr uint32_t kTransferResolveAlpha = 301;  // ... into an 8-bit texture: the source's alpha (B-313)
+   static constexpr uint32_t kTransferResolve = 300;     // Transfer destination: a colour resolve (exponent bias)
++  static constexpr uint32_t kTransferResolveMsaa2 = 302;  // ... from a 2x MSAA surface: the average of 1x2 samples
++  static constexpr uint32_t kTransferResolveMsaa4 = 303;  // ... from a 4x MSAA surface: the average of 2x2 samples
+   static bool IsTransferable(uint32_t format);
+   bool InitTransfers();
+   void DestroyTransfers();
+@@ -494,8 +496,10 @@ class Renderer : public Pm4Sink {
+   // A full-screen triangle (transfer_vs_) into one colour attachment, dynamic viewport and scissor.
+   VkPipeline FullscreenPipeline(VkShaderModule fs, VkFormat format, VkPipelineLayout layout);
+   bool InitPresent();
++  // samples_x/y: a resolve from an MSAA surface, which the host keeps at sample resolution; each destination texel
++  // reads the samples_x x samples_y block at its position (averaged by kTransferResolveMsaa2/4, else the first).
+   void Transfer(Image& source, uint32_t source_format, Image& dest, uint32_t dest_format,
+-                const VkRect2D* rect = nullptr, float scale = 1.0f);
++                const VkRect2D* rect = nullptr, float scale = 1.0f, uint32_t samples_x = 1, uint32_t samples_y = 1);
+   // Hybrid spike (hybrid_fill.cpp): draws the queued stand-in scene into `target`; false if there was none to draw.
+   bool DrawSceneFill(Image& target);
+   void DestroySceneFill();
+diff --git a/src/gfx/vk/transfer.cpp b/src/gfx/vk/transfer.cpp
+index 14da934..33cc0df 100644
+--- a/src/gfx/vk/transfer.cpp
++++ b/src/gfx/vk/transfer.cpp
+@@ -77,6 +77,12 @@ void main() {
+ #elif DST == 301
+   result = vec4(v.a * scale);  // an 8-bit destination takes the alpha (see Renderer::Resolve, B-313)
+   return;
++#elif DST == 302
++  result = (v + FETCH(p + ivec2(0, 1))) * (0.5 * scale);  // 2x MSAA: two samples stacked vertically
++  return;
++#elif DST == 303
++  result = (v + FETCH(p + ivec2(1, 0)) + FETCH(p + ivec2(0, 1)) + FETCH(p + ivec2(1, 1))) * (0.25 * scale);
++  return;
+ #endif
+   uint bits;
+ #if SRC == 100
+@@ -276,7 +282,7 @@ VkPipeline Renderer::FullscreenPipeline(VkShaderModule fs, VkFormat format, VkPi
+ }
+ 
+ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint32_t dest_format,
+-                        const VkRect2D* rect, float scale) {
++                        const VkRect2D* rect, float scale, uint32_t samples_x, uint32_t samples_y) {
+   const VkPipeline pipeline = TransferPipeline(source_format, dest_format, dest.format);
+   if (!pipeline) return;
+   BeginCommands(kGpuTransfer);
+@@ -335,7 +341,8 @@ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint
+   struct {
+     int32_t dest_size[2];
+     float scale;
+-  } constants{{int32_t(rect ? source.width : width), int32_t(rect ? source.height : height)}, scale};
++  } constants{{int32_t(rect ? source.width / samples_x : width), int32_t(rect ? source.height / samples_y : height)},
++              scale};
+   vk_.vkCmdPushConstants(cmd_, transfer_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+   vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+   vk_.vkCmdEndRendering(cmd_);

@@ -1,13 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.2.4 (2026-11-14)
+
+Experimental ultrawide support with the native renderer, a fix for a crash right after starting, and an installer that checks the game files.
+
+### Updating from 0.2.3
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game is rebuilt and the bundled SDK replaced (now `tbc4`, with a native renderer fix for ultrawide). Your settings and key binds are kept.
 
 ### New
 - **Ultrawide (experimental, native renderer).** New output resolutions 2560×1080, 3440×1440 and 3840×1600. They set the picture's shape too: the game draws a wider picture (1720×720 for 3440×1440) with a wider field of view rather than a stretched one, and the HUD and menus spread to the edges without stretching. The render resolutions offered follow the output's shape, including one that matches the screen exactly (3440×1440 renders at 3440×1440), so a 16:9 render resolution can't end up on an ultrawide screen or the reverse. The game's video memory layout is adjusted so the shadow map and effect buffers still fit; without that, large areas fell into a false shadow. Pre-rendered videos stay 16:9. Xenos can't fit the wider picture in the console's video memory, so the ultrawide outputs are only offered with the native renderer. `--aspect_ratio` sets the shape directly.
-- **Native renderer patch 0005:** a dark vertical line near the right edge at ultrawide widths that aren't a multiple of 80 pixels (1720 for 3440×1440). The renderer overestimated by one pixel how far the console's screen-clear trick reached, and copied two uncleared columns into the shadow mask. Needs the SDK rebuilt with the native renderer (`tools\build_native.bat`), so the release's SDK bundle moves to a new tag.
 
 ### Fixes
 - **Crash about a second after starting** on some installs (0.2.2 and 0.2.3): the game lists its folders at startup, and if a disc extractor had dropped an empty one (the disc's `Engine` folder is empty), the runtime threw "Failed to enumerate directory" instead of reporting the folder missing. The game now creates any missing standard folder before starting.
+
+### Changes
 - **The installer checks the game files against the disc** after extracting them, and when it finds them already extracted: every folder must exist (empty ones too) and every file must be there at the disc's size. Missing folders are created and missing or damaged files extracted again; if that fails the install stops and says which files. The two files the launcher edits (Coalesced.ini and Xbox360TOC.txt) are only checked for presence.
 
 ## 0.2.3 (2026-11-13)

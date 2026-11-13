@@ -241,31 +241,29 @@ extern "C" REX_FUNC(sub_82A3F460) {
 // hasn't sent the scene's render targets to the GPU yet at that point, so the resolve still
 // sees the shadow mask's 640 pitch and Xenos rejects it ("Resolve region 0 <= x < 1280 is
 // outside the surface pitch 640"). Instead the shadow mask's own depth resolve is dropped: it
-// is the first RHICopyToResolveTarget after the depth pre-pass resolves the scene depth
-// (sub_827C4D68 returning to 0x82E55F48), and nothing reads it before tiling would overwrite
-// it (the shadow mask's colour pass right after binds no textures).
+// is an RHICopyToResolveTarget (sub_827C4D68) of the shadow mask's own depth surface, and
+// nothing reads it before tiling would overwrite
+// it (the shadow mask's colour pass right after binds no textures). It is recognised by its
+// surface: ShadowMaskDepthZ is kept at +0x1F8 in the scene render targets (0x83661D40;
+// stored by sub_82E3F790 at 0x82E3FC28), next to its resolve texture at +0x1F4.
 namespace {
-bool g_after_prepass_depth = false;
+constexpr uint32_t kShadowMaskDepthSurface = 0x83661F38;  // scene render targets + 0x1F8
 bool g_logged_mask_skip = false;
 }  // namespace
 
 extern "C" REX_FUNC(sub_827C4D68) {
-  const uint32_t return_to = static_cast<uint32_t>(ctx.lr);
-  if (REXCVAR_GET(msaa) || !REXCVAR_GET(msaa_off_skip_mask_depth_resolve)) {
-    __imp__sub_827C4D68(ctx, base);
-    return;
+  static int logged = 0;
+  if (REXCVAR_GET(msaa_edram_log) && logged < 200) {
+    ++logged;
+    REXLOG_INFO("msaa: resolve surface {:#x} from {:#x}", ctx.r3.u32,
+                static_cast<uint32_t>(ctx.lr));
   }
-  if (return_to == 0x82E55F48) {  // the depth pre-pass resolving the scene depth
-    __imp__sub_827C4D68(ctx, base);
-    g_after_prepass_depth = true;
-    return;
-  }
-  if (g_after_prepass_depth) {
-    g_after_prepass_depth = false;
+  if (!REXCVAR_GET(msaa) && REXCVAR_GET(msaa_off_skip_mask_depth_resolve) &&
+      ctx.r3.u32 == kShadowMaskDepthSurface) {
     if (!g_logged_mask_skip) {
       g_logged_mask_skip = true;
-      REXLOG_INFO("msaa: skipping the shadow mask's depth resolve (surface {:#x}, from {:#x})",
-                  ctx.r3.u32, return_to);
+      REXLOG_INFO("msaa: skipping the shadow mask's depth resolve (from {:#x})",
+                  static_cast<uint32_t>(ctx.lr));
     }
     ctx.r3.u64 = 0;
     return;

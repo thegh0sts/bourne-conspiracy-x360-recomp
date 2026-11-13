@@ -1,0 +1,35 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 8063354..b623032 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1849,6 +1849,30 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                  regs.values[rg::XE_GPU_REG_RB_DEPTH_INFO], regs.values[rg::XE_GPU_REG_RB_DEPTHCONTROL],
+                  uint32_t(surface_info.surface_pitch), regs.values[rg::XE_GPU_REG_PA_SU_SC_MODE_CNTL],
+                  regs.values[rg::XE_GPU_REG_RB_STENCILREFMASK]);
++    // Where the draw can land (BOTS_DRAW_TRACE): scissor, write bound, guest samples per pixel, viewport, and a
++    // rectangle list's vertex positions (XDK clears and copies).
++    std::string verts;
++    if (rect && source == xe::SourceSelect::kAutoIndex && count <= 6) {
++      const auto& bindings = vshader->vertex_bindings();
++      if (bindings.size() == 1 && !bindings[0].attributes.empty()) {
++        const auto fetch = regs.GetVertexFetch(bindings[0].fetch_constant);
++        const uint32_t stride = bindings[0].stride_words;
++        const uint8_t* data = memory_(fetch.address << 2);
++        for (uint32_t i = 0; data && stride && i < count && (i * stride + 2) <= fetch.size; ++i) {
++          float xy[2];
++          std::memcpy(xy, data + 4 * size_t(i * stride), sizeof(xy));
++          for (float& v : xy) v = xe::GpuSwap(v, fetch.endian);
++          char buf[64];
++          std::snprintf(buf, sizeof(buf), " (%g,%g)", double(xy[0]), double(xy[1]));
++          verts += buf;
++        }
++      }
++    }
++    std::fprintf(stderr, "  area: scissor %d,%d %ux%u bound %u,%u%s samples %ux%u viewport %g,%g %gx%g verts%s\n",
++                 scissor_rect.offset.x, scissor_rect.offset.y, scissor_rect.extent.width, scissor_rect.extent.height,
++                 scissor_x1, scissor_y1, bounded ? "" : " (open)", samples_x, samples_y,
++                 double(viewport.xy_offset[0]), double(viewport.xy_offset[1]), double(viewport.xy_extent[0]),
++                 double(viewport.xy_extent[1]), verts.c_str());
+   }
+ }
+ 

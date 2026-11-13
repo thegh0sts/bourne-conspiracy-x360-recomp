@@ -111,7 +111,7 @@ git config core.hooksPath .githooks
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and the Xenia project, whose work this is built on.
-- [Skullburglar](https://github.com/nlwstein/skullburglar) (BSD 3-Clause): crash reports and the leak scanner are adapted from its code, and its notes on SDK performance pointed at the FPS counter cost.
+- [Skullburglar](https://github.com/nlwstein/skullburglar) (BSD 3-Clause): the **native Vulkan renderer**, the default renderer (`native-plugin/` builds it from Skullburglar's pre-1.0 sources); crash reports and the leak scanner are adapted from its code, and its notes on SDK performance pointed at the FPS counter cost. Its licence is in `licenses/skullburglar-LICENSE.txt` and is installed with the game.
 - [Table Tennis PC](https://github.com/davidptrssvea/Table-Tennis-Rockstar-PC) (MIT): the frame pacing approach (guest vsync off, host frame limiter, tearing).
 - [WetRecomp](https://github.com/nikolaygorb/WetRecomp) by nikolaygorb (MIT): the GPU-wait hook, display refresh matching, the stub-sweep debug tool and the XMA audio decoder fixes (SDK patch 0003).
 - [ReGPU](https://github.com/zer0ducksgiven/ReGPU) and [Glue2GPU](https://github.com/zer0ducksgiven/Glue2GPU) (MIT): the experimental Direct3D 12 renderer and its ReXGlue plugin (`regpu-plugin/`).

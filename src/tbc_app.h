@@ -33,7 +33,14 @@ class TbcApp : public rex::ReXApp {
   void OnPostInitLogging() override { tbc::crash::Install(); }
 
   // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
-  void OnPreSetup(rex::RuntimeConfig&) override { tbc::display::MatchDisplayRefreshRate(); }
+  // Without --gpu_plugin, use Skullburglar's native Vulkan renderer (native-plugin/); the
+  // runtime itself has no default and would start without graphics.
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    tbc::display::MatchDisplayRefreshRate();
+    if (config.gpu_plugin.empty()) {
+      config.gpu_plugin = "native";
+    }
+  }
 
   void OnPostSetup() override {
     if (REXCVAR_GET(show_fps)) {

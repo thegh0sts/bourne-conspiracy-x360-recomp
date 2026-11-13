@@ -31,6 +31,15 @@ VERSION = "0.2.2"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
+# Renderer (--gpu_plugin). "native" is Skullburglar's Vulkan renderer (native-plugin/, from
+# github.com/nlwstein/skullburglar, BSD 3-Clause): it translates the game's GPU commands into
+# ordinary Vulkan drawing instead of emulating the Xbox 360's EDRAM, so higher render
+# resolutions cost far less. It needs the game's 2x MSAA off (src/msaa.cpp, the default).
+# "xenos" is ReXGlue's own Direct3D 12 renderer, kept as the fallback. The render resolution
+# reaches the native renderer through the BOTS_GFX_RENDER_SCALE environment variable; the
+# graphics-path, upscaling and anti-aliasing settings below apply to Xenos only.
+RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
+RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
 RESOLUTIONS = ["Original (720p)", "1080p", "1440p", "4K"]
 RES_FLAG = {"1080p": "1080p", "1440p": "1440p", "4K": "4k"}
 RES_SIZE = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4K": (3840, 2160)}
@@ -292,6 +301,7 @@ class KeyBindDialog(tk.Toplevel):
 
 
 DEFAULTS = {
+    "renderer": RENDERERS[0],
     "fullscreen": False,
     "resolution": "Original (720p)",
     "render_scale": SCALES[0],
@@ -505,7 +515,7 @@ def window_size(s, screen):
 def game_args(s, screen=None):
     """ReXGlue command-line settings, only when not at default. Valued settings use the
     "--name value" form already used for --gpu_plugin; on/off settings use "--name=value"."""
-    args = ["--gpu_plugin", "xenos"]
+    args = ["--gpu_plugin", RENDERER_PLUGIN.get(s.get("renderer"), "native")]
     # Always pass fullscreen explicitly: the runtime's own default is fullscreen, so
     # leaving the flag out when the box is unticked still opened full screen.
     args.append("--fullscreen=true" if s["fullscreen"] else "--fullscreen=false")
@@ -555,6 +565,15 @@ def game_args(s, screen=None):
     return args
 
 
+def game_env(s):
+    """Environment settings for the game: the native renderer takes its render resolution
+    from BOTS_GFX_RENDER_SCALE (it ignores --resolution_scale)."""
+    env = {}
+    if RENDERER_PLUGIN.get(s.get("renderer"), "native") == "native":
+        env["BOTS_GFX_RENDER_SCALE"] = str(SCALE_FACTOR.get(s["render_scale"], 1))
+    return env
+
+
 # --------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------
@@ -582,15 +601,19 @@ class SettingsView(tk.Frame):
         self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=14)
 
         box = self._section("Display")
-        self._check(box, 0, "fullscreen", "Fullscreen")
-        self._combo(box, 1, "resolution", "Output resolution", RESOLUTIONS)
-        self._combo(box, 2, "render_scale", "Render resolution (sharper, slower)", SCALES)
-        self._combo(box, 3, "render_path", "Graphics path (ROV: faster above 720p)", RENDER_PATHS)
-        self._combo(box, 4, "upscale", "Upscaling filter", UPSCALE)
-        self._combo(box, 5, "aa", "Anti-aliasing", AA)
-        self._combo(box, 6, "fps", "Frame rate", FPS)
-        self._checks(box, 7, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
-        self._check(box, 8, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        self._combo(box, 0, "renderer", "Renderer", RENDERERS)
+        self._check(box, 1, "fullscreen", "Fullscreen")
+        self._combo(box, 2, "resolution", "Output resolution", RESOLUTIONS)
+        self._combo(box, 3, "render_scale", "Render resolution (sharper, slower)", SCALES)
+        self._combo(box, 4, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
+        self._combo(box, 5, "upscale", "Upscaling filter (Xenos only)", UPSCALE)
+        self._combo(box, 6, "aa", "Anti-aliasing (Xenos only)", AA)
+        self._combo(box, 7, "fps", "Frame rate", FPS)
+        self._checks(box, 8, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
+        self._check(box, 9, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
+                           "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
+                 ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         box = self._section("Graphics and camera")
         self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
@@ -726,7 +749,11 @@ class SettingsView(tk.Frame):
         log = Path(self.info.get("root", exe.parent)) / "game.log"
         args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
         try:
-            start_game(args, exe.parent)
+            if RENDERER_PLUGIN.get(s.get("renderer")) == "native" and not any(exe.parent.glob("rexgpu-native*.dll")):
+                messagebox.showwarning("Play", "The native renderer isn't installed (this build's SDK "
+                                               "wasn't made with it). Starting with Xenos instead.")
+                args[args.index("native")] = "xenos"
+            start_game(args, exe.parent, game_env(s))
         except OSError as e:
             messagebox.showerror("Play", f"Couldn't start the game: {e}")
             return

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Native renderer, now the default.** Skullburglar's Vulkan renderer (pre-1.0, built by `native-plugin/` with `tools\build_native.bat`) draws the game as ordinary Vulkan rendering instead of emulating the Xbox 360's EDRAM. It renders the whole game correctly at 1x, 2x and 3x. Choose **Renderer** under Display in the launcher; ReXGlue's **Xenos** (Direct3D 12) stays as the second option, and the launcher falls back to it if the native plugin isn't installed. The render resolution reaches the native renderer through `BOTS_GFX_RENDER_SCALE`; graphics path, upscaling and anti-aliasing apply to Xenos only.
+- **The game's 2x MSAA is off by default** (`--msaa`, `src/msaa.cpp`). The console draws the 720p HDR scene with 2x MSAA in two strips (predicated tiling), which the native renderer can't draw and which costs Xenos frame rate at higher render resolutions. Running without it needed three fixes to the engine's untested non-tiled path: the shadow mask's half-resolution depth is moved off the scene depth in EDRAM (it caused a dark box in the top-left quarter), the scene renderer's second scene-depth resolve is skipped (it copied the shadow mask's depth instead: stripes, a split down the middle, and a resolve error every frame on Xenos), and no extra depth clear is made at the scene start. `--msaa=true` brings the console's anti-aliasing back.
+
+### Credits
+Skullburglar (BSD 3-Clause): the native renderer. Its licence is installed with the game (`licenses\`).
+
 ## 0.2.2 (2026-11-12)
 
 Much faster at higher render resolutions, easier mouse aiming, ideas from WetRecomp, and fixes to our SDK build.

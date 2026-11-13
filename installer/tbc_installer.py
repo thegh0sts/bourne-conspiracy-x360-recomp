@@ -470,19 +470,31 @@ class Installer:
         self.run_logged(base + f'cmake --build out\\build\\{PRESET}', p)
         if not self.exe.exists():
             raise InstallError("The build finished but tbc.exe wasn't produced. Click \"Open log\" for details.")
-        plugin = self.exe.parent / "rexgpu-xenosrd.dll"
-        if not plugin.exists():
-            for cand in sdk.rglob("rexgpu-xenosrd.dll"):
-                shutil.copy2(cand, plugin)
-                self.log(f"Copied graphics plugin from {cand}")
-                break
+        # Graphics plugins: Skullburglar's native Vulkan renderer (the default) and ReXGlue's
+        # Xenos. The game's build copies them from the SDK; this catches a build that didn't.
+        for name in ("rexgpu-nativerd.dll", "rexgpu-xenosrd.dll"):
+            plugin = self.exe.parent / name
+            if not plugin.exists():
+                for cand in sdk.rglob(name):
+                    shutil.copy2(cand, plugin)
+                    self.log(f"Copied graphics plugin from {cand}")
+                    break
+        if default_plugin(self.exe) != "native":
+            self.log("The native renderer isn't in this SDK; choose Xenos in the launcher.")
+        # Third-party licences (Skullburglar's for the native renderer, among others).
+        lic = payload_dir() / "licenses"
+        if lic.is_dir():
+            dest = self.root / "licenses"
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in lic.glob("*.txt"):
+                shutil.copy2(f, dest / f.name)
 
     def make_launchers(self):
         bat = self.root / "Play.bat"
         bat.write_text(
             "@echo off\r\n"
             f'start "" /d "{self.exe.parent}" "{self.exe}" --game_data_root "{self.game}" '
-            f'--gpu_plugin xenos --log_file "{self.root / "game.log"}"\r\n', encoding="utf-8")
+            f'--gpu_plugin {default_plugin(self.exe)} --log_file "{self.root / "game.log"}"\r\n', encoding="utf-8")
         icon = self.root / "icon.ico"
         src_icon = resource_dir() / "icon.ico"
         if src_icon.exists():
@@ -493,7 +505,7 @@ class Installer:
         (LAUNCHER_HOME / "launcher.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         # When running as the packaged launcher, keep a copy next to the game and point the shortcut at it,
         # so settings are applied every time. Otherwise the shortcut starts the game directly.
-        target, args, wd = self.exe, f'--game_data_root "{self.game}" --gpu_plugin xenos', self.exe.parent
+        target, args, wd = self.exe, f'--game_data_root "{self.game}" --gpu_plugin {default_plugin(self.exe)}', self.exe.parent
         if getattr(sys, "frozen", False):
             launcher = self.root / f"{LAUNCHER_EXE_NAME}.exe"
             try:
@@ -547,7 +559,7 @@ BG, FG, DIM, ACCENT, FIELD = "#13161c", "#e8e8e8", "#9aa3ad", "#c8102e", "#fffff
 LAUNCHER_HOME = DEFAULT_DIR.parent / "BourneConspiracyPC"
 
 
-def start_game(args, cwd):
+def start_game(args, cwd, extra_env=None):
     """Start the game fully separate from this (PyInstaller one-file) program.
 
     A one-file exe unpacks itself into a temporary _MEI folder and points the Windows DLL
@@ -556,6 +568,7 @@ def start_game(args, cwd):
     closed, Windows showed "Failed to remove temporary directory". Clear all of that first.
     """
     env = dict(os.environ)
+    env.update(extra_env or {})
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
@@ -575,6 +588,11 @@ def start_game(args, cwd):
     return subprocess.Popen(args, cwd=str(cwd), env=env, creationflags=flags, close_fds=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
+
+
+def default_plugin(exe) -> str:
+    """The native renderer when its plugin is next to tbc.exe, else ReXGlue's Xenos."""
+    return "native" if any(Path(exe).parent.glob("rexgpu-native*.dll")) else "xenos"
 
 
 def install_info_path() -> Path:
@@ -694,7 +712,7 @@ class InstallView(tk.Frame):
         if self.exe:
             if self.on_installed:
                 return self.on_installed(self.exe, self.game, self.root_dir)
-            return start_game([self.exe, "--game_data_root", self.game, "--gpu_plugin", "xenos"],
+            return start_game([self.exe, "--game_data_root", self.game, "--gpu_plugin", default_plugin(self.exe)],
                               Path(self.exe).parent)
         iso = Path(self.iso_var.get().strip('" '))
         if not iso.is_file():

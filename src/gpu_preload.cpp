@@ -28,9 +28,9 @@
 
 namespace {
 
-// --gpu_plugin=<name> or --gpu_plugin <name>; "xenos" when absent.
+// --gpu_plugin=<name> or --gpu_plugin <name>; "native" when absent (TbcApp::OnPreSetup).
 std::wstring PluginName() {
-  std::wstring name = L"xenos";
+  std::wstring name = L"native";
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   if (!argv) {
@@ -49,10 +49,10 @@ std::wstring PluginName() {
   // A plugin name is a plain word; anything else is left to the runtime to reject.
   for (wchar_t c : name) {
     if (!std::iswalnum(c) && c != L'_' && c != L'-') {
-      return L"xenos";
+      return L"native";
     }
   }
-  return name.empty() ? L"xenos" : name;
+  return name.empty() ? L"native" : name;
 }
 
 HMODULE PreloadGpuPlugin() {

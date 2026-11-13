@@ -4,8 +4,10 @@ rem Run from this folder (installer\) in any terminal with Python on PATH.
 rem
 rem   build_installer.bat [SDK folder]
 rem
-rem The SDK folder is a ReXGlue SDK install made by ..\tools\build_sdk.bat (FSR/CAS and
-rem performance patches). It's zipped into the exe, so the installer needs no SDK download.
+rem The SDK folder is a ReXGlue SDK install made by ..\tools\build_native.bat (FSR/CAS,
+rem performance patches and Skullburglar's native Vulkan renderer, the default renderer;
+rem ..\tools\build_sdk.bat alone leaves the native renderer out and players get Xenos).
+rem It's zipped into the exe, so the installer needs no SDK download.
 rem Default: C:\rexglue-src\rexglue-sdk\out\install\win-amd64 if it exists. Without one, the
 rem installer downloads the stock SDK from GitHub instead.
 setlocal
@@ -15,7 +17,7 @@ set "SDK_FOLDER=%~1"
 if "%SDK_FOLDER%"=="" if exist "C:\rexglue-src\rexglue-sdk\out\install\win-amd64\lib\cmake\rexglue" set "SDK_FOLDER=C:\rexglue-src\rexglue-sdk\out\install\win-amd64"
 rem Name of the bundled SDK: bump the suffix whenever the SDK build changes, so existing
 rem installs replace their SDK on the next install or repair.
-set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc2-win-amd64.zip"
+set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc3-win-amd64.zip"
 
 echo Collecting project files into payload\project ...
 if exist payload rmdir /s /q payload
@@ -24,6 +26,9 @@ for %%F in (tbc_manifest.toml default_functions.toml default_functions_scan.toml
 copy /y ..\src\*.* payload\project\src\ >nul || goto :missing
 copy /y ..\generated\rexglue.cmake payload\project\generated\ >nul || goto :missing
 copy /y ..\tools\tbc_config.py tbc_config.py >nul || goto :missing
+mkdir payload\licenses
+copy /y ..\licenses\*.txt payload\licenses\ >nul || goto :missing
+copy /y ..\LICENSE payload\licenses\bourne-conspiracy-x360-recomp-LICENSE.txt >nul 2>&1
 
 if "%SDK_FOLDER%"=="" (
   echo No SDK folder: the installer will download the stock ReXGlue SDK.

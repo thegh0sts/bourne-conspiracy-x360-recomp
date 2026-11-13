@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- **Crash about a second after starting** on some installs (0.2.2 and 0.2.3): the game lists its folders at startup, and if a disc extractor had dropped an empty one (the disc's `Engine` folder is empty), the runtime threw "Failed to enumerate directory" instead of reporting the folder missing. The game now creates any missing standard folder before starting.
+
 ## 0.2.3 (2026-11-13)
 
 A new default renderer that keeps high render resolutions at full speed, the console's 2x anti-aliasing turned off to make that possible, and keyboard prompts.

@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <filesystem>
 #include <memory>
+#include <system_error>
 
 #include <rex/cvar.h>
 #include <rex/rex_app.h>
@@ -68,5 +70,21 @@ class TbcApp : public rex::ReXApp {
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+  // Folders the game lists at startup. Some disc extractors drop empty folders (the disc's Engine
+  // folder is empty), and the runtime then throws "Failed to enumerate directory: The system
+  // cannot find the path specified" instead of telling the game the folder isn't there: an
+  // unhandled exception about a second after the window opens (a player's 0.2.2 and 0.2.3
+  // reports, minidump showing that message beside game\Engine and game\BourneGame). Creating
+  // any that are missing is harmless and lets the game start.
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    if (paths.game_data_root.empty()) return;
+    for (const char* dir : {"Engine", "Binaries", "BourneGame/CheckpointPresets", "BourneGame/Config",
+                            "BourneGame/CookedXenon", "BourneGame/Localization", "BourneGame/Movies"}) {
+      const std::filesystem::path path = paths.game_data_root / dir;
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec) && std::filesystem::create_directories(path, ec)) {
+        REXLOG_WARN("Created missing game folder {}", path.string());
+      }
+    }
+  }
 };

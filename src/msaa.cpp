@@ -37,9 +37,10 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(msaa, true, "GPU",
+REXCVAR_DEFINE_BOOL(msaa, false, "GPU",
                     "The 3D scene's 2x anti-aliasing (drawn in two strips on the console); "
-                    "false draws it in one pass at one sample per pixel");
+                    "false (default) draws it in one pass at one sample per pixel: faster, and "
+                    "the only way the native renderer can draw it");
 
 REXCVAR_DEFINE_BOOL(msaa_inner_as_tiled, false, "GPU",
                     "With --msaa=false: let the scene's inner pass (sub_82E537D0) still see "

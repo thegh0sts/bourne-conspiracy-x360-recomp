@@ -629,9 +629,8 @@ class SettingsView(tk.Frame):
         # Filled in by the update check, if a newer release is out.
         self.update_line = tk.Frame(self, bg=BG)
         self.update_line.pack(fill="x", padx=28)
-        self._update_found = None  # set by the check's thread, shown by the window's own thread
-        threading.Thread(target=self._check_update, daemon=True).start()
-        self.after(500, self._poll_update, 20)
+        self._update_shown = False
+        self.check_updates(manual=False)
 
         box = self._section("Game files")
         tk.Label(box, text=f"Installed in {info['game']}", font=("Segoe UI", 9), fg=DIM, bg=PANEL,
@@ -642,6 +641,7 @@ class SettingsView(tk.Frame):
         self._link(links, "Use a different install...", on_locate).pack(side="left", padx=14)
         self._link(links, "Open logs", self.open_logs).pack(side="left")
         self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=14)
+        self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
 
         box = self._section("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
@@ -782,25 +782,42 @@ class SettingsView(tk.Frame):
                 v.set(DEFAULTS[k])
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
 
-    def _check_update(self):
-        found = latest_release()
-        if found and version_key(found[0]) > version_key(VERSION):
-            self._update_found = found
+    def check_updates(self, manual):
+        """Asks GitHub for the newest release in a background thread. On opening (manual=False)
+        only a newer release shows; from the button, the status line also says when this is the
+        newest or GitHub couldn't be reached."""
+        result = {}
+        threading.Thread(target=lambda: result.update(found=latest_release(), done=True), daemon=True).start()
+        if manual:
+            self.status.set("Checking for updates...")
+        self.after(300, self._poll_update, result, manual, 40)
 
-    def _poll_update(self, tries):
-        # Tk isn't called from the check's thread; the window looks for its answer every half
-        # second for 10 s.
+    def _poll_update(self, result, manual, tries):
+        # Tk isn't called from the check's thread: the window looks for its answer every 300 ms.
         try:
             if not self.winfo_exists():
                 return
-            if self._update_found:
-                self._show_update(*self._update_found)
-            elif tries > 0:
-                self.after(500, self._poll_update, tries - 1)
+            if not result.get("done"):
+                if tries > 0:
+                    self.after(300, self._poll_update, result, manual, tries - 1)
+                elif manual:
+                    self.status.set("Couldn't reach GitHub to check for updates.")
+                return
+            found = result.get("found")
+            if found and version_key(found[0]) > version_key(VERSION):
+                self._show_update(*found)
+                if manual:
+                    self.status.set(f"Version {found[0].lstrip('vV')} is out: use the Download link above.")
+            elif manual:
+                self.status.set(f"You have the latest version ({VERSION})." if found
+                                else "Couldn't reach GitHub to check for updates.")
         except tk.TclError:  # the view was replaced (reinstall) meanwhile
             pass
 
     def _show_update(self, tag, url):
+        if self._update_shown:
+            return
+        self._update_shown = True
         tk.Button(self.update_line, text=f"Update available: {tag.lstrip('vV')} (you have {VERSION}). Download...",
                   command=lambda: webbrowser.open(url), font=("Segoe UI", 10, "bold", "underline"), fg=ACCENT,
                   bg=BG, activebackground=BG, activeforeground=FG, bd=0, cursor="hand2").pack(anchor="w")

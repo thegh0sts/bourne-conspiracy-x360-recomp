@@ -19,8 +19,10 @@
 // sizes, places and colours it exactly like the Xbox button it replaces. Keys without a glyph
 // keep the text label.
 //
-// File names are key names as in the binds (W.png, Space.png, LMB.png), case-insensitive;
-// mouse_left / mouse_right / mouse_middle also name the mouse buttons.
+// File names are key names as in the binds (W.png, Space.png, LMB.png), case-insensitive, and
+// may have a "keyboard_" prefix and an "_icon" suffix (keyboard_backspace_icon.png);
+// mouse_left / mouse_right / mouse_middle name the mouse buttons, enter / esc / ctrl the keys
+// the binds call Return / Escape / Control.
 //
 //   --key_glyphs=false        text labels only
 //   --key_glyphs_dump=true    write the font page before and after (logs/font_page_*.tga)
@@ -366,6 +368,9 @@ void Install(uint8_t* base, uint32_t font) {
     Store32(base, entry + 16, Load32(base, a_entry + 16));
     Store32(base, entry + 20, Load32(base, a_entry + 20));
     std::string key = Lower(e.path().stem().string());
+    // "keyboard_w", "keyboard_backspace_icon", "mouse_left": the key name in the middle.
+    if (key.starts_with("keyboard_")) key = key.substr(9);
+    if (key.ends_with("_icon")) key.resize(key.size() - 5);
     static const std::unordered_map<std::string, std::string> kAlias = {
         {"mouse_left", "lmb"}, {"mouse_right", "rmb"}, {"mouse_middle", "mmb"}, {"enter", "return"},
         {"esc", "escape"},     {"ctrl", "control"}};

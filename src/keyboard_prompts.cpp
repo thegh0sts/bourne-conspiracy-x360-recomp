@@ -98,9 +98,19 @@ const char* BindFor(char16_t c) {
     case u'B': case u'b': return "keybind_b";
     case u'X': case u'x': return "keybind_x";
     case u'Y': case u'y': return "keybind_y";
-    case u'E': return "keybind_right_shoulder";  // sprint
-    case u'W': return "keybind_left_shoulder";   // draw / holster the gun (WeaponStateButtonPress)
-    case u'T': return "keybind_right_trigger";   // shoot
+    // ControllerButtonFont's other buttons (from its page, logs/font_page_before.tga): the
+    // upper-case letter is the large badge, lower-case the small one.
+    case u'E': case u'e': return "keybind_right_shoulder";  // RB: sprint
+    case u'W': case u'w': return "keybind_left_shoulder";   // LB: draw / holster the gun
+    case u'T': case u't': return "keybind_right_trigger";   // RT: shoot
+    case u'R': case u'r': return "keybind_left_trigger";    // LT: aim, pop out of cover
+    case u'9': return "keybind_lstick_press";                // LS
+    case u'(': return "keybind_rstick_press";                // RS
+    case u's': return "keybind_dpad_up";
+    case u'h': return "keybind_dpad_down";
+    case u'k': return "keybind_dpad_left";
+    case u'f': return "keybind_dpad_right";
+    case u',': return "keybind_back";
     case u'.': return "keybind_start";
     default: return nullptr;
   }

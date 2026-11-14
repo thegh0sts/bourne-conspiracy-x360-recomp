@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.2.4-2 (2026-11-14)
+## 0.2.5 (2026-11-14)
 
 Keyboard and mouse, finished: mouse look, the player's keys in every prompt (text, HUD badges and QTE prompts), W / A / S / D for every QTE, a fixed key layout, and an update check in the launcher.
 
-### Updating from 0.2.4-1
+### Updating from 0.2.4 / 0.2.4-1
 Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game is rebuilt and the bundled SDK replaced (now `tbc6`, with the mouse look patch). Your settings are kept; custom key binds are not (the layout is now fixed).
 
 ### Fixes

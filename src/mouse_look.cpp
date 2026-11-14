@@ -38,6 +38,7 @@
 
 #include "generated/default/tbc_pch.h"
 
+#include <cstring>
 #include <string>
 #include <unordered_map>
 
@@ -64,6 +65,9 @@ REXCVAR_DEFINE_BOOL(mouse_look_invert_y, false, "Input", "Mouse look: moving the
 REXCVAR_DEFINE_BOOL(mouse_look_direct, false, "Input",
                     "Mouse look (experimental): add the mouse's movement straight to the camera's "
                     "target angle (HmPlayerInput.CurrentControlRotation) instead of the right stick");
+REXCVAR_DEFINE_BOOL(mouse_look_probe, false, "Debug",
+                    "Development: every 100 ms, log the camera's stored orbit (control and smoothed "
+                    "rotations, the camera state's strategy result, the camera's cache) to game.log");
 REXCVAR_DEFINE_DOUBLE(mouse_look_max_carry, 180.0, "Input",
                       "Mouse look: most turn (degrees) carried into later polls when the mouse moves "
                       "faster than full stick; 0 drops it, as before 0.2.7")
@@ -177,6 +181,49 @@ uint32_t Smoother(const PPCContext& ctx, uint8_t* base) {
   return 0;
 }
 
+float LoadF(const uint8_t* base, uint32_t addr) {
+  const uint32_t v = Load32(base, addr);
+  float f;
+  std::memcpy(&f, &v, 4);
+  return f;
+}
+
+// --mouse_look_probe: where the camera keeps its orbit. Logs, with the right stick: the player
+// input's CurrentControlRotation (+0x180), the smoother's SmoothedOrbitRotation (+0x44), the
+// camera state's CameraStrategyResult (strategy +0xE4 -> +0x3C, 64 bytes) and the camera's
+// CurrentStrategyResult (+0x370) and CameraCache (+0x2A0), as floats (and ints where they
+// look like rotator units).
+void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
+  static std::chrono::steady_clock::time_point next{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::milliseconds(100);
+  if (!FindPlayer(ctx, base)) return;
+  const uint32_t input = Load32(base, g_player.controller + 0x408);
+  const uint32_t smoother = Smoother(ctx, base);
+  const uint32_t strategy = Load32(base, g_player.camera + 0x350);
+  const uint32_t state = IsObject(strategy) ? Load32(base, strategy + 0xE4) : 0;
+  auto words = [&](uint32_t addr, uint32_t n) {
+    std::string out;
+    char buf[48];
+    for (uint32_t i = 0; i < n; ++i) {
+      const int32_t v = int32_t(Load32(base, addr + 4 * i));
+      const float fv = LoadF(base, addr + 4 * i);
+      if (std::abs(v) < 0x200000)
+        std::snprintf(buf, sizeof(buf), " %d", v);
+      else
+        std::snprintf(buf, sizeof(buf), " %.4g", fv);
+      out += buf;
+    }
+    return out;
+  };
+  REXLOG_INFO("camprobe stick {} {} | ccr{} | smooth{} | state{} | cur{} | cache{}", rx, ry,
+              IsObject(input) ? words(input + 0x180, 3) : std::string(" -"),
+              smoother ? words(smoother + 0x44, 3) : std::string(" -"),
+              IsObject(state) ? words(state + 0x3C, 16) : std::string(" -"), words(g_player.camera + 0x370, 16),
+              words(g_player.camera + 0x2A0, 8));
+}
+
 void AddRotator(uint8_t* base, uint32_t rot, int32_t pitch, int32_t yaw) {
   Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + pitch));
   Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + yaw));
@@ -213,6 +260,9 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
                   rex::cvar::Query<bool>("mnk_mouse");
   rex::input::mnk::SetMouseDirect(on);
   std::lock_guard<std::mutex> lock(g_mutex);
+  if (REXCVAR_GET(mouse_look_probe)) {
+    Probe(ctx, base, int16_t(Load16(base, state + 12)), int16_t(Load16(base, state + 14)));
+  }
   if (!on) {
     g_carry_yaw = g_carry_pitch = 0.0;
     return;

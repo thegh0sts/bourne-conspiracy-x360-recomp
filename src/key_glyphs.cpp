@@ -314,6 +314,7 @@ struct Badge {
   int clear[4];                  // area cleared, relative to the cell (x0, y0, x1, y1; 4-aligned)
   float cx, cy, box_w, box_h;    // where the glyph goes (centre) and its largest size
   const char* bind;              // whose key it shows
+  float opacity = 1.0f;          // below 1: drawn faded (the diamond's other buttons)
 };
 
 struct HudTexture {
@@ -324,6 +325,7 @@ struct HudTexture {
   uint8_t check[16] = {};
   uint32_t check_x = 0, check_y = 0;
   std::string keys;               // the keys drawn, to redo it when binds change
+  bool all_keys = false;          // only patched when every badge's key has a glyph
 };
 
 std::vector<HudTexture>& HudTextures() {
@@ -345,6 +347,27 @@ std::vector<HudTexture>& HudTextures() {
     presses.badges.push_back({0, 256, {0, 36, 48, 72}, 25.5f, 53.0f, 44, 32, "keybind_x@qte"});
     presses.badges.push_back({0, 384, {44, 12, 84, 44}, 64.0f, 29.0f, 38, 30, "keybind_y@qte"});
     v.push_back(presses);
+    // The animated QTE prompt (multi-takedowns, bosses): ButtonPressesDiamond is the
+    // controller's diamond with one button lit (cells A, B, X, Y), ButtonPressesDiamondNoOutline
+    // the lit button alone. Keyboard version: each cell cleared, the wanted key drawn where its
+    // button is, and (on the diamond) the other three keys small and faded in theirs.
+    struct Spot { float cx, cy; const char* bind; };
+    const Spot spots[4] = {{63.5f, 87.5f, "keybind_a@qte"}, {101.5f, 57.5f, "keybind_b@qte"},
+                           {24.5f, 57.5f, "keybind_x@qte"}, {63.5f, 33.5f, "keybind_y@qte"}};
+    HudTexture diamond{"BourneUIPlatformSpecific.ButtonPressesDiamond", 128, 512, {}};
+    HudTexture alone{"BourneUIPlatformSpecific.ButtonPressesDiamondNoOutline", 128, 512, {}};
+    diamond.all_keys = alone.all_keys = true;
+    for (int c = 0; c < 4; ++c) {
+      const Spot& lit = spots[c];
+      diamond.badges.push_back({0, c * 128, {0, 0, 128, 128}, lit.cx, lit.cy, 44, 34, lit.bind});
+      for (int o = 0; o < 4; ++o) {
+        if (o == c) continue;
+        diamond.badges.push_back({0, c * 128, {0, 0, 0, 0}, spots[o].cx, spots[o].cy, 30, 22, spots[o].bind, 0.45f});
+      }
+      alone.badges.push_back({0, c * 128, {0, 0, 128, 128}, lit.cx, lit.cy, 44, 34, lit.bind});
+    }
+    v.push_back(diamond);
+    v.push_back(alone);
     return v;
   }();
   return list;
@@ -386,10 +409,11 @@ bool TexturePage(uint8_t* base, uint32_t texture, Page& p, uint32_t& format) {
   return p.data != 0 && Readable(p.data);
 }
 
-// Clears a badge's area and draws the key's image into it, centred, scaled to fit its box.
+// Clears a badge's area (if it has one) and draws the key's image over what's there, centred,
+// scaled to fit its box, at the badge's opacity.
 void DrawBadge(uint8_t* base, const Page& p, const Badge& b, const Image* img) {
-  const int x0 = b.cell_x + b.clear[0], y0 = b.cell_y + b.clear[1];
-  const int x1 = b.cell_x + b.clear[2], y1 = b.cell_y + b.clear[3];
+  const int cx0 = b.cell_x + b.clear[0], cy0 = b.cell_y + b.clear[1];
+  const int cx1 = b.cell_x + b.clear[2], cy1 = b.cell_y + b.clear[3];
   std::vector<uint8_t> glyph;
   int gw = 0, gh = 0, gx = 0, gy = 0;
   if (img && img->w > 0 && img->h > 0) {
@@ -400,13 +424,33 @@ void DrawBadge(uint8_t* base, const Page& p, const Badge& b, const Image* img) {
     gy = b.cell_y + int(std::lround(b.cy - gh / 2.0f));
     glyph = Scale(img->rgba, img->w, img->h, gw, gh);
   }
+  // Blocks covering the cleared area and the glyph.
+  int x0 = cx1 > cx0 ? cx0 : gx, y0 = cy1 > cy0 ? cy0 : gy;
+  int x1 = cx1 > cx0 ? cx1 : gx + gw, y1 = cy1 > cy0 ? cy1 : gy + gh;
+  if (!glyph.empty()) {
+    x0 = std::min(x0, gx), y0 = std::min(y0, gy), x1 = std::max(x1, gx + gw), y1 = std::max(y1, gy + gh);
+  }
+  x0 = std::max(0, x0) & ~3;
+  y0 = std::max(0, y0) & ~3;
+  x1 = std::min(int(p.width), (x1 + 3) & ~3);
+  y1 = std::min(int(p.height), (y1 + 3) & ~3);
   for (int by = y0 / 4; by < y1 / 4; ++by) {
     for (int bx = x0 / 4; bx < x1 / 4; ++bx) {
-      uint8_t px[16][4] = {}, blk[16];
+      uint8_t px[16][4], blk[16];
+      ReadBlock(base, p, uint32_t(bx), uint32_t(by), blk);
+      DecodeBlock(blk, px);
       for (int i = 0; i < 16; ++i) {
-        const int x = bx * 4 + i % 4 - gx, y = by * 4 + i / 4 - gy;
-        if (!glyph.empty() && x >= 0 && y >= 0 && x < gw && y < gh)
-          std::memcpy(px[i], &glyph[(size_t(y) * gw + x) * 4], 4);
+        const int tx = bx * 4 + i % 4, ty = by * 4 + i / 4;
+        if (tx >= cx0 && tx < cx1 && ty >= cy0 && ty < cy1) std::memset(px[i], 0, 4);
+        const int x = tx - gx, y = ty - gy;
+        if (glyph.empty() || x < 0 || y < 0 || x >= gw || y >= gh) continue;
+        const uint8_t* g = &glyph[(size_t(y) * gw + x) * 4];
+        const float a = g[3] / 255.0f * b.opacity, da = px[i][3] / 255.0f;
+        const float out = a + da * (1 - a);
+        if (out <= 0) continue;
+        for (int k = 0; k < 3; ++k)
+          px[i][k] = uint8_t(std::lround((g[k] * a + px[i][k] * da * (1 - a)) / out));
+        px[i][3] = uint8_t(std::lround(out * 255));
       }
       EncodeBlock(px, blk);
       WriteBlock(base, p, uint32_t(bx), uint32_t(by), blk);
@@ -572,6 +616,9 @@ void PatchHud(const PPCContext& ctx, uint8_t* base, const std::function<std::str
         t.keys = keys;
       }
       continue;
+    }
+    if (t.all_keys && std::find(images.begin(), images.end(), nullptr) != images.end()) {
+      continue;  // a key without a glyph: the whole prompt stays the controller's
     }
     for (size_t i = 0; i < t.badges.size(); ++i) {
       // A key without an image keeps the controller badge: better than an empty space.

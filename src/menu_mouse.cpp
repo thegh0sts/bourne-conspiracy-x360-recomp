@@ -11,12 +11,13 @@
 // While an option has focus and the menu's prompts are drawn (a menu is up), the mouse isn't captured for mouse look: the
 // Windows cursor shows and moves freely (SetMouseLookActive(false); the stick gets nothing
 // from it). When the cursor moves onto another option of that menu, the d-pad is pressed
-// towards it (up / down, or left / right for options side by side), one step at a time, each
-// step waiting for the focus to move, until it has focus: so it's selected exactly as with the
+// towards it (up / down, or left / right for options side by side), a press every other poll,
+// until it has focus: so it's selected exactly as with the
 // keys, sounds and all. (Calling UIScreenObject.SetFocus through ProcessEvent didn't move the
 // focus.) The left mouse button (the
 // right trigger in keyboard-and-mouse mode) on an option presses A; the right button (the left
-// trigger) presses B, back. Away from options the mouse buttons do nothing in menus.
+// trigger) presses B, back. Away from options the mouse buttons do nothing in menus. On the
+// title screen (PRESS START, which has no options) the cursor shows too and a left click starts.
 //
 //   --menu_mouse=false      off: the mouse stays captured in menus, as before
 
@@ -60,7 +61,7 @@ constexpr uint32_t kRenderBounds = 0x21C;  // UIObject.RenderBounds: left, top, 
 constexpr uint32_t kOwnerScene = 0x19C;    // UIObject.OwnerScene
 constexpr uint32_t kStateStack = 0x9C;     // UIScreenObject.StateStack: TArray<UIState>
 constexpr uint32_t kRenderWidth = 0x8342402C;  // the picture's width (ultrawide.cpp); 720 high
-constexpr uint16_t kA = 0x1000, kB = 0x2000;
+constexpr uint16_t kA = 0x1000, kB = 0x2000, kStart = 0x0010;
 constexpr uint16_t kUp = 0x0001, kDown = 0x0002, kLeft = 0x0004, kRight = 0x0008;  // d-pad
 
 uint32_t Load32(const uint8_t* base, uint32_t addr) {
@@ -140,8 +141,7 @@ struct State {
   long last_x = -1, last_y = -1;
   uint32_t target = 0;         // the option the cursor moved onto, until it has focus
   uint16_t pressing = 0;       // d-pad direction held this poll
-  uint32_t step_from = 0;      // the focus when the last step was pressed
-  int wait = 0, steps = 0;     // polls waited for that step to land; steps taken
+  int steps = 0;               // steps taken towards the target
   bool click_a = false, click_b = false;  // a mouse button held as A / B
 };
 
@@ -252,7 +252,7 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   }
   const auto now = std::chrono::steady_clock::now();
   if (now >= s.next_scan) {
-    s.next_scan = now + std::chrono::milliseconds(250);
+    s.next_scan = now + std::chrono::milliseconds(500);  // a full object scan: not every frame
     Scan(s, ctx, base);
   }
   // The focused option: its scene is the menu on screen.
@@ -265,7 +265,9 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   }
   // A focused option alone isn't enough: a closed menu's last option can keep its focus state.
   // The menu's own prompts (Accept / Back, Paused) say it's on screen.
-  const bool menu = focused != 0 && tbc::prompts::MenuUp();
+  // The title screen (PRESS START) has no options: the cursor shows and a left click starts.
+  const bool title = tbc::prompts::TitleScreenUp();
+  const bool menu = (focused != 0 && tbc::prompts::MenuUp()) || title;
   if (menu != s.menu) {
     rex::input::mnk::SetMouseLookActive(!menu);  // released in menus: the cursor shows
     s.menu = menu;
@@ -278,6 +280,13 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   float x = 0, y = 0;
   long rx = 0, ry = 0;
   uint32_t hovered = 0;
+  if (!focused) {
+    // Title screen: left click = Start (and A), right click nothing.
+    const bool left = base[state + 7] > 64;
+    base[state + 6] = base[state + 7] = 0;
+    if (left) SetButtons(base, state, uint16_t(kA | kStart), 0);
+    return;
+  }
   if (Cursor(base, x, y, rx, ry)) {
     const uint32_t scene = Load32(base, focused + kOwnerScene);
     for (uint32_t o : s.buttons) {
@@ -297,18 +306,19 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
       s.steps = 0;
     }
   }
-  // Step the focus towards the target: press, then release and wait for the focus to move.
+  // Step the focus towards the target: the d-pad pressed one poll, released the next, in the
+  // direction of the target from wherever the focus is now. No waiting for each step to land
+  // (that made it lag); the direction is worked out again every press, so an overshoot is
+  // walked back.
   uint16_t dpad = 0;
-  if (s.target && (s.target == focused || !IsObject(s.target) || s.steps > 24)) s.target = 0;
+  if (s.target && (s.target == focused || !IsObject(s.target) || s.steps > 40)) s.target = 0;
   if (s.target) {
     if (s.pressing) {
       s.pressing = 0;  // released this poll
-      s.wait = 0;
-    } else if (focused != s.step_from || ++s.wait > 10 || s.steps == 0) {
+    } else {
       const Rect f = Bounds(base, focused), t = Bounds(base, s.target);
       const float dy = (t.t + t.b) / 2 - (f.t + f.b) / 2, dx = (t.l + t.r) / 2 - (f.l + f.r) / 2;
       s.pressing = std::abs(dy) >= std::abs(dx) ? (dy < 0 ? kUp : kDown) : (dx < 0 ? kLeft : kRight);
-      s.step_from = focused;
       ++s.steps;
       dpad = s.pressing;
     }

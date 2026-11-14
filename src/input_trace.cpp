@@ -12,10 +12,14 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 
 #include <rex/cvar.h>
+#include <rex/input/device_assignment.h>
+#include <rex/input/input_system.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
 
 #include "prompts.h"
 #include "qte.h"
@@ -26,6 +30,10 @@ REXCVAR_DEFINE_BOOL(input_trace, false, "Debug",
 REXCVAR_DEFINE_BOOL(trigger_ramp, false, "Input",
                     "Ease the triggers in over a few polls when they jump from released to "
                     "fully pressed (keys and mouse buttons do; a real trigger travels)");
+
+REXCVAR_DEFINE_BOOL(shared_controllers, true, "Input",
+                    "Every connected controller plays as player one, so a pad swapped in mid-game "
+                    "(plugged in before the old one is unplugged) works; false gives each pad its own player");
 
 REX_EXTERN(__imp__sub_823213D8);
 
@@ -64,7 +72,24 @@ uint16_t Load16(const uint8_t* base, uint32_t addr) {
 }
 }  // namespace
 
+// The SDK gives each pad its own player by connection order and keeps it: a pad plugged in
+// while another is still connected becomes player two, which this single-player game never
+// reads, so it stays dead after the first pad is unplugged. Shared assignment feeds every
+// pad to player one (the SDK's option for single-player titles), the pad in hand winning.
+static void ShareControllers() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    if (!REXCVAR_GET(shared_controllers)) return;
+    auto* runtime = rex::Runtime::instance();
+    auto* input = runtime ? static_cast<rex::input::InputSystem*>(runtime->input_system()) : nullptr;
+    if (!input) return;
+    input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+    REXLOG_INFO("shared_controllers: every controller plays as player one");
+  });
+}
+
 extern "C" REX_FUNC(sub_823213D8) {
+  ShareControllers();
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
   __imp__sub_823213D8(ctx, base);

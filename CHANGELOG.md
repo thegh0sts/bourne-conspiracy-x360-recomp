@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.6 (not released yet)
+## 0.2.6 (2026-11-15)
 
 PlayStation button prompts, controller swapping mid-game, and a fix for the game closing at startup when the Documents folder has non-English letters.
 

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### New
+- **Key glyphs in button prompts** (keyboard and mouse). Keys with an image in `assets/keys` (installed beside the game as `keys/`) are drawn as that image where the prompt showed an Xbox button: they go into free space on the button font's own texture at start-up, so they're sized and placed exactly like the button. The first two are the left and right mouse buttons (fight prompts); other keys keep their text label until they have an image. `--key_glyphs=false` turns it off.
 - **Multi-takedown and boss takedown prompts take W / A / S / D too.** They don't go through the event normal quick-time events use; their state is read from the takedown's branches instead (`BnTakedownBranch`: the prompt's start time in the branch at +0x98, the branch's clock at +0x88).
 
 ## 0.2.4-1 (2026-11-14)

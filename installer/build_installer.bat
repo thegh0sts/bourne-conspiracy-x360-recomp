@@ -25,6 +25,9 @@ mkdir payload\project\src payload\project\generated
 for %%F in (tbc_manifest.toml default_functions.toml default_functions_scan.toml hooks.toml CMakeLists.txt CMakePresets.json) do copy /y "..\%%F" payload\project\ >nul || goto :missing
 copy /y ..\src\*.* payload\project\src\ >nul || goto :missing
 copy /y ..\generated\rexglue.cmake payload\project\generated\ >nul || goto :missing
+rem Key glyphs for the prompts (the game's build copies them beside tbc.exe as keys\).
+mkdir payload\project\assets\keys
+if exist ..\assets\keys\*.png copy /y ..\assets\keys\*.png payload\project\assets\keys\ >nul
 copy /y ..\tools\tbc_config.py tbc_config.py >nul || goto :missing
 mkdir payload\licenses
 copy /y ..\licenses\*.txt payload\licenses\ >nul || goto :missing

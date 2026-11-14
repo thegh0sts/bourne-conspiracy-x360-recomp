@@ -322,6 +322,7 @@ DEFAULTS = {
     "mouse_sensitivity": 100,
     "mouse_look": True,
     "mouse_smoothing": 10,
+    "mouse_look_direct": False,
     "turn_speed": 100,
     "close_on_play": True,
 }
@@ -722,6 +723,8 @@ def game_args(s, screen=None):
         args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
         # The full-stick turn rate the camera edit gives the game (65 degrees a second x the factor).
         args.append(f"--mouse_look_full_rate={65 * MOUSE_RATE_FACTOR}")
+        if s.get("mouse_look_direct"):
+            args.append("--mouse_look_direct=true")
         if not s.get("mouse_look", True):
             args.append("--mouse_look=false")
         # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp), to
@@ -829,7 +832,13 @@ class SettingsView(tk.Frame):
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
         self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
-        self._check(box, 2, "mouse_look", "Mouse turns the camera directly (mouse look)")
+        line2 = tk.Frame(box, bg=PANEL)
+        line2.grid(row=2, column=0, columnspan=2, sticky="w")
+        for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
+                          ("mouse_look_direct", "Direct (experimental)")):
+            v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
+            tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
+                           activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
         self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
         self._slider(box, 4, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         self._slider(box, 5, "turn_speed", "Stick turn speed (%)", 50, 300, 10)

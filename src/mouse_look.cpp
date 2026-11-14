@@ -23,8 +23,23 @@
 //   --mouse_look_sensitivity=2.0       0.022 degrees per mouse count times this (as in Source
 //                                      games)
 //   --mouse_look_invert_y=true         mouse up looks down
+//   --mouse_look_direct=true           (experimental) add the mouse's movement straight to the
+//                                      camera's target angle instead of faking a stick
+//
+// Direct mode: Bourne's player input object (BourneNative.BnPlayerInput, the controller's
+// +0x408) keeps the camera's target rotation in HmPlayerInput.CurrentControlRotation (+0x180,
+// an FRotator: pitch, yaw, roll as ints, 65536 to a turn). Each frame the orbit yaw / pitch
+// behaviours add stick x turn rate x frame time to it and the orbit smoother eases the view
+// towards it (found with a camera probe: logs\camera_probe.txt). Adding the mouse's movement to
+// it, in those units, turns the camera exactly as far as the mouse moved: no stick dead zone,
+// turn rate cap or the game's look acceleration (PlayerInput.LookRightScale grows while the
+// stick is held). The smoother still applies (the launcher's Mouse camera smoothing). The
+// right stick isn't touched, so keys bound to it still work.
 
 #include "generated/default/tbc_pch.h"
+
+#include <string>
+#include <unordered_map>
 
 #include <algorithm>
 #include <chrono>
@@ -34,6 +49,10 @@
 #include <rex/cvar.h>
 #include <rex/input/mnk/mnk_input_driver.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
+#include <rex/system/xmemory.h>
+
+#include "prompts.h"
 
 REXCVAR_DEFINE_BOOL(mouse_look, true, "Input",
                     "Keyboard and mouse: the camera turns by as much as the mouse moves, "
@@ -42,6 +61,9 @@ REXCVAR_DEFINE_DOUBLE(mouse_look_sensitivity, 2.0, "Input",
                       "Mouse look: 0.022 degrees of turn per mouse count times this")
     .range(0.05, 20.0);
 REXCVAR_DEFINE_BOOL(mouse_look_invert_y, false, "Input", "Mouse look: moving the mouse up looks down");
+REXCVAR_DEFINE_BOOL(mouse_look_direct, false, "Input",
+                    "Mouse look (experimental): add the mouse's movement straight to the camera's "
+                    "target angle (HmPlayerInput.CurrentControlRotation) instead of the right stick");
 REXCVAR_DEFINE_DOUBLE(mouse_look_max_carry, 180.0, "Input",
                       "Mouse look: most turn (degrees) carried into later polls when the mouse moves "
                       "faster than full stick; 0 drops it, as before 0.2.7")
@@ -62,6 +84,79 @@ uint16_t Load16(const uint8_t* base, uint32_t addr) { return uint16_t(base[addr]
 void Store16(uint8_t* base, uint32_t addr, uint16_t v) {
   base[addr] = uint8_t(v >> 8);
   base[addr + 1] = uint8_t(v);
+}
+
+uint32_t Load32(const uint8_t* base, uint32_t addr) {
+  return uint32_t(base[addr]) << 24 | uint32_t(base[addr + 1]) << 16 | uint32_t(base[addr + 2]) << 8 | base[addr + 3];
+}
+void Store32(uint8_t* base, uint32_t addr, uint32_t v) {
+  base[addr] = uint8_t(v >> 24);
+  base[addr + 1] = uint8_t(v >> 16);
+  base[addr + 2] = uint8_t(v >> 8);
+  base[addr + 3] = uint8_t(v);
+}
+
+bool Readable(uint32_t addr) {
+  static std::unordered_map<uint32_t, bool> pages;
+  const uint32_t page = addr >> 12;
+  if (const auto it = pages.find(page); it != pages.end()) return it->second;
+  bool ok = false;
+  auto* runtime = rex::Runtime::instance();
+  if (runtime && runtime->memory()) {
+    if (auto* heap = runtime->memory()->LookupHeap(addr)) {
+      uint32_t protect = 0;
+      ok = heap->QueryProtect(addr, &protect) && (protect & rex::memory::kMemoryProtectRead);
+    }
+  }
+  pages.emplace(page, ok);
+  return ok;
+}
+
+bool IsObject(uint32_t a) {
+  return a >= 0x40000000 && a < 0xE0000000 && (a & 3) == 0 && Readable(a) && Readable(a + 0x200);
+}
+
+// Direct mode: the player's BnPlayerController (found in the object table, GObjObjects at
+// 0x83655774) and its class, re-found at most once a second when it goes (a level change).
+struct Player {
+  uint32_t controller = 0, controller_class = 0;
+  std::chrono::steady_clock::time_point next_find{};
+  std::unordered_map<uint32_t, bool> is_controller_class;  // class object -> BnPlayerController?
+};
+Player g_player;
+
+uint32_t PlayerInput(const PPCContext& ctx, uint8_t* base) {
+  Player& p = g_player;
+  const bool ok = IsObject(p.controller) && Load32(base, p.controller + 0x30) == p.controller_class;
+  if (!ok) {
+    p.controller = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < p.next_find) return 0;
+    p.next_find = now + std::chrono::seconds(1);
+    const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
+    if (!Readable(data) || count > 2000000) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t o = Load32(base, data + 4 * i);
+      if (!IsObject(o)) continue;
+      const uint32_t cls = Load32(base, o + 0x30);
+      if (!IsObject(cls)) continue;
+      auto it = p.is_controller_class.find(cls);
+      if (it == p.is_controller_class.end()) {
+        it = p.is_controller_class
+                 .emplace(cls, tbc::prompts::ObjectPathName(ctx, base, cls) == "BourneNative.BnPlayerController")
+                 .first;
+      }
+      if (!it->second) continue;
+      if (tbc::prompts::ObjectPathName(ctx, base, o).find("Default__") != std::string::npos) continue;
+      p.controller = o;
+      p.controller_class = cls;
+    }
+    if (!p.controller) return 0;
+    REXLOG_INFO("mouse_look_direct: player controller {:08X}, input {:08X}", p.controller,
+                Load32(base, p.controller + 0x408));
+  }
+  const uint32_t input = Load32(base, p.controller + 0x408);
+  return IsObject(input) ? input : 0;
 }
 
 // The turn (degrees) to make this poll: what's carried plus this poll's movement. Returns the
@@ -90,7 +185,7 @@ int32_t Deflection(double rate) {
 namespace tbc::camera {
 
 // Every controller poll (input_trace.cpp), right after the driver filled the state.
-void MouseLook(uint8_t* base, uint32_t state) {
+void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   const bool on = REXCVAR_GET(mouse_look) && rex::cvar::Query<bool>("mnk_mode") &&
                   rex::cvar::Query<bool>("mnk_mouse");
   rex::input::mnk::SetMouseDirect(on);
@@ -108,6 +203,28 @@ void MouseLook(uint8_t* base, uint32_t state) {
   if (dt > 0.1) g_carry_yaw = g_carry_pitch = 0.0;  // a long gap (loading): drop what was left
   dt = std::clamp(dt, 0.004, 0.1);  // one poll's time; a long gap (loading) isn't a slow move
   const double degrees = 0.022 * REXCVAR_GET(mouse_look_sensitivity);
+  if (REXCVAR_GET(mouse_look_direct)) {
+    g_carry_yaw = g_carry_pitch = 0.0;
+    const uint32_t input = PlayerInput(ctx, base);
+    if (!input || !moved) return;
+    // Degrees to rotator units (65536 a turn), keeping the fraction for the next poll.
+    static double frac_yaw = 0.0, frac_pitch = 0.0;
+    const double units = 65536.0 / 360.0;
+    frac_yaw += dx * degrees * units;
+    frac_pitch += -dy * degrees * units * (REXCVAR_GET(mouse_look_invert_y) ? -1.0 : 1.0);
+    const int32_t add_yaw = int32_t(frac_yaw), add_pitch = int32_t(frac_pitch);
+    frac_yaw -= add_yaw;
+    frac_pitch -= add_pitch;
+    const uint32_t rot = input + 0x180;  // CurrentControlRotation: pitch, yaw, roll
+    Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + add_pitch));
+    Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + add_yaw));
+    if (!g_logged) {
+      g_logged = true;
+      REXLOG_INFO("mouse_look: direct, mouse movement added to the camera's target angle (sensitivity {})",
+                  REXCVAR_GET(mouse_look_sensitivity));
+    }
+    return;
+  }
   const double yaw_rate = TakeRate(g_carry_yaw, dx * degrees, dt);
   const double pitch_rate =
       TakeRate(g_carry_pitch, -dy * degrees * (REXCVAR_GET(mouse_look_invert_y) ? -1.0 : 1.0), dt);

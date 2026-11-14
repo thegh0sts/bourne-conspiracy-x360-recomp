@@ -121,6 +121,49 @@ void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font) {
     REXLOG_INFO("glyph_probe: texture {:08X}{}", p, Words(base, p, 0x180));
     Plain(base, p, p, 0x180, 2, seen);
   }
+  // Second run: the render resource (Texture2D +0xB8, an FTexture2DResource, which the first
+  // object check skipped since it has a vtable too) and what it points to (the GPU texture
+  // header with the fetch constant); and the glyph table (UFont +0x3C data, +0x40 count; 24
+  // bytes each: StartU, StartV, USize, VSize (ints, texels), TextureIndex, ...) so the free
+  // space on the 512x512 page shows.
+  {
+    const uint32_t chars = Load32(base, font + 0x3C), count = Load32(base, font + 0x40);
+    if (Data(chars) && count && count <= 512) {
+      std::string used;
+      char buf[96];
+      for (uint32_t c = 0; c < count; ++c) {
+        const uint32_t e = chars + 24 * c;
+        const uint32_t u = Load32(base, e), v = Load32(base, e + 4), w = Load32(base, e + 8), h = Load32(base, e + 12);
+        if (!w || !h) continue;
+        std::snprintf(buf, sizeof(buf), "\n    char %3u '%c': %u,%u %ux%u page %u (+16 %08X +20 %08X)", c,
+                      c >= 32 && c < 127 ? char(c) : '?', u, v, w, h, Load32(base, e + 16), Load32(base, e + 16),
+                      Load32(base, e + 20));
+        used += buf;
+      }
+      REXLOG_INFO("glyph_probe: glyph table {:08X}, {} entries{}", chars, count, used);
+    }
+    const uint32_t page = [&] {
+      const uint32_t data = Load32(base, font + 0x48);
+      return Data(data) ? Load32(base, data) : 0u;
+    }();
+    if (page && Readable(page + 0xBC)) {
+      const uint32_t resource = Load32(base, page + 0xB8);
+      if (Data(resource)) {
+        REXLOG_INFO("glyph_probe: texture {:08X} resource {:08X}{}", page, resource, Words(base, resource, 0x100));
+        std::set<uint32_t> seen2;
+        for (uint32_t i = 4; i < 0x100; i += 4) {
+          const uint32_t p = Load32(base, resource + i);
+          if (!Data(p) || !seen2.insert(p).second) continue;
+          REXLOG_INFO("glyph_probe: resource+{:03X} -> {:08X}{}", i, p, Words(base, p, 0x80));
+          for (uint32_t j = 0; j < 0x80; j += 4) {
+            const uint32_t q = Load32(base, p + j);
+            if (!Data(q) || !seen2.insert(q).second || seen2.size() > 40) continue;
+            REXLOG_INFO("glyph_probe: resource+{:03X}+{:03X} -> {:08X}{}", i, j, q, Words(base, q, 0x60));
+          }
+        }
+      }
+    }
+  }
   // The font's texture list may be a TArray (data, count, max) rather than direct pointers.
   for (uint32_t i = 0; i < 0x100; i += 4) {
     const uint32_t data = Load32(base, font + i), count = Load32(base, font + i + 4);

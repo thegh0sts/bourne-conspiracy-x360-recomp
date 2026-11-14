@@ -1,0 +1,62 @@
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 8033b09..f59634c 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -85,9 +85,8 @@ constexpr size_t kMaxQueuedKeystrokes = 256;
+ // Bind values are a comma-separated list of alternatives, each optionally
+ // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+ // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+-// it. That is what lets the D-pad share the arrow keys. A consequence is
+-// that binding a bare modifier name ("Shift") can never fire, since holding it
+-// makes the live mask non-zero while the bind wants zero.
++// it. That is what lets the D-pad share the arrow keys. (tbc: relaxed in
++// TokenPressed below, so a bare modifier name ("Shift") can be bound.)
+ constexpr uint8_t kModShift = 1u << 0;
+ constexpr uint8_t kModCtrl = 1u << 1;
+ constexpr uint8_t kModAlt = 1u << 2;
+@@ -139,15 +138,42 @@ std::string_view TrimSpaces(std::string_view s) {
+   return s;
+ }
+ 
++// The modifier bit a key is itself (Shift, Ctrl, Alt, either side), else 0.
++uint8_t ModifierOf(rex::ui::VirtualKey vk) {
++  using rex::ui::VirtualKey;
++  switch (vk) {
++    case VirtualKey::kShift:
++    case VirtualKey::kLShift:
++    case VirtualKey::kRShift:
++      return kModShift;
++    case VirtualKey::kControl:
++    case VirtualKey::kLControl:
++    case VirtualKey::kRControl:
++      return kModCtrl;
++    case VirtualKey::kMenu:
++    case VirtualKey::kLMenu:
++    case VirtualKey::kRMenu:
++      return kModAlt;
++    default:
++      return 0;
++  }
++}
++
++// tbc: a plain bind ("W", "Shift") fires whatever modifiers are held, and a modifier bind
++// ("Shift+Up") when at least its modifiers are held. Exact matching made a bare modifier bind
++// unusable (holding Shift sets the very modifier the bind says must be up) and stopped every
++// other key while one was held: Shift bound to a shoulder button (sprint) never fired, and
++// would have stopped W/A/S/D while sprinting. The cost: "Up" also fires with Shift+Up held.
+ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+   uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
+-    return false;
+-  }
+   rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+   if (vk == rex::ui::VirtualKey::kNone) {
+     return false;
+   }
++  const uint8_t held = live_mods & ~ModifierOf(vk);
++  if ((held & want) != want) {
++    return false;
++  }
+   uint16_t idx = static_cast<uint16_t>(vk);
+   return idx < 256 && key_down[idx];
+ }

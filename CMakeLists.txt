@@ -34,6 +34,7 @@ set(TBC_SOURCES
     src/ultrawide.cpp
     src/qte.cpp
     src/glyph_probe.cpp
+    src/key_glyphs.cpp
 )
 
 if(WIN32)
@@ -68,3 +69,9 @@ add_custom_command(TARGET tbc POST_BUILD
         "-DDST=$<TARGET_FILE_DIR:tbc>"
         -P ${CMAKE_BINARY_DIR}/copy_if_exists.cmake
     VERBATIM)
+
+# Key glyphs (assets/keys/*.png, key_glyphs.cpp) go beside the game as keys/.
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/keys")
+    add_custom_command(TARGET tbc POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/keys" "$<TARGET_FILE_DIR:tbc>/keys")
+endif()

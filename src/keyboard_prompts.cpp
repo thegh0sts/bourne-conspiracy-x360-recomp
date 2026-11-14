@@ -149,6 +149,7 @@ struct State {
   std::unordered_map<uint32_t, std::string> font_names;  // UFont -> full name
   uint32_t label_font = 0;                               // the HUD font, once seen
   std::unordered_map<std::string, uint32_t> strings;     // label -> UTF-16 copy in guest memory
+  std::unordered_map<std::string, std::string> keynames;  // like labels: the key's own name
   std::unordered_map<std::string, std::string> labels;   // bind setting + screen -> label
   bool keyboard_mode = false;                            // --mnk_mode
   std::chrono::steady_clock::time_point settings_read{};
@@ -241,15 +242,17 @@ constexpr auto kRecent = std::chrono::milliseconds(500);
 void Refresh(State& s, std::chrono::steady_clock::time_point now) {
   if (now - s.settings_read > kRecent) {
     s.labels.clear();
+    s.keynames.clear();
     s.keyboard_mode = rex::cvar::Query<bool>("mnk_mode");
     s.settings_read = now;
   }
 }
 
-const std::string& LabelFor(State& s, const char* bind, bool menu, bool fight) {
+// The key a prompt shows for this button ("F", "LMB", "Return").
+const std::string& KeyFor(State& s, const char* bind, bool menu, bool fight) {
   const std::string key = std::string(bind) + (menu ? "@menu" : "") + (fight ? "@fight" : "");
-  auto it = s.labels.find(key);
-  if (it == s.labels.end()) {
+  auto it = s.keynames.find(key);
+  if (it == s.keynames.end()) {
     const std::string name = bind;
     std::string keys;
     if (fight && name == "keybind_x") {
@@ -260,7 +263,16 @@ const std::string& LabelFor(State& s, const char* bind, bool menu, bool fight) {
     } else {
       keys = rex::cvar::GetFlagByName(bind);
     }
-    it = s.labels.emplace(key, KeyLabel(PickKey(keys, menu))).first;
+    it = s.keynames.emplace(key, PickKey(keys, menu)).first;
+  }
+  return it->second;
+}
+
+const std::string& LabelFor(State& s, const char* bind, bool menu, bool fight) {
+  const std::string key = std::string(bind) + (menu ? "@menu" : "") + (fight ? "@fight" : "");
+  auto it = s.labels.find(key);
+  if (it == s.labels.end()) {
+    it = s.labels.emplace(key, KeyLabel(KeyFor(s, bind, menu, fight))).first;
   }
   return it->second;
 }
@@ -322,6 +334,8 @@ uint32_t Draw(PPCContext& ctx, uint8_t* base, const PPCContext& call, uint32_t t
 
 namespace tbc::glyphs {
 void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font);  // glyph_probe.cpp
+void Install(uint8_t* base, uint32_t font);                           // key_glyphs.cpp
+uint32_t CharFor(const std::string& key);                             // key_glyphs.cpp
 }
 
 extern "C" REX_FUNC(sub_82C49D88) {
@@ -338,6 +352,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
   State& s = S();
   uint32_t label_text = 0;
   uint32_t label_font = 0;
+  bool glyph_label = false;
   bool menu = false;
   {
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -361,16 +376,27 @@ extern "C" REX_FUNC(sub_82C49D88) {
     }
     Refresh(s, now);
     // Every font is looked up (once each), so the HUD font is known by the first button.
-    if (s.keyboard_mode && !(menu && !REXCVAR_GET(keyboard_prompts_in_menus)) &&
-        FontName(s, ctx, base, font) == kButtonFont && s.label_font) {
+    const bool button_font = FontName(s, ctx, base, font) == kButtonFont;
+    if (button_font) {
+      tbc::glyphs::Install(base, font);  // once: key glyphs into the font (key_glyphs.cpp)
+    }
+    if (s.keyboard_mode && !(menu && !REXCVAR_GET(keyboard_prompts_in_menus)) && button_font &&
+        s.label_font) {
       // A button is one character: anything longer is left alone.
       const char16_t c = char16_t(base[text] << 8 | base[text + 1]);
       const bool single = base[text + 2] == 0 && base[text + 3] == 0;
       if (const char* bind = single ? BindFor(c) : nullptr) {
         const bool fight = REXCVAR_GET(keyboard_mouse_attacks) && !menu &&
                            (c == u'X' || c == u'Y') && FightLine(s, ctx.f2.f64, now);
-        label_text = GuestString(s, base, LabelFor(s, bind, menu, fight));
-        label_font = s.label_font;
+        if (const uint32_t glyph = tbc::glyphs::CharFor(KeyFor(s, bind, menu, fight))) {
+          // The key's own glyph, one character of the button font itself.
+          label_text = GuestString(s, base, std::string(1, char(glyph)));
+          label_font = font;
+          glyph_label = true;
+        } else {
+          label_text = GuestString(s, base, LabelFor(s, bind, menu, fight));
+          label_font = s.label_font;
+        }
       }
     }
   }
@@ -381,10 +407,16 @@ extern "C" REX_FUNC(sub_82C49D88) {
 
   // Draw the label instead, centred where the button would have been.
   const PPCContext call = ctx;
-  const double scale = menu ? REXCVAR_GET(keyboard_menu_prompt_scale)
-                            : REXCVAR_GET(keyboard_prompt_scale);
-  const double dx = menu ? REXCVAR_GET(keyboard_menu_prompt_dx) : REXCVAR_GET(keyboard_prompt_dx);
-  const double dy = menu ? REXCVAR_GET(keyboard_menu_prompt_dy) : REXCVAR_GET(keyboard_prompt_dy);
+  // A glyph is drawn like the button it replaces: same font, size and place.
+  const double scale = glyph_label ? 1.0
+                       : menu      ? REXCVAR_GET(keyboard_menu_prompt_scale)
+                                   : REXCVAR_GET(keyboard_prompt_scale);
+  const double dx = glyph_label ? 0.0
+                    : menu      ? REXCVAR_GET(keyboard_menu_prompt_dx)
+                                : REXCVAR_GET(keyboard_prompt_dx);
+  const double dy = glyph_label ? 0.0
+                    : menu      ? REXCVAR_GET(keyboard_menu_prompt_dy)
+                                : REXCVAR_GET(keyboard_prompt_dy);
   constexpr double kTypicalButton = 28.0;  // px, when the button font can't be measured
   constexpr double kHudCharacter = 9.0;    // px per character of the HUD font, likewise
   double button_width = TextWidth(base, font, text);

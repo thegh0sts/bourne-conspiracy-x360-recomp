@@ -3,8 +3,6 @@
 ## Unreleased
 
 ### New
-- **The mouse in menus** (keyboard and mouse): in the main and pause menus the Windows cursor shows; point at an option to select it, left click to choose it (or tick a box), hold left on a slider's left or right part to move it, right click to go back. The menus are Unreal Engine 3 UI scenes: each option is a UIButton with its rectangle on screen (RenderBounds) and states (UIState_Focused for the selected one), found with `--ui_probe`. The option under the cursor is reached by pressing the d-pad towards it a step at a time, so it's selected exactly as with the keys. On the title screen (PRESS START) the cursor shows too and a left click starts. While it shows, the cursor is kept inside the game window (as long as the game is the window in front). `--menu_mouse=false` keeps the mouse captured in menus.
-
 - **PlayStation button prompts with a PlayStation pad.** With a DualShock or DualSense connected (and keyboard and mouse off), the prompts show cross / circle / square / triangle and L1 / R1 / L2 / R2, and Share / Options for Back / Start (PRESS START on the title screen), instead of the Xbox buttons: in text prompts (the button font), on the door / takedown badges and on the QTE prompts. It follows the first connected pad and switches back if an Xbox pad is plugged in instead. The PlayStation images are our own (`assets/ps`, installed beside the game as `ps/`), painted over the Xbox buttons in the game's textures, whose original pixels are kept for switching back. SDK patch 0010 tells the game which kind of pad is connected. `--pad_prompts=xbox` / `playstation` overrides it.
 
 ### Changes

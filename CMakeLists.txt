@@ -37,7 +37,6 @@ set(TBC_SOURCES
     src/camera_probe.cpp
     src/mouse_look.cpp
     src/ui_probe.cpp
-    src/menu_mouse.cpp
     src/key_glyphs.cpp
 )
 

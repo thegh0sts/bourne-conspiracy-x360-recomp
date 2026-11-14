@@ -719,14 +719,16 @@ uint32_t CharFor(const std::string& key) {
 }
 
 // Called on each controller poll while keyboard and mouse is off (keyboard_prompts.cpp), with
-// whether the prompts should be PlayStation's. Once a second each texture is checked: loaded,
-// and not as wanted (or reloaded since, which puts the Xbox buttons back), it's painted or
-// restored.
+// whether the prompts should be PlayStation's. Each texture is checked at once when that
+// changes (a pad swapped), else once a second: loaded, and not as wanted (or reloaded since,
+// which puts the Xbox buttons back), it's painted or restored.
 void PatchPadPrompts(const PPCContext& ctx, uint8_t* base, bool playstation) {
   static auto next = std::chrono::steady_clock::time_point{};
+  static bool last = false;
   const auto now = std::chrono::steady_clock::now();
-  if (now < next) return;
+  if (now < next && playstation == last) return;
   next = now + std::chrono::seconds(1);
+  last = playstation;
   std::lock_guard<std::mutex> lock(g_mutex);
   auto& images = PadImages();
   if (playstation && images.size() < 8) return;

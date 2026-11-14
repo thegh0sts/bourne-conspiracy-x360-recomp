@@ -142,6 +142,9 @@ struct State {
   std::unordered_map<uint32_t, int> kind;
   std::vector<uint32_t> buttons;                 // the menus' controls (buttons, checkboxes, sliders)
   int slider_repeat = 0;                         // polls until the next slider step
+  uint32_t client_class = 0, active_scenes = 0;  // GameUISceneClient, its ActiveScenes offset
+  uint32_t client = 0;                           // the scene client (open scenes, bottom to top)
+  uint32_t logged_focus = 0;
   std::chrono::steady_clock::time_point next_scan{};
   bool menu = false;           // last poll: a menu was up (mouse released)
   long last_x = -1, last_y = -1;
@@ -187,6 +190,16 @@ void Init(State& s, const PPCContext& ctx, uint8_t* base) {
   s.ready = s.button_class && s.focused_class;
   REXLOG_INFO("menu_mouse: UIButton {:08X}, UIState_Focused {:08X}{}", s.button_class, s.focused_class,
               s.ready ? "" : " - not found, the mouse stays captured in menus");
+  // GameUISceneClient.ActiveScenes: the open scenes, the top one last. Its offset is the
+  // ActiveScenes property's (UProperty +0x60), found among the class's property objects.
+  s.client_class = FindObject(ctx, base, "Engine.GameUISceneClient");
+  const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
+  for (uint32_t i = 0; s.client_class && Readable(data) && i < count && !s.active_scenes; ++i) {
+    const uint32_t o = Load32(base, data + 4 * i);
+    if (!IsObject(o) || Load32(base, o + 0x28) != s.client_class) continue;
+    if (tbc::prompts::ObjectPathName(ctx, base, o).ends_with("ActiveScenes")) s.active_scenes = Load32(base, o + 0x60);
+  }
+  REXLOG_INFO("menu_mouse: GameUISceneClient {:08X}, ActiveScenes at +{:X}", s.client_class, s.active_scenes);
 }
 
 // Every control of the open menus: buttons (UIButton and subclasses: UILabelButton,
@@ -195,8 +208,14 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
   s.buttons.clear();
   const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
   if (!Readable(data) || count > 2000000) return;
+  const bool find_client = !s.client || !IsObject(s.client) || Load32(base, s.client + 0x30) != s.client_class;
+  if (find_client) s.client = 0;
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t o = Load32(base, data + 4 * i);
+    if (find_client && s.client_class && IsObject(o) && Load32(base, o + 0x30) == s.client_class &&
+        tbc::prompts::ObjectPathName(ctx, base, o).find("Default__") == std::string::npos) {
+      s.client = o;
+    }
     if (!IsObject(o) || !Readable(o + kRenderBounds + 16)) continue;
     const uint32_t cls = Load32(base, o + 0x30);
     if (!IsObject(cls)) continue;
@@ -304,18 +323,32 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     s.next_scan = now + std::chrono::milliseconds(500);  // a full object scan: not every frame
     Scan(s, ctx, base);
   }
-  // The focused option: its scene is the menu on screen. A menu opened on top of another (Options
-  // over the main menu) leaves the one below with its focused option too, so the focused
-  // option of the newest scene (the highest object index, +0x04) wins.
-  uint32_t focused = 0, focused_index = 0;
-  for (uint32_t o : s.buttons) {
-    if (!IsObject(o) || !Focused(s, base, o)) continue;
-    const uint32_t scene = Load32(base, o + kOwnerScene);
-    const uint32_t index = IsObject(scene) ? Load32(base, scene + 4) : 0;
-    if (!focused || index > focused_index) {
-      focused = o;
-      focused_index = index;
+  // The focused control of the top open scene that has one (GameUISceneClient.ActiveScenes,
+  // top last; overlays like the button bar have no controls and are passed over). A menu
+  // below one on top keeps its own focused option, so the order matters.
+  uint32_t focused = 0;
+  if (s.client && s.active_scenes && Readable(s.client + s.active_scenes + 8)) {
+    const uint32_t arr = Load32(base, s.client + s.active_scenes), n = Load32(base, s.client + s.active_scenes + 4);
+    for (uint32_t k = n; k-- > 0 && !focused && IsObject(arr) && n < 64;) {
+      const uint32_t scene = Load32(base, arr + 4 * k);
+      for (uint32_t o : s.buttons) {
+        if (IsObject(o) && Load32(base, o + kOwnerScene) == scene && Focused(s, base, o)) {
+          focused = o;
+          break;
+        }
+      }
     }
+  } else {
+    for (uint32_t o : s.buttons) {  // no scene list: any focused control
+      if (IsObject(o) && Focused(s, base, o)) {
+        focused = o;
+        break;
+      }
+    }
+  }
+  if (focused != s.logged_focus) {
+    s.logged_focus = focused;
+    REXLOG_INFO("menu_mouse: focus {}", focused ? tbc::prompts::ObjectPathName(ctx, base, focused) : "none");
   }
   // A focused option alone isn't enough: a closed menu's last option can keep its focus state.
   // The menu's own prompts (Accept / Back, Paused) say it's on screen.
@@ -323,6 +356,8 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   const bool title = tbc::prompts::TitleScreenUp();
   const bool menu = (focused != 0 && tbc::prompts::MenuUp()) || title;
   if (menu != s.menu) {
+    REXLOG_INFO("menu_mouse: {} (focused control {:08X}, menu prompts {}, title screen {})",
+                menu ? "menu up, cursor shown" : "menu gone, mouse look", focused, tbc::prompts::MenuUp(), title);
     rex::input::mnk::SetMouseLookActive(!menu);  // released in menus: the cursor shows
     s.menu = menu;
     s.last_x = s.last_y = -1;

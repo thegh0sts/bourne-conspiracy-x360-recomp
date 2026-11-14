@@ -1,0 +1,39 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 98b9782..1d96bab 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1038,13 +1038,15 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         // BOTS_GFX_NO_TEXTURES=1 (tbc, debugging 007's menu): DXT4/5 textures read the placeholder image instead
+         // (white with BOTS_NULL_TEXTURE_WHITE=1), to tell a texture that samples as zero from a vertex colour that is
+         // zero. Render targets, video frames and other formats are left alone.
+-        static const bool no_textures = [] {
++        // BOTS_GFX_NO_TEXTURES=<hex address> replaces only the texture at that address.
++        static const uint32_t no_textures = [] {
+           const char* v = std::getenv("BOTS_GFX_NO_TEXTURES");
+-          return v && *v == '1';
++          if (!v || !*v) return 0u;
++          return std::strcmp(v, "1") == 0 ? 1u : uint32_t(std::strtoul(v, nullptr, 16));
+         }();
+-        view = no_textures && fetch.format == xe::TextureFormat::k_DXT4_5
+-                   ? VK_NULL_HANDLE
+-                   : TextureView(fetch, binding.is_signed, swizzle);
++        const bool replace = no_textures == 1 ? fetch.format == xe::TextureFormat::k_DXT4_5
++                                              : no_textures && (uint32_t(fetch.base_address) << 12) == no_textures;
++        view = replace ? VK_NULL_HANDLE : TextureView(fetch, binding.is_signed, swizzle);
+         if (view) {
+           texture_swizzles[binding.fetch_constant] = swizzle;
+           texture_signs[binding.fetch_constant] = rg::texture_util::SwizzleSigns(fetch);
+@@ -1063,6 +1065,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                         rg::texture_util::SwizzleSigns(fetch), int(fetch.exp_adjust));
+         }
+         trace_textures += t;
++        // tbc (007's menu): the raw fetch constant, as the shader reads it from the fetch constant buffer.
++        if (trace_signs) {
++          char raw[96];
++          std::snprintf(raw, sizeof(raw), "{%08X %08X %08X %08X %08X %08X}", fetch.dword_0, fetch.dword_1,
++                        fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
++          trace_textures += raw;
++        }
+       }
+     }
+     return std::span<const VkImageView>(views.data(), n);

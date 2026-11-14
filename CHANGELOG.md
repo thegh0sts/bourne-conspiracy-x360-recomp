@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### New
-- **Multi-takedown prompts take W / A / S / D too.** They don't go through the event normal quick-time events use; their state is read from the takedown's branches instead (`BnTakedownBranch`: the prompt's start time in the branch at +0x98, the branch's clock at +0x88).
+- **Multi-takedown and boss takedown prompts take W / A / S / D too.** They don't go through the event normal quick-time events use; their state is read from the takedown's branches instead (`BnTakedownBranch`: the prompt's start time in the branch at +0x98, the branch's clock at +0x88).
 
 ## 0.2.4-1 (2026-11-14)
 

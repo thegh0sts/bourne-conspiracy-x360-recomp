@@ -1,19 +1,22 @@
 diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
-index f27ba2e..dbdcb1b 100644
+index f27ba2e..98b9782 100644
 --- a/src/gfx/vk/draw.cpp
 +++ b/src/gfx/vk/draw.cpp
-@@ -1016,7 +1016,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
-                                                                   : fetch.dimension == xe::DataDimension::k1D ||
-                                                                         fetch.dimension == xe::DataDimension::k2DOrStacked;
-       const bool flat = fetch.dimension != xe::DataDimension::k3D && fetch.dimension != xe::DataDimension::kCube;
--      if (!compatible) {
-+      // BOTS_GFX_NO_TEXTURES=1 (tbc, debugging 007's menu): every fetch reads the placeholder image (white with
-+      // BOTS_NULL_TEXTURE_WHITE=1), to tell a texture that samples as zero from a vertex colour that is zero.
-+      static const bool no_textures = [] {
-+        const char* v = std::getenv("BOTS_GFX_NO_TEXTURES");
-+        return v && *v == '1';
-+      }();
-+      if (!compatible || no_textures) {
-         view = null_image->view;
-       } else if (Image* resolved = flat ? ResolvedTexture(fetch) : nullptr) {
-         // Render-to-texture: a resolve destination is sampled straight from its host image.
+@@ -1035,7 +1035,16 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         source = resolved->format == VK_FORMAT_R32_SFLOAT ? "depth" : "rt";
+       } else {
+         uint32_t swizzle = xe::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+-        view = TextureView(fetch, binding.is_signed, swizzle);
++        // BOTS_GFX_NO_TEXTURES=1 (tbc, debugging 007's menu): DXT4/5 textures read the placeholder image instead
++        // (white with BOTS_NULL_TEXTURE_WHITE=1), to tell a texture that samples as zero from a vertex colour that is
++        // zero. Render targets, video frames and other formats are left alone.
++        static const bool no_textures = [] {
++          const char* v = std::getenv("BOTS_GFX_NO_TEXTURES");
++          return v && *v == '1';
++        }();
++        view = no_textures && fetch.format == xe::TextureFormat::k_DXT4_5
++                   ? VK_NULL_HANDLE
++                   : TextureView(fetch, binding.is_signed, swizzle);
+         if (view) {
+           texture_swizzles[binding.fetch_constant] = swizzle;
+           texture_signs[binding.fetch_constant] = rg::texture_util::SwizzleSigns(fetch);

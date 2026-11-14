@@ -9,7 +9,8 @@ generated/default/
 *.xex
 *.xexp
 *.iso
-assets/
+assets/*
+!assets/keys/
 
 # Logs and local junk
 tbc_log.txt

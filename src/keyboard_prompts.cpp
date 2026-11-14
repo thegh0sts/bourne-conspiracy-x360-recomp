@@ -320,8 +320,13 @@ uint32_t Draw(PPCContext& ctx, uint8_t* base, const PPCContext& call, uint32_t t
 
 }  // namespace
 
+namespace tbc::glyphs {
+void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font);  // glyph_probe.cpp
+}
+
 extern "C" REX_FUNC(sub_82C49D88) {
   tbc::prompts::TraceText(ctx, base);
+  if (ctx.r7.u32) tbc::glyphs::ProbeFont(ctx, base, ctx.r7.u32);
 
   const uint32_t text = ctx.r6.u32;
   const uint32_t font = ctx.r7.u32;

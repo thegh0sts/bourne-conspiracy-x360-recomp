@@ -33,6 +33,7 @@ set(TBC_SOURCES
     src/msaa.cpp
     src/ultrawide.cpp
     src/qte.cpp
+    src/glyph_probe.cpp
 )
 
 if(WIN32)

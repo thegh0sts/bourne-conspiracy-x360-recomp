@@ -17,7 +17,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 import webbrowser
 import zipfile
 from pathlib import Path
@@ -30,6 +32,9 @@ from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, Install
                            make_root, start_game)
 
 VERSION = "0.2.4-1"
+# Update check: the newest release on GitHub, asked once when the launcher opens.
+RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
+RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 # The keyboard-and-mouse layout, explained (the launcher's "Key binds" link).
 CONTROLS_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
@@ -196,6 +201,31 @@ KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 # The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE
 # prompts (key_glyphs.cpp), the fight attacks on the mouse buttons and the QTEs on W / A / S / D
 # are all set up around it, so it isn't editable. The launcher links to docs/keyboard-and-mouse.md.
+def version_key(tag):
+    """'v0.2.4-1' -> (0, 2, 4, 1): numbers to compare; anything else in the tag counts as 0."""
+    tag = tag.strip().lstrip("vV")
+    main, _, build = tag.partition("-")
+    nums = []
+    for part in main.split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        nums.append(int(digits) if digits else 0)
+    nums += [0] * (3 - len(nums))
+    digits = "".join(c for c in build if c.isdigit())
+    return tuple(nums[:3]) + (int(digits) if digits else 0,)
+
+
+def latest_release(timeout=5):
+    """(tag, page URL) of the newest GitHub release, or None if it can't be had."""
+    req = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json",
+                                                        "User-Agent": f"BourneConspiracyPC-launcher/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data["tag_name"], data.get("html_url") or RELEASES_URL
+    except Exception:  # offline, rate-limited, blocked: no update notice, nothing else
+        return None
+
+
 def kbm_binds(s):
     """The key binds: the fixed layout (binds saved by older launchers are ignored)."""
     return dict(KBM_DEFAULT)
@@ -596,6 +626,12 @@ class SettingsView(tk.Frame):
         head.pack(fill="x", padx=28, pady=(20, 4))
         tk.Label(head, text=APP_NAME.upper(), font=("Segoe UI", 22, "bold"), fg=ACCENT, bg=BG).pack(side="left")
         tk.Label(head, text=f"Launcher {VERSION}", font=("Segoe UI", 9), fg=DIM, bg=BG).pack(side="right", anchor="s")
+        # Filled in by the update check, if a newer release is out.
+        self.update_line = tk.Frame(self, bg=BG)
+        self.update_line.pack(fill="x", padx=28)
+        self._update_found = None  # set by the check's thread, shown by the window's own thread
+        threading.Thread(target=self._check_update, daemon=True).start()
+        self.after(500, self._poll_update, 20)
 
         box = self._section("Game files")
         tk.Label(box, text=f"Installed in {info['game']}", font=("Segoe UI", 9), fg=DIM, bg=PANEL,
@@ -745,6 +781,29 @@ class SettingsView(tk.Frame):
             if k != "render_scale":
                 v.set(DEFAULTS[k])
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
+
+    def _check_update(self):
+        found = latest_release()
+        if found and version_key(found[0]) > version_key(VERSION):
+            self._update_found = found
+
+    def _poll_update(self, tries):
+        # Tk isn't called from the check's thread; the window looks for its answer every half
+        # second for 10 s.
+        try:
+            if not self.winfo_exists():
+                return
+            if self._update_found:
+                self._show_update(*self._update_found)
+            elif tries > 0:
+                self.after(500, self._poll_update, tries - 1)
+        except tk.TclError:  # the view was replaced (reinstall) meanwhile
+            pass
+
+    def _show_update(self, tag, url):
+        tk.Button(self.update_line, text=f"Update available: {tag.lstrip('vV')} (you have {VERSION}). Download...",
+                  command=lambda: webbrowser.open(url), font=("Segoe UI", 10, "bold", "underline"), fg=ACCENT,
+                  bg=BG, activebackground=BG, activeforeground=FG, bd=0, cursor="hand2").pack(anchor="w")
 
     def show_keys(self):
         webbrowser.open(CONTROLS_URL)

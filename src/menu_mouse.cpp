@@ -10,9 +10,11 @@
 //
 // While an option has focus and the menu's prompts are drawn (a menu is up), the mouse isn't captured for mouse look: the
 // Windows cursor shows and moves freely (SetMouseLookActive(false); the stick gets nothing
-// from it). When the cursor moves onto another option of that menu, the option is given focus
-// with the game's own UIScreenObject.SetFocus (called through UObject::ProcessEvent, as script
-// would), so it's highlighted exactly as if reached with the keys. The left mouse button (the
+// from it). When the cursor moves onto another option of that menu, the d-pad is pressed
+// towards it (up / down, or left / right for options side by side), one step at a time, each
+// step waiting for the focus to move, until it has focus: so it's selected exactly as with the
+// keys, sounds and all. (Calling UIScreenObject.SetFocus through ProcessEvent didn't move the
+// focus.) The left mouse button (the
 // right trigger in keyboard-and-mouse mode) on an option presses A; the right button (the left
 // trigger) presses B, back. Away from options the mouse buttons do nothing in menus.
 //
@@ -21,6 +23,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -50,7 +53,6 @@ REXCVAR_DEFINE_BOOL(menu_mouse, true, "Input",
                     "it, left click to choose it, right click to go back");
 
 REX_EXTERN(sub_82920EE8);  // UObject::StaticFindObject(UClass*, UObject* outer, const TCHAR*, UBOOL exact)
-REX_EXTERN(sub_828B8750);  // UObject::ProcessEvent(UFunction*, void* Parms, void* Result)
 
 namespace {
 
@@ -59,6 +61,7 @@ constexpr uint32_t kOwnerScene = 0x19C;    // UIObject.OwnerScene
 constexpr uint32_t kStateStack = 0x9C;     // UIScreenObject.StateStack: TArray<UIState>
 constexpr uint32_t kRenderWidth = 0x8342402C;  // the picture's width (ultrawide.cpp); 720 high
 constexpr uint16_t kA = 0x1000, kB = 0x2000;
+constexpr uint16_t kUp = 0x0001, kDown = 0x0002, kLeft = 0x0004, kRight = 0x0008;  // d-pad
 
 uint32_t Load32(const uint8_t* base, uint32_t addr) {
   return uint32_t(base[addr]) << 24 | uint32_t(base[addr + 1]) << 16 | uint32_t(base[addr + 2]) << 8 |
@@ -129,13 +132,16 @@ struct Rect {
 struct State {
   std::mutex mutex;
   bool ready = false;
-  uint32_t button_class = 0, focused_class = 0, set_focus = 0, function_class = 0;
+  uint32_t button_class = 0, focused_class = 0;
   std::unordered_map<uint32_t, bool> is_button;  // class -> descends from Engine.UIButton
   std::vector<uint32_t> buttons;                 // UIButtons in Transient (live menus)
   std::chrono::steady_clock::time_point next_scan{};
   bool menu = false;           // last poll: a menu was up (mouse released)
   long last_x = -1, last_y = -1;
-  uint32_t requested = 0;      // the option last given focus from the mouse
+  uint32_t target = 0;         // the option the cursor moved onto, until it has focus
+  uint16_t pressing = 0;       // d-pad direction held this poll
+  uint32_t step_from = 0;      // the focus when the last step was pressed
+  int wait = 0, steps = 0;     // polls waited for that step to land; steps taken
   bool click_a = false, click_b = false;  // a mouse button held as A / B
 };
 
@@ -159,15 +165,13 @@ Rect Bounds(const uint8_t* base, uint32_t o) {
           LoadF(base, o + kRenderBounds + 12)};
 }
 
-// Classes, the SetFocus function, once.
+// Classes, once.
 void Init(State& s, const PPCContext& ctx, uint8_t* base) {
   s.button_class = FindObject(ctx, base, "Engine.UIButton");
   s.focused_class = FindObject(ctx, base, "Engine.UIState_Focused");
-  s.set_focus = FindObject(ctx, base, "Engine.UIScreenObject.SetFocus");
-  if (!s.set_focus) s.set_focus = FindObject(ctx, base, "Engine.UIScreenObject:SetFocus");
-  s.ready = s.button_class && s.focused_class && s.set_focus;
-  REXLOG_INFO("menu_mouse: UIButton {:08X}, UIState_Focused {:08X}, SetFocus {:08X}{}", s.button_class,
-              s.focused_class, s.set_focus, s.ready ? "" : " - not all found, the mouse stays captured in menus");
+  s.ready = s.button_class && s.focused_class;
+  REXLOG_INFO("menu_mouse: UIButton {:08X}, UIState_Focused {:08X}{}", s.button_class, s.focused_class,
+              s.ready ? "" : " - not found, the mouse stays captured in menus");
 }
 
 // Every UIButton that's a live menu's (in the Transient package, where scenes are opened).
@@ -190,19 +194,6 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
     s.buttons.push_back(o);
   }
   (void)ctx;
-}
-
-// UIScreenObject.SetFocus(Sender = none, PlayerIndex = 0), through ProcessEvent.
-void SetFocus(const State& s, const PPCContext& ctx, uint8_t* base, uint32_t widget) {
-  PPCContext tmp = ctx;
-  const uint32_t parms = ctx.r1.u32 - 0x340;
-  std::memset(base + parms, 0, 32);
-  tmp.r1.u32 = ctx.r1.u32 - 0x800;
-  tmp.r3.u64 = widget;
-  tmp.r4.u64 = s.set_focus;
-  tmp.r5.u64 = parms;
-  tmp.r6.u64 = 0;
-  sub_828B8750(tmp, base);
 }
 
 // The cursor in the game's picture coordinates (0..width, 0..720), or false if the game window
@@ -279,7 +270,8 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     rex::input::mnk::SetMouseLookActive(!menu);  // released in menus: the cursor shows
     s.menu = menu;
     s.last_x = s.last_y = -1;
-    s.requested = 0;
+    s.target = 0;
+    s.pressing = 0;
   }
   if (!menu) return;
 
@@ -300,18 +292,33 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     const bool moved = rx != s.last_x || ry != s.last_y;
     s.last_x = rx;
     s.last_y = ry;
-    if (moved && hovered && hovered != focused && hovered != s.requested) {
-      SetFocus(s, ctx, base, hovered);
-      s.requested = hovered;
+    if (moved && hovered && hovered != focused && hovered != s.target) {
+      s.target = hovered;
+      s.steps = 0;
     }
-    if (hovered == focused) s.requested = 0;
+  }
+  // Step the focus towards the target: press, then release and wait for the focus to move.
+  uint16_t dpad = 0;
+  if (s.target && (s.target == focused || !IsObject(s.target) || s.steps > 24)) s.target = 0;
+  if (s.target) {
+    if (s.pressing) {
+      s.pressing = 0;  // released this poll
+      s.wait = 0;
+    } else if (focused != s.step_from || ++s.wait > 10 || s.steps == 0) {
+      const Rect f = Bounds(base, focused), t = Bounds(base, s.target);
+      const float dy = (t.t + t.b) / 2 - (f.t + f.b) / 2, dx = (t.l + t.r) / 2 - (f.l + f.r) / 2;
+      s.pressing = std::abs(dy) >= std::abs(dx) ? (dy < 0 ? kUp : kDown) : (dx < 0 ? kLeft : kRight);
+      s.step_from = focused;
+      ++s.steps;
+      dpad = s.pressing;
+    }
   }
   // Mouse buttons (the triggers in keyboard-and-mouse mode): left = A on an option, right = B.
   const bool left = base[state + 7] > 64, right = base[state + 6] > 64;
   base[state + 6] = base[state + 7] = 0;
   s.click_a = left && (s.click_a || (hovered && hovered == focused));
   s.click_b = right;
-  SetButtons(base, state, uint16_t((s.click_a ? kA : 0) | (s.click_b ? kB : 0)), 0);
+  SetButtons(base, state, uint16_t((s.click_a ? kA : 0) | (s.click_b ? kB : 0) | dpad), 0);
 }
 
 }  // namespace tbc::ui

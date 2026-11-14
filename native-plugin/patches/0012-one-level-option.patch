@@ -1,0 +1,17 @@
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index da76f9e..0a8d596 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -398,6 +398,12 @@ void Renderer::LoadTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, Guest
+   uint32_t width_m1, height_m1, depth_m1, base_page, mip_page, mip_min, mip_max;
+   rg::texture_util::GetSubresourcesFromFetchConstant(fetch, &width_m1, &height_m1, &depth_m1, &base_page, &mip_page,
+                                                      &mip_min, &mip_max);
++  // BOTS_GFX_ONE_LEVEL=1 (tbc, debugging 007's menu): textures load their base level only (one-level images).
++  static const bool one_level = [] {
++    const char* v = std::getenv("BOTS_GFX_ONE_LEVEL");
++    return v && *v == '1';
++  }();
++  if (one_level && base_page) mip_min = mip_max = 0;
+   const HostFormat host = GetHostFormat(fetch.format);
+   if (host.format == VK_FORMAT_UNDEFINED || (!base_page && !mip_page)) {
+     ++stats_.unsupported_textures;

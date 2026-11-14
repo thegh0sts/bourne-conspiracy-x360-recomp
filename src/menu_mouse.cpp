@@ -18,6 +18,8 @@
 // right trigger in keyboard-and-mouse mode) on an option presses A; the right button (the left
 // trigger) presses B, back. Away from options the mouse buttons do nothing in menus. On the
 // title screen (PRESS START, which has no options) the cursor shows too and a left click starts.
+// While it shows, the cursor is kept inside the game window (ClipCursor) as long as the game
+// is the window in front.
 //
 //   --menu_mouse=false      off: the mouse stays captured in menus, as before
 
@@ -196,6 +198,32 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
   (void)ctx;
 }
 
+// Keeps the cursor inside the game window's client area while it's the window in front (on
+// == true), or lets it go. Windows drops a clip when the window loses focus; it's set again
+// each poll, so it comes back with the window.
+void ClipToWindow(bool on) {
+#ifdef _WIN32
+  static bool clipped = false;
+  HWND w = GetForegroundWindow();
+  DWORD pid = 0;
+  const bool ours = w && (GetWindowThreadProcessId(w, &pid), pid) == GetCurrentProcessId();
+  if (on && ours) {
+    RECT r;
+    POINT tl{0, 0};
+    if (GetClientRect(w, &r) && ClientToScreen(w, &tl)) {
+      RECT screen{tl.x, tl.y, tl.x + r.right, tl.y + r.bottom};
+      ClipCursor(&screen);
+      clipped = true;
+    }
+  } else if (clipped) {
+    if (ours || !on) ClipCursor(nullptr);
+    clipped = false;
+  }
+#else
+  (void)on;
+#endif
+}
+
 // The cursor in the game's picture coordinates (0..width, 0..720), or false if the game window
 // isn't the one in front.
 bool Cursor(const uint8_t* base, float& x, float& y, long& raw_x, long& raw_y) {
@@ -240,7 +268,10 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   const bool on = REXCVAR_GET(menu_mouse) && rex::cvar::Query<bool>("mnk_mode") &&
                   rex::cvar::Query<bool>("mnk_mouse");
   if (!on) {
-    if (s.menu) rex::input::mnk::SetMouseLookActive(true);
+    if (s.menu) {
+      rex::input::mnk::SetMouseLookActive(true);
+      ClipToWindow(false);
+    }
     s.menu = false;
     return;
   }
@@ -275,6 +306,7 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     s.target = 0;
     s.pressing = 0;
   }
+  ClipToWindow(menu);  // the cursor stays in the window while it's shown
   if (!menu) return;
 
   float x = 0, y = 0;

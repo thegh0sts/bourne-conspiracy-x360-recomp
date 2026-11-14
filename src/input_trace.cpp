@@ -29,6 +29,10 @@ REXCVAR_DEFINE_BOOL(trigger_ramp, false, "Input",
 
 REX_EXTERN(__imp__sub_823213D8);
 
+namespace tbc::camera {
+void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry);  // camera_probe.cpp
+}
+
 namespace {
 struct Last {
   uint16_t buttons = 0;
@@ -79,6 +83,7 @@ extern "C" REX_FUNC(sub_823213D8) {
     base[state + 6] = Ramp(g_ramp[user][0], base[state + 6]);
     base[state + 7] = Ramp(g_ramp[user][1], base[state + 7]);
   }
+  tbc::camera::Probe(ctx, base, int16_t(Load16(base, state + 12)), int16_t(Load16(base, state + 14)));
   if (!REXCVAR_GET(input_trace)) {
     return;
   }

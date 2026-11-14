@@ -116,47 +116,70 @@ bool IsObject(uint32_t a) {
   return a >= 0x40000000 && a < 0xE0000000 && (a & 3) == 0 && Readable(a) && Readable(a + 0x200);
 }
 
-// Direct mode: the player's BnPlayerController (found in the object table, GObjObjects at
-// 0x83655774) and its class, re-found at most once a second when it goes (a level change).
+// Direct mode: the player's BnPlayerController and the level's BnCamera (found in the object
+// table, GObjObjects at 0x83655774), re-found at most once a second when they go (a level
+// change).
 struct Player {
-  uint32_t controller = 0, controller_class = 0;
+  uint32_t controller = 0, controller_class = 0, camera = 0, camera_class = 0;
   std::chrono::steady_clock::time_point next_find{};
-  std::unordered_map<uint32_t, bool> is_controller_class;  // class object -> BnPlayerController?
+  std::unordered_map<uint32_t, std::string> class_names;  // class object -> path name
 };
 Player g_player;
 
-uint32_t PlayerInput(const PPCContext& ctx, uint8_t* base) {
+const std::string& ClassName(const PPCContext& ctx, uint8_t* base, uint32_t cls) {
+  auto& names = g_player.class_names;
+  auto it = names.find(cls);
+  if (it == names.end()) it = names.emplace(cls, tbc::prompts::ObjectPathName(ctx, base, cls)).first;
+  return it->second;
+}
+
+bool FindPlayer(const PPCContext& ctx, uint8_t* base) {
   Player& p = g_player;
-  const bool ok = IsObject(p.controller) && Load32(base, p.controller + 0x30) == p.controller_class;
-  if (!ok) {
-    p.controller = 0;
-    const auto now = std::chrono::steady_clock::now();
-    if (now < p.next_find) return 0;
-    p.next_find = now + std::chrono::seconds(1);
-    const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
-    if (!Readable(data) || count > 2000000) return 0;
-    for (uint32_t i = 0; i < count; ++i) {
-      const uint32_t o = Load32(base, data + 4 * i);
-      if (!IsObject(o)) continue;
-      const uint32_t cls = Load32(base, o + 0x30);
-      if (!IsObject(cls)) continue;
-      auto it = p.is_controller_class.find(cls);
-      if (it == p.is_controller_class.end()) {
-        it = p.is_controller_class
-                 .emplace(cls, tbc::prompts::ObjectPathName(ctx, base, cls) == "BourneNative.BnPlayerController")
-                 .first;
-      }
-      if (!it->second) continue;
-      if (tbc::prompts::ObjectPathName(ctx, base, o).find("Default__") != std::string::npos) continue;
-      p.controller = o;
-      p.controller_class = cls;
-    }
-    if (!p.controller) return 0;
-    REXLOG_INFO("mouse_look_direct: player controller {:08X}, input {:08X}", p.controller,
-                Load32(base, p.controller + 0x408));
+  const bool ok = IsObject(p.controller) && Load32(base, p.controller + 0x30) == p.controller_class &&
+                  IsObject(p.camera) && Load32(base, p.camera + 0x30) == p.camera_class;
+  if (ok) return true;
+  p.controller = p.camera = 0;
+  const auto now = std::chrono::steady_clock::now();
+  if (now < p.next_find) return false;
+  p.next_find = now + std::chrono::seconds(1);
+  const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
+  if (!Readable(data) || count > 2000000) return false;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t o = Load32(base, data + 4 * i);
+    if (!IsObject(o)) continue;
+    const uint32_t cls = Load32(base, o + 0x30);
+    if (!IsObject(cls)) continue;
+    const std::string& name = ClassName(ctx, base, cls);
+    const bool controller = name == "BourneNative.BnPlayerController", camera = name == "BourneNative.BnCamera";
+    if (!controller && !camera) continue;
+    if (tbc::prompts::ObjectPathName(ctx, base, o).find("Default__") != std::string::npos) continue;
+    (controller ? p.controller : p.camera) = o;
+    (controller ? p.controller_class : p.camera_class) = cls;
   }
-  const uint32_t input = Load32(base, p.controller + 0x408);
-  return IsObject(input) ? input : 0;
+  if (!p.controller || !p.camera) return false;
+  REXLOG_INFO("mouse_look_direct: player controller {:08X} (input {:08X}), camera {:08X}", p.controller,
+              Load32(base, p.controller + 0x408), p.camera);
+  return true;
+}
+
+// The active camera strategy's orbit smoother (HmOrbitSmootherCameraBehavior): the camera's
+// strategy at BnCamera +0x350, its behaviours at +0xF8 (array data, count).
+uint32_t Smoother(const PPCContext& ctx, uint8_t* base) {
+  const uint32_t strategy = Load32(base, g_player.camera + 0x350);
+  if (!IsObject(strategy)) return 0;
+  const uint32_t data = Load32(base, strategy + 0xF8), count = Load32(base, strategy + 0xFC);
+  if (!Readable(data) || count > 32) return 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t b = Load32(base, data + 4 * i);
+    if (!IsObject(b) || !IsObject(Load32(base, b + 0x30))) continue;
+    if (ClassName(ctx, base, Load32(base, b + 0x30)) == "HM_Engine.HmOrbitSmootherCameraBehavior") return b;
+  }
+  return 0;
+}
+
+void AddRotator(uint8_t* base, uint32_t rot, int32_t pitch, int32_t yaw) {
+  Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + pitch));
+  Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + yaw));
 }
 
 // The turn (degrees) to make this poll: what's carried plus this poll's movement. Returns the
@@ -205,8 +228,22 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   const double degrees = 0.022 * REXCVAR_GET(mouse_look_sensitivity);
   if (REXCVAR_GET(mouse_look_direct)) {
     g_carry_yaw = g_carry_pitch = 0.0;
-    const uint32_t input = PlayerInput(ctx, base);
-    if (!input || !moved) return;
+    if (!FindPlayer(ctx, base)) return;
+    const uint32_t input = Load32(base, g_player.controller + 0x408);
+    if (!IsObject(input)) return;
+    const uint32_t smoother = Smoother(ctx, base);
+    // Diagnostics, once a second: whether last poll's addition is still there (or the game
+    // rewrote the angles from something else).
+    static std::chrono::steady_clock::time_point next_log{};
+    static int32_t expect_ccr = 0, expect_smooth = 0;
+    static bool have_expect = false;
+    if (now >= next_log && have_expect) {
+      next_log = now + std::chrono::seconds(1);
+      REXLOG_INFO("mouse_look_direct: control yaw {} (expected {}), smoothed yaw {} (expected {}), smoother {:08X}",
+                  int32_t(Load32(base, input + 0x184)), expect_ccr,
+                  smoother ? int32_t(Load32(base, smoother + 0x48)) : 0, expect_smooth, smoother);
+    }
+    if (!moved) return;
     // Degrees to rotator units (65536 a turn), keeping the fraction for the next poll.
     static double frac_yaw = 0.0, frac_pitch = 0.0;
     const double units = 65536.0 / 360.0;
@@ -215,9 +252,13 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     const int32_t add_yaw = int32_t(frac_yaw), add_pitch = int32_t(frac_pitch);
     frac_yaw -= add_yaw;
     frac_pitch -= add_pitch;
-    const uint32_t rot = input + 0x180;  // CurrentControlRotation: pitch, yaw, roll
-    Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + add_pitch));
-    Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + add_yaw));
+    // HmPlayerInput.CurrentControlRotation and the smoother's SmoothedOrbitRotation (+0x44):
+    // pitch, yaw, roll.
+    AddRotator(base, input + 0x180, add_pitch, add_yaw);
+    if (smoother) AddRotator(base, smoother + 0x44, add_pitch, add_yaw);
+    expect_ccr = int32_t(Load32(base, input + 0x184));
+    expect_smooth = smoother ? int32_t(Load32(base, smoother + 0x48)) : 0;
+    have_expect = true;
     if (!g_logged) {
       g_logged = true;
       REXLOG_INFO("mouse_look: direct, mouse movement added to the camera's target angle (sensitivity {})",

@@ -31,7 +31,7 @@ REX_EXTERN(__imp__sub_823213D8);
 
 namespace tbc::camera {
 void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry);  // camera_probe.cpp
-void MouseLook(const PPCContext& ctx, uint8_t* base);                      // mouse_look.cpp
+void MouseLook(uint8_t* base, uint32_t state);                              // mouse_look.cpp
 }
 
 namespace {
@@ -70,7 +70,7 @@ extern "C" REX_FUNC(sub_823213D8) {
   }
   tbc::qte::OnControllerState(base, state);
   tbc::prompts::PatchHudTextures(ctx, base);
-  tbc::camera::MouseLook(ctx, base);
+  tbc::camera::MouseLook(base, state);
   // Title screen, keyboard and mouse: its prompt shows Enter (A's menu key), but the screen
   // only takes Start. A press of A (Enter, Space) also presses Start there.
   if (tbc::prompts::TitleScreenUp()) {

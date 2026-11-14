@@ -407,6 +407,7 @@ DEFAULTS = {
     "kbm": False,
     "mouse_attacks": True,
     "mouse_sensitivity": 100,
+    "mouse_look": True,
     "turn_speed": 100,
     "close_on_play": True,
 }
@@ -514,6 +515,42 @@ FIGHT_MOUSE_EDITS = [
 ]
 
 
+# Mouse look (src/mouse_look.cpp): the camera turns by as much as the mouse moves. The game
+# turns the camera through each strategy's orbit behaviours (BourneCamera.ini /
+# Xe-BourneCamera.ini): a turn rate at full stick (YawSpeed / PitchSpeed, 65 to 120 degrees a
+# second), a ramp that speeds it up after the stick is held for YawRampTime, and a smoother.
+# For the mouse: full-stick rates 4x (so fast flicks fit under full stick; mouse_look.cpp's
+# --mouse_look_full_rate is 4 x 65), no ramp, and a quarter of the smoothing.
+MOUSE_RATE_FACTOR = 4
+
+
+def _edit_camera_for_mouse(body):
+    lines = body.split("\r\n")
+    kind = None
+    for i, line in enumerate(lines):
+        if line.startswith("["):
+            kind = ("yaw" if "OrbitYawCameraBehavior" in line else
+                    "pitch" if "OrbitPitch" in line else
+                    "smoother" if "OrbitSmootherCameraBehavior" in line else None)
+            continue
+        if not kind or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            v = float(value)
+        except ValueError:
+            continue
+        if kind == "yaw" and key == "YawSpeed":
+            lines[i] = f"{key}={v * MOUSE_RATE_FACTOR:g}"
+        elif kind == "yaw" and key == "YawRampTime":
+            lines[i] = f"{key}=1000"
+        elif kind == "pitch" and key == "PitchSpeed":
+            lines[i] = f"{key}={v * MOUSE_RATE_FACTOR:g}"
+        elif kind == "smoother" and key == "SmoothTime":
+            lines[i] = f"{key}={v / 4:g}"
+    return "\r\n".join(lines)
+
+
 def _edit_fight_mouse(body):
     for old, new in FIGHT_MOUSE_EDITS:
         body = body.replace(old, new, 1)
@@ -552,13 +589,14 @@ def apply_game_config(game: Path, s) -> str:
     linear_aim = bool(s.get("kbm"))  # the mouse gets the full turn speed while aiming
     look_edit = turn != 100 or linear_aim
     fight_mouse = bool(s.get("kbm")) and bool(s.get("mouse_attacks", True))
+    mouse_camera = bool(s.get("kbm")) and bool(s.get("mouse_look", True))
 
     if turn != 100:
         # The camera's top yaw rate (100 in the original): a cap on how fast it can turn,
         # whatever the mode's turn rate, so it scales with the turn speed too.
         edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
 
-    if not edits and fov == 100 and not look_edit and not fight_mouse:
+    if not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
@@ -585,9 +623,17 @@ def apply_game_config(game: Path, s) -> str:
         i = cfg.find_file(files, "Xe-BourneInput.ini")
         name, body = files[i]
         files[i] = (name, _edit_fight_mouse(body))
+    if mouse_camera:
+        for short in ("Xe-BourneCamera.ini", "BourneCamera.ini"):
+            try:
+                i = cfg.find_file(files, short)
+            except SystemExit:
+                continue
+            name, body = files[i]
+            files[i] = (name, _edit_camera_for_mouse(body))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
-    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse} config change(s)"
+    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera} config change(s)"
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -690,6 +736,10 @@ def game_args(s, screen=None):
                  # written to Xe-BourneInput.ini above), so slow aiming isn't swallowed by it.
                  # Needs SDK patch 0004; a stock SDK ignores it.
                  "--mnk_mouse_deadzone", f"{int(s['deadzone']) / 100:.2f}"]
+        # Mouse look: the sensitivity slider's 100% is 2.0 (0.022 degrees a count x 2).
+        args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
+        if not s.get("mouse_look", True):
+            args.append("--mouse_look=false")
         if s.get("mouse_attacks", True):
             # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp),
             # to match the trigger bindings written to Xe-BourneInput.ini above.

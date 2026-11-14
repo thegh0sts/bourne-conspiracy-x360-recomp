@@ -1,20 +1,27 @@
 diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
-index 1d96bab..39c985f 100644
+index 1d96bab..2365fd9 100644
 --- a/src/gfx/vk/draw.cpp
 +++ b/src/gfx/vk/draw.cpp
-@@ -839,6 +839,29 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+@@ -839,6 +839,36 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
        }
      }
      consts(rg::XE_GPU_REG_SHADER_CONSTANT_000_X, "vc");
 +    // tbc (007's menu): each vertex binding's fetch constant and its first vertices, raw (as in guest memory) and
 +    // byte-swapped by the fetch constant's endianness.
-+    for (const auto& binding : vshader->vertex_bindings()) {
++    // (vf0 only: the bindings list may not be filled in yet when this runs; the stride is in the disassembly.)
++    struct DumpBinding {
++      uint32_t fetch_constant, stride_words;
++    };
++    for (const DumpBinding binding : {DumpBinding{0, 0}}) {
 +      const auto fetch = regs.GetVertexFetch(binding.fetch_constant);
-+      std::fprintf(stderr, "  vf%u: address %08X size %u words endian %u stride %u words\n", binding.fetch_constant,
-+                   uint32_t(fetch.address) << 2, uint32_t(fetch.size), uint32_t(fetch.endian), binding.stride_words);
++      if (fetch.type != xe::FetchConstantType::kVertex) continue;
++      std::fprintf(stderr, "  vf%u: address %08X size %u words endian %u, index offset %d min %u max %u\n",
++                   binding.fetch_constant, uint32_t(fetch.address) << 2, uint32_t(fetch.size), uint32_t(fetch.endian),
++                   int32_t(regs.values[rg::XE_GPU_REG_VGT_INDX_OFFSET]), regs.values[rg::XE_GPU_REG_VGT_MIN_VTX_INDX],
++                   regs.values[rg::XE_GPU_REG_VGT_MAX_VTX_INDX]);
 +      const uint8_t* data = memory_(uint32_t(fetch.address) << 2);
 +      if (!data) continue;
-+      const uint32_t words = std::min<uint32_t>(fetch.size, binding.stride_words ? binding.stride_words * 6 : 16);
++      const uint32_t words = std::min<uint32_t>(fetch.size, 42);
 +      std::string raw, swapped;
 +      for (uint32_t i = 0; i < words; ++i) {
 +        uint32_t w;

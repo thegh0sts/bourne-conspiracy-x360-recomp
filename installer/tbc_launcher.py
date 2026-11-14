@@ -321,6 +321,7 @@ DEFAULTS = {
     "kbm": False,
     "mouse_sensitivity": 100,
     "mouse_look": True,
+    "mouse_smoothing": 10,
     "turn_speed": 100,
     "close_on_play": True,
 }
@@ -436,12 +437,15 @@ FIGHT_MOUSE_EDITS = [
 # turns the camera through each strategy's orbit behaviours (BourneCamera.ini /
 # Xe-BourneCamera.ini): a turn rate at full stick (YawSpeed / PitchSpeed, 65 to 120 degrees a
 # second), a ramp that speeds it up after the stick is held for YawRampTime, and a smoother.
-# For the mouse: full-stick rates 4x (so fast flicks fit under full stick; mouse_look.cpp's
-# --mouse_look_full_rate is 4 x 65), no ramp, and a quarter of the smoothing.
-MOUSE_RATE_FACTOR = 4
+# For the mouse: full-stick rates 6x (so most flicks fit under full stick, and mouse_look.cpp
+# carries the rest into the next frames; Play passes --mouse_look_full_rate=6 x 65), no ramp, and the smoothing cut to the "Mouse camera
+# smoothing" setting (a percentage of the game's; 0.2.5 used 25%). The smoother's time never goes
+# below 1% of the game's, so the behaviour keeps a non-zero time to work with.
+MOUSE_RATE_FACTOR = 6  # 0.2.5-0.2.6: 4
+MIN_SMOOTHING = 0.01
 
 
-def _edit_camera_for_mouse(body):
+def _edit_camera_for_mouse(body, smoothing=0.25):
     lines = body.split("\r\n")
     kind = None
     for i, line in enumerate(lines):
@@ -464,7 +468,7 @@ def _edit_camera_for_mouse(body):
         elif kind == "pitch" and key == "PitchSpeed":
             lines[i] = f"{key}={v * MOUSE_RATE_FACTOR:g}"
         elif kind == "smoother" and key == "SmoothTime":
-            lines[i] = f"{key}={v / 4:g}"
+            lines[i] = f"{key}={v * max(smoothing, MIN_SMOOTHING):g}"
     return "\r\n".join(lines)
 
 
@@ -547,7 +551,7 @@ def apply_game_config(game: Path, s) -> str:
             except SystemExit:
                 continue
             name, body = files[i]
-            files[i] = (name, _edit_camera_for_mouse(body))
+            files[i] = (name, _edit_camera_for_mouse(body, int(s.get("mouse_smoothing", 10)) / 100))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
     return f"{len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera} config change(s)"
@@ -705,7 +709,7 @@ def game_args(s, screen=None):
         args.append("--show_fps=true")
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
-        # attacks off X / Y and onto the triggers, 4x camera turn rates for mouse look) would
+        # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
         # make a controller misbehave, and the prompts show keys.
         args.append("--input_backend=none")
         args += ["--mnk_mode=true", "--mnk_mouse=true",
@@ -716,6 +720,8 @@ def game_args(s, screen=None):
                  "--mnk_mouse_deadzone", f"{int(s['deadzone']) / 100:.2f}"]
         # Mouse look: the sensitivity slider's 100% is 2.0 (0.022 degrees a count x 2).
         args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
+        # The full-stick turn rate the camera edit gives the game (65 degrees a second x the factor).
+        args.append(f"--mouse_look_full_rate={65 * MOUSE_RATE_FACTOR}")
         if not s.get("mouse_look", True):
             args.append("--mouse_look=false")
         # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp), to
@@ -825,10 +831,12 @@ class SettingsView(tk.Frame):
         self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
         self._check(box, 2, "mouse_look", "Mouse turns the camera directly (mouse look)")
         self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 4, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
-        tk.Label(box, text="Stick turn speed is for a controller and the arrow keys; with mouse look the "
-                           "camera follows the mouse.", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=5, column=0, columnspan=2, sticky="w")
+        self._slider(box, 4, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 5, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
+        tk.Label(box, text="Mouse camera smoothing: how much of the game's camera easing stays with mouse look "
+                           "(lower is more responsive). Stick turn speed is for a controller and the arrow keys.",
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
+                 ).grid(row=6, column=0, columnspan=2, sticky="w")
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)

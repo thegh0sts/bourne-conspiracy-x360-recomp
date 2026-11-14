@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.5 (2026-11-14)
+
+An installer fix for PCs with another Clang installed, Shift and Ctrl working as keyboard binds, and quick-time events on W / A / S / D.
+
+### Updating from 0.2.4
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game is rebuilt and the bundled SDK replaced (now `tbc5`, with the keyboard fix). Your settings and key binds are kept.
+
+### Fixes
+- **Install failed on PCs with another Clang on PATH** (seen with a recompilation toolkit's clang 22): every file stopped with "explicit specialization of undeclared template struct 'clock_time_conversion'". That Clang builds for the MinGW target with LLVM's own C++ library, which can't build or link against the SDK. The installer now always builds with Visual Studio's own Clang, named by its full path, and logs which one it used.
+- **Shift (sprint) and Ctrl did nothing as keyboard binds.** The SDK's keyboard driver required the exact set of modifier keys a bind names, so a bind that is just Shift could never fire, and while Shift was held W / A / S / D stopped too (SDK patch 0008).
+
+### New
+- **Quick-time events on W / A / S / D** (keyboard and mouse). While a QTE prompt is up, W, A, S and D press the button in the same place on its diamond (Y, X, A, B), and Bourne doesn't walk. Only a fresh press counts, so running into a QTE with W held doesn't answer it. Space / E / F / Q still work. Multi-takedowns use a different prompt and don't take W / A / S / D yet. `--qte_wasd=false` turns it off.
+
 ## 0.2.4 (2026-11-14)
 
 Experimental ultrawide support with the native renderer, a fix for a crash right after starting, and an installer that checks the game files.

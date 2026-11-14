@@ -28,7 +28,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 

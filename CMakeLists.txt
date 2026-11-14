@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.25)
 # The release number. Shown in the log's first line (version_log.cpp); keep it the same as VERSION in
 # installer/tbc_launcher.py.
-project(tbc VERSION 0.2.4 LANGUAGES CXX)
+project(tbc VERSION 0.2.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

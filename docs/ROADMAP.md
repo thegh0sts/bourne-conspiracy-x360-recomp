@@ -90,7 +90,19 @@ It's controller emulation, so the game's stick dead zone and acceleration still 
 
 Camera tuning for the mouse (0.2.1): **Camera turn speed** scales every `[<Mode>LookScales BnLookScales]` turn rate in `Xe-BourneGame.ini` and `[BourneNative.BnPlayerInput] MaxYawRate` (100) in `Xe-BourneInput.ini`; with keyboard and mouse on, `BelowStepMultiplier` goes to 1 (over the shoulder: 0.3 below 95% stick). Confirmed written to the game's config; not yet confirmed that the game reads them at runtime (test: a controller at 300% turn speed should turn visibly faster). If it doesn't, the next options are a mouse-only dead-zone offset in the SDK's keyboard-and-mouse driver (`mnk_input_driver.cpp`, an SDK rebuild) or finding Bourne's look code. Also worth a look: `CameraSensitivity=4` (the in-game option's default) and the running camera's `MaxStickResistance`, which pulls the camera back behind Jason.
 
-## Native mouse look (next)
+## 0.2.7: more responsive mouse look
+
+0.2.5's mouse look turns the camera by the mouse's movement (as a stick turn rate over the poll's time), which players
+find an improvement but not as responsive as it could be. Planned:
+1. **Less camera smoothing with keyboard and mouse.** The launcher cuts `SmoothTime` of the orbit smoother to a quarter;
+   try much less (near zero), behind a setting, and check for jitter at 30 fps.
+2. **No lost movement on fast flicks.** Movement past full stick (`--mouse_look_full_rate`, 4 x the game's 65 degrees a
+   second) is dropped today; carry the remainder into the next polls so every count turns the camera, and consider a
+   higher `MOUSE_RATE_FACTOR` (launcher) with `--mouse_look_full_rate` to match.
+3. Remaining latency is a frame (the game reads the controller once a frame); 60 fps halves it. Only bypassing the
+   camera behaviours (below) removes it.
+
+## Native mouse look (later)
 
 The mouse still drives a virtual right stick, so the game's dead zone, turn rates and acceleration shape it. 0.2.2 compensates for the dead zone; the real fix is WetRecomp's approach: feed mouse movement straight into the camera's yaw and pitch (1:1, as an angle), with `[[midasm_hook]]`s in the camera code (supported by SDK 0.10.1), and keep the stick emulation for menus and cutscenes.
 

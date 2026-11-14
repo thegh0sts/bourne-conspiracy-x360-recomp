@@ -78,10 +78,16 @@ std::string Words(const uint8_t* base, uint32_t addr, uint32_t size) {
   return out;
 }
 
+// Heap or physical memory, not the executable (vtables and code, which the first run followed).
+bool Data(uint32_t a) {
+  return ((a >= 0x40000000 && a < 0x80000000) || (a >= 0xA0000000 && a < 0xE0000000)) && (a & 3) == 0 &&
+         Readable(a);
+}
+
 void Plain(const uint8_t* base, uint32_t from, uint32_t at, uint32_t size, int depth, std::set<uint32_t>& seen) {
   for (uint32_t i = 0; i < size; i += 4) {
     const uint32_t p = Load32(base, at + i);
-    if (!Pointer(p) || LooksLikeObject(base, p) || !seen.insert(p).second || seen.size() > 60) continue;
+    if (!Data(p) || LooksLikeObject(base, p) || !seen.insert(p).second || seen.size() > 80) continue;
     REXLOG_INFO("glyph_probe: {:08X}+{:03X} -> memory {:08X}{}", at, i, p, Words(base, p, 0x80));
     if (depth > 0) Plain(base, at, p, 0x80, depth - 1, seen);
   }
@@ -113,7 +119,7 @@ void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font) {
     REXLOG_INFO("glyph_probe: font+{:03X} -> object {:08X} {} ({})", i, p, what, cls);
     if (cls.find("Texture") == std::string::npos) continue;
     REXLOG_INFO("glyph_probe: texture {:08X}{}", p, Words(base, p, 0x180));
-    Plain(base, p, p, 0x180, 1, seen);
+    Plain(base, p, p, 0x180, 2, seen);
   }
   // The font's texture list may be a TArray (data, count, max) rather than direct pointers.
   for (uint32_t i = 0; i < 0x100; i += 4) {
@@ -126,7 +132,7 @@ void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font) {
       if (cls.find("Texture") == std::string::npos) continue;
       REXLOG_INFO("glyph_probe: font+{:03X}[{}] -> texture {:08X} {} ({}){}", i, k, p,
                   tbc::prompts::ObjectPathName(ctx, base, p), cls, Words(base, p, 0x180));
-      Plain(base, p, p, 0x180, 1, seen);
+      Plain(base, p, p, 0x180, 2, seen);
     }
   }
 }

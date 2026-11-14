@@ -1,0 +1,81 @@
+ReXGlue input: direct mouse look (raw mouse movement for the game to turn by).
+
+With SetMouseDirect(true), the keyboard-and-mouse driver stops adding mouse movement to the
+right stick and keeps the counts instead, for the game to take with ConsumeMouseDelta(). So a
+game hook can turn the camera by exactly the mouse's movement, skipping the game's stick
+dead zone, turn rates and acceleration. Off by default (stock behaviour); keys bound to the
+right stick keep working either way. Idea: WetRecomp's native mouse look (nikolaygorb).
+
+diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
+index 2d36faa..5cbe9d6 100644
+--- a/include/rex/input/mnk/mnk_input_driver.h
++++ b/include/rex/input/mnk/mnk_input_driver.h
+@@ -23,6 +23,10 @@
+ namespace rex::input::mnk {
+ 
+ void SetMouseLookActive(bool active);
++// Direct mouse look: while on, mouse movement is no longer added to the right stick but kept
++// for the game to take with ConsumeMouseDelta (counts since the last call; true if any).
++void SetMouseDirect(bool direct);
++bool ConsumeMouseDelta(float* dx, float* dy);
+ bool IsMouseLookActive();
+ 
+ class MnkInputDriver final : public InputDriver,
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index f59634c..1006e34 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -19,6 +19,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <mutex>
+ #include <cstdlib>
+ #include <cstring>
+ #include <string_view>
+@@ -179,6 +180,11 @@ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t l
+ }
+ 
+ std::atomic<bool> mouse_look_active{true};
++// Direct mouse look: the game takes the mouse's movement itself (ConsumeMouseDelta) instead of
++// as right-stick deflection.
++std::atomic<bool> mouse_direct{false};
++std::mutex mouse_direct_mutex;
++double mouse_direct_dx = 0.0, mouse_direct_dy = 0.0;
+ 
+ // ui::VirtualKey follows Windows VK_ numbering; the guest wants USB HID usage
+ // page 0x07.
+@@ -333,6 +339,19 @@ std::array<PadBind, 24> PadBinds() {
+ 
+ }  // namespace
+ 
++void SetMouseDirect(bool direct) {
++  mouse_direct.store(direct, std::memory_order_relaxed);
++}
++
++bool ConsumeMouseDelta(float* dx, float* dy) {
++  std::lock_guard<std::mutex> lock(mouse_direct_mutex);
++  const bool any = mouse_direct_dx != 0.0 || mouse_direct_dy != 0.0;
++  if (dx) *dx = float(mouse_direct_dx);
++  if (dy) *dy = float(mouse_direct_dy);
++  mouse_direct_dx = mouse_direct_dy = 0.0;
++  return any;
++}
++
+ void SetMouseLookActive(bool active) {
+   mouse_look_active.store(active, std::memory_order_relaxed);
+ }
+@@ -541,7 +560,12 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
+     ry -= INT16_MAX;
+ 
+-  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
++  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive() && mouse_direct.load(std::memory_order_relaxed)) {
++    // Raw counts for the game to turn by (ConsumeMouseDelta); the stick stays the keys'.
++    std::lock_guard<std::mutex> lock(mouse_direct_mutex);
++    mouse_direct_dx += mouse_dx_;
++    mouse_direct_dy += mouse_dy_;
++  } else if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+     double sensitivity = REXCVAR_GET(mnk_sensitivity);
+     constexpr double kBaseScale = 200.0;
+     double mx = double(mouse_dx_) * sensitivity * kBaseScale;

@@ -1,0 +1,26 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index a9a91ff..a97fc11 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -319,8 +319,20 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+                          uint32_t dword_count) override {
+     const bool vertex = shader_type == xe::ShaderType::kVertex;
+     ShaderLoad& load = vertex ? vs_ : ps_;
+-    if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address)) {
++    // tbc (007): BOTS_GFX_SHADER_AT_DRAW=1 keeps the old behaviour (microcode in guest memory read at the draw).
++    // Otherwise it is copied now, as the SDK's command processor does: a game that rewrites shader microcode in
++    // place (Quantum of Solace's menus patch their vertex shaders' vertex fetch constants between batches) would
++    // otherwise have its draw read a later batch's version of the shader.
++    static const bool at_draw = [] {
++      const char* v = std::getenv("BOTS_GFX_SHADER_AT_DRAW");
++      return v && *v == '1';
++    }();
++    if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address) && at_draw) {
+       load = {guest_address, dword_count, nullptr};
++    } else if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address)) {
++      std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;
++      copy.assign(host_address, host_address + dword_count);
++      load = {guest_address, dword_count, copy.data()};
+     } else {
+       // IM_LOAD_IMMEDIATE: the microcode is in the ring, which moves on before the draw.
+       std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;

@@ -110,7 +110,7 @@ git config core.hooksPath .githooks
 - With Xenos, 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
 - The native renderer is new and hasn't been played through yet. If something looks wrong, switch **Renderer** to Xenos and report it.
 - With the native renderer in fullscreen, the FPS counter isn't shown.
-- Keyboard and mouse is controller emulation: the mouse drives the right stick, so the camera can feel heavier than a PC game. Use a low stick dead zone and the camera turn speed option.
+- Keyboard and mouse is controller emulation underneath, with a fixed layout: see [Keyboard and mouse controls](docs/keyboard-and-mouse.md). With mouse look (on by default) the camera turns by as much as the mouse moves.
 
 ## Credits
 

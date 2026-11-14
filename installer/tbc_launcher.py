@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 import zipfile
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, Install
                            make_root, start_game)
 
 VERSION = "0.2.4-1"
+# The keyboard-and-mouse layout, explained (the launcher's "Key binds" link).
+CONTROLS_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 
@@ -192,22 +195,10 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
 KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 # The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE
 # prompts (key_glyphs.cpp), the fight attacks on the mouse buttons and the QTEs on W / A / S / D
-# are all set up around it, so it isn't editable. The launcher shows it (Keys...).
-KEY_NAMES = {"LMB": "Left mouse", "RMB": "Right mouse", "MMB": "Middle mouse", "Return": "Enter",
-             "Escape": "Esc", "Control": "Ctrl", "Backtick": "`", "LBracket": "[", "RBracket": "]",
-             "Quote": "'", "Semicolon": ";", "Comma": ",", "Period": ".", "Slash": "/",
-             "Backslash": "\\", "Minus": "-", "Plus": "="}
-def key_label(keys):
-    return " or ".join(KEY_NAMES.get(k, k) for k in keys.split(",") if k) or "(none)"
-
-
+# are all set up around it, so it isn't editable. The launcher links to docs/keyboard-and-mouse.md.
 def kbm_binds(s):
     """The key binds: the fixed layout (binds saved by older launchers are ignored)."""
     return dict(KBM_DEFAULT)
-
-
-def kbm_layout_text(binds):
-    return "\n".join(f"{key_label(binds[name])}: {what}" for name, _, what in KBM_BINDS)
 
 
 DEFAULTS = {
@@ -649,7 +640,7 @@ class SettingsView(tk.Frame):
         v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
-        self._link(line, "Keys...", self.show_keys).pack(side="left", padx=14)
+        self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
         self._check(box, 2, "mouse_look", "Mouse turns the camera directly (mouse look)")
         self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
         self._slider(box, 4, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
@@ -657,6 +648,9 @@ class SettingsView(tk.Frame):
                            "camera follows the mouse.", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
                  ).grid(row=5, column=0, columnspan=2, sticky="w")
         self._check(box, 6, "mouse_attacks", "Fights: left / right mouse = light / heavy attack")
+        # Turning keyboard and mouse on turns the fight attacks on the mouse back on too (the
+        # prompts and the key binds page assume them).
+        self.vars["kbm"].trace_add("write", lambda *_: self.vars["kbm"].get() and self.vars["mouse_attacks"].set(True))
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)
@@ -753,7 +747,7 @@ class SettingsView(tk.Frame):
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
 
     def show_keys(self):
-        messagebox.showinfo("Keyboard and mouse", kbm_layout_text(kbm_binds(self.s)))
+        webbrowser.open(CONTROLS_URL)
 
     def open_logs(self):
         folder = logs_dir(self.info)

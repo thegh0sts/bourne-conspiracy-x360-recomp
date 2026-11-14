@@ -144,6 +144,10 @@ struct State {
   uint32_t target = 0;         // the option the cursor moved onto, until it has focus
   uint16_t pressing = 0;       // d-pad direction held this poll
   int steps = 0;               // steps taken towards the target
+  uint32_t pressed_at = 0;     // the focus at the last press
+  int unmoved = 0;             // presses in a row that didn't move that focus
+  uint32_t dead = 0;           // a focused option the d-pad doesn't move (another screen is on
+                               // top): no steering or clicking until the focus changes
   bool click_a = false, click_b = false;  // a mouse button held as A / B
 };
 
@@ -333,9 +337,11 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     const bool moved = rx != s.last_x || ry != s.last_y;
     s.last_x = rx;
     s.last_y = ry;
-    if (moved && hovered && hovered != focused && hovered != s.target) {
+    if (moved && hovered && hovered != focused && hovered != s.target && !s.dead) {
       s.target = hovered;
       s.steps = 0;
+      s.unmoved = 0;
+      s.pressed_at = 0;
     }
   }
   // Step the focus towards the target: the d-pad pressed one poll, released the next, in the
@@ -343,22 +349,33 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   // (that made it lag); the direction is worked out again every press, so an overshoot is
   // walked back.
   uint16_t dpad = 0;
-  if (s.target && (s.target == focused || !IsObject(s.target) || s.steps > 40)) s.target = 0;
+  if (s.dead && s.dead != focused) s.dead = 0;
+  if (s.target && (s.target == focused || !IsObject(s.target) || s.steps > 40 || s.dead)) s.target = 0;
   if (s.target) {
     if (s.pressing) {
       s.pressing = 0;  // released this poll
     } else {
-      const Rect f = Bounds(base, focused), t = Bounds(base, s.target);
-      const float dy = (t.t + t.b) / 2 - (f.t + f.b) / 2, dx = (t.l + t.r) / 2 - (f.l + f.r) / 2;
-      s.pressing = std::abs(dy) >= std::abs(dx) ? (dy < 0 ? kUp : kDown) : (dx < 0 ? kLeft : kRight);
-      ++s.steps;
-      dpad = s.pressing;
+      // Three presses that didn't move the focus: the d-pad is steering something else (a
+      // screen on top whose widgets aren't buttons, e.g. Options' lists), so stop.
+      s.unmoved = focused == s.pressed_at ? s.unmoved + 1 : 0;
+      if (s.unmoved >= 3) {
+        s.dead = focused;
+        s.target = 0;
+        s.unmoved = 0;
+      } else {
+        const Rect f = Bounds(base, focused), t = Bounds(base, s.target);
+        const float dy = (t.t + t.b) / 2 - (f.t + f.b) / 2, dx = (t.l + t.r) / 2 - (f.l + f.r) / 2;
+        s.pressing = std::abs(dy) >= std::abs(dx) ? (dy < 0 ? kUp : kDown) : (dx < 0 ? kLeft : kRight);
+        s.pressed_at = focused;
+        ++s.steps;
+        dpad = s.pressing;
+      }
     }
   }
   // Mouse buttons (the triggers in keyboard-and-mouse mode): left = A on an option, right = B.
   const bool left = base[state + 7] > 64, right = base[state + 6] > 64;
   base[state + 6] = base[state + 7] = 0;
-  s.click_a = left && (s.click_a || (hovered && hovered == focused));
+  s.click_a = left && !s.dead && (s.click_a || (hovered && hovered == focused));
   s.click_b = right;
   SetButtons(base, state, uint16_t((s.click_a ? kA : 0) | (s.click_b ? kB : 0) | dpad), 0);
 }

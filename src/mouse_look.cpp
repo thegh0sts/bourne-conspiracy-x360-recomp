@@ -47,6 +47,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <algorithm>
 #include <chrono>
@@ -126,12 +127,18 @@ bool IsObject(uint32_t a) {
   return a >= 0x40000000 && a < 0xE0000000 && (a & 3) == 0 && Readable(a) && Readable(a + 0x200);
 }
 
-// Direct mode: the player's BnPlayerController and the level's BnCamera (found in the object
-// table, GObjObjects at 0x83655774), re-found at most once a second when they go (a level
-// change).
+// Direct mode: the player's BnPlayerController and the level's BnCamera, found in the object
+// table (GObjObjects at 0x83655774). A checkpoint reload or a failed QTE makes new ones while the
+// old ones linger (same class, still readable) until garbage collection, so a camera counts as
+// live only while its CameraCache time (+0x2A0, a float) keeps changing: once it has stood
+// still for a second, the table is scanned again (at most once a second) and a camera whose
+// time moved since the last scan is taken, with the controller it points to. While the game is
+// paused nothing moves and the current pair is kept.
 struct Player {
   uint32_t controller = 0, controller_class = 0, camera = 0, camera_class = 0;
-  std::chrono::steady_clock::time_point next_find{};
+  float camera_time = 0.0f;
+  std::chrono::steady_clock::time_point camera_moved{}, next_find{};
+  std::unordered_map<uint32_t, float> seen_times;  // camera -> its time at the last scan
   std::unordered_map<uint32_t, std::string> class_names;  // class object -> path name
 };
 Player g_player;
@@ -143,17 +150,43 @@ const std::string& ClassName(const PPCContext& ctx, uint8_t* base, uint32_t cls)
   return it->second;
 }
 
+float CameraTime(const uint8_t* base, uint32_t camera) {
+  const uint32_t v = Load32(base, camera + 0x2A0);
+  float f;
+  std::memcpy(&f, &v, 4);
+  return f;
+}
+
+// The controller among `controllers` that `camera` points to (its PCOwner), else the last one.
+uint32_t OwnerOf(const uint8_t* base, uint32_t camera, const std::vector<std::pair<uint32_t, uint32_t>>& controllers) {
+  for (uint32_t off = 0; off < 0x800 && Readable(camera + off); off += 4) {
+    const uint32_t v = Load32(base, camera + off);
+    for (const auto& c : controllers)
+      if (c.first == v) return v;
+  }
+  return controllers.empty() ? 0 : controllers.back().first;
+}
+
 bool FindPlayer(const PPCContext& ctx, uint8_t* base) {
   Player& p = g_player;
-  const bool ok = IsObject(p.controller) && Load32(base, p.controller + 0x30) == p.controller_class &&
-                  IsObject(p.camera) && Load32(base, p.camera + 0x30) == p.camera_class;
-  if (ok) return true;
-  p.controller = p.camera = 0;
   const auto now = std::chrono::steady_clock::now();
-  if (now < p.next_find) return false;
+  bool ok = IsObject(p.controller) && Load32(base, p.controller + 0x30) == p.controller_class &&
+            IsObject(p.camera) && Load32(base, p.camera + 0x30) == p.camera_class;
+  if (ok) {
+    const float t = CameraTime(base, p.camera);
+    if (t != p.camera_time) {
+      p.camera_time = t;
+      p.camera_moved = now;
+      return true;
+    }
+    if (now - p.camera_moved < std::chrono::seconds(1)) return true;
+  }
+  // Gone, or its camera has stood still for a second: scan again (at most once a second).
+  if (now < p.next_find) return ok;
   p.next_find = now + std::chrono::seconds(1);
   const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
-  if (!Readable(data) || count > 2000000) return false;
+  if (!Readable(data) || count > 2000000) return ok;
+  std::vector<std::pair<uint32_t, uint32_t>> controllers, cameras;  // (object, class)
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t o = Load32(base, data + 4 * i);
     if (!IsObject(o)) continue;
@@ -163,12 +196,44 @@ bool FindPlayer(const PPCContext& ctx, uint8_t* base) {
     const bool controller = name == "BourneNative.BnPlayerController", camera = name == "BourneNative.BnCamera";
     if (!controller && !camera) continue;
     if (tbc::prompts::ObjectPathName(ctx, base, o).find("Default__") != std::string::npos) continue;
-    (controller ? p.controller : p.camera) = o;
-    (controller ? p.controller_class : p.camera_class) = cls;
+    (controller ? controllers : cameras).emplace_back(o, cls);
   }
-  if (!p.controller || !p.camera) return false;
-  REXLOG_INFO("mouse_look_direct: player controller {:08X} (input {:08X}), camera {:08X}", p.controller,
-              Load32(base, p.controller + 0x408), p.camera);
+  // The camera: one whose time moved since the last scan; else one that's new since then (a
+  // reload's, on the first scan after it); else, if the current one is still there (paused),
+  // keep the pair; else the last found.
+  std::unordered_map<uint32_t, float> times;
+  uint32_t camera = 0, camera_class = 0, fresh = 0, fresh_class = 0;
+  for (const auto& c : cameras) {
+    const float t = CameraTime(base, c.first);
+    times[c.first] = t;
+    const auto seen = p.seen_times.find(c.first);
+    if (seen == p.seen_times.end()) {
+      fresh = c.first, fresh_class = c.second;
+    } else if (seen->second != t) {
+      camera = c.first, camera_class = c.second;
+    }
+  }
+  const bool first_scan = p.seen_times.empty();
+  p.seen_times = std::move(times);
+  if (!camera && !first_scan) camera = fresh, camera_class = fresh_class;
+  if (!camera && ok) return true;
+  if (!camera && !cameras.empty()) camera = cameras.back().first, camera_class = cameras.back().second;
+  const uint32_t controller = camera ? OwnerOf(base, camera, controllers) : 0;
+  if (!camera || !controller) {
+    p.controller = p.camera = 0;
+    return false;
+  }
+  for (const auto& c : controllers)
+    if (c.first == controller) p.controller_class = c.second;
+  if (camera != p.camera || controller != p.controller) {
+    REXLOG_INFO("mouse_look_direct: player controller {:08X} (input {:08X}), camera {:08X} ({} cameras, {} controllers)",
+                controller, Load32(base, controller + 0x408), camera, cameras.size(), controllers.size());
+  }
+  p.controller = controller;
+  p.camera = camera;
+  p.camera_class = camera_class;
+  p.camera_time = CameraTime(base, camera);
+  p.camera_moved = now;
   return true;
 }
 

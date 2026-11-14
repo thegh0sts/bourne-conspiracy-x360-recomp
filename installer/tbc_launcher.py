@@ -188,15 +188,17 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
     ("keybind_rstick_press", "MMB", "Recentre camera / switch shoulder"),
     ("keybind_start", "Escape", "Pause"),
     ("keybind_back", "Tab", "Back"),
-    # The arrows also press the d-pad (below), which moves through menus; gameplay doesn't use it.
-    ("keybind_rstick_up", "Up", "Camera up (as well as the mouse)"),
-    ("keybind_rstick_down", "Down", "Camera down"),
-    ("keybind_rstick_left", "Left", "Camera left"),
-    ("keybind_rstick_right", "Right", "Camera right"),
-    ("keybind_dpad_up", "1,Up", "D-pad up; menus (the arrows also turn the camera)"),
-    ("keybind_dpad_down", "2,Down", "D-pad down; menus (the arrows also turn the camera)"),
-    ("keybind_dpad_left", "3,Left", "D-pad left; menus (the arrows also turn the camera)"),
-    ("keybind_dpad_right", "4,Right", "D-pad right; menus (the arrows also turn the camera)"),
+    # The right stick is the mouse only: the arrows press the d-pad (below), which moves through
+    # menus and isn't used in gameplay. Empty binds are parked on F24 (none of the SDK's own
+    # defaults, which put the arrows here).
+    ("keybind_rstick_up", "", "Camera up (the mouse)"),
+    ("keybind_rstick_down", "", "Camera down"),
+    ("keybind_rstick_left", "", "Camera left"),
+    ("keybind_rstick_right", "", "Camera right"),
+    ("keybind_dpad_up", "1,Up", "D-pad up; menus"),
+    ("keybind_dpad_down", "2,Down", "D-pad down; menus"),
+    ("keybind_dpad_left", "3,Left", "D-pad left; menus"),
+    ("keybind_dpad_right", "4,Right", "D-pad right; menus"),
 ]
 KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 # The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE
@@ -218,7 +220,6 @@ CONTROLS = [
         ("Q", "Bourne Instinct"),
         ("G", "Draw / holster the gun"),
         ("Middle mouse", "Recentre the camera; switch shoulder when aiming"),
-        ("Arrow keys", "Turn the camera"),
         ("1 / 2 / 3 / 4", "D-pad up / down / left / right"),
         ("Esc", "Pause"),
         ("Tab", "Back"),
@@ -238,7 +239,7 @@ CONTROLS = [
     ("Menus", [
         ("Enter or Space", "Accept; start on the title screen"),
         ("Backspace or F", "Back"),
-        ("W / S", "Move up and down"),
+        ("W / S or arrow keys", "Move up and down"),
     ]),
 ]
 
@@ -846,7 +847,7 @@ class SettingsView(tk.Frame):
         self._slider(box, 4, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         self._slider(box, 5, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
         tk.Label(box, text="Mouse camera smoothing: how much of the game's camera easing stays with mouse look "
-                           "(lower is more responsive). Stick turn speed is for a controller and the arrow keys.",
+                           "(lower is more responsive). Stick turn speed is for a controller.",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
                  ).grid(row=6, column=0, columnspan=2, sticky="w")
 

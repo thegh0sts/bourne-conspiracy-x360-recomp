@@ -69,6 +69,7 @@ REX_EXTERN(__imp__sub_82C499C8);  // DrawTile(FCanvas*, ...)
 REX_EXTERN(__imp__sub_82C4ADD8);  // UCanvas::DrawMaterialTile
 REX_EXTERN(__imp__sub_82C48EC0);  // DrawTile(FCanvas*, ..., material render proxy)
 REX_EXTERN(__imp__sub_82C49C20);  // DrawTriangle2D(FCanvas*, ...)
+REX_EXTERN(__imp__sub_82E3D288);  // FBatchedElements::AddTriangle
 REX_EXTERN(sub_8291E040);         // UObject::GetPathName(FString* out, UObject*, UObject* stop)
 
 namespace {
@@ -106,6 +107,10 @@ struct Trace {
   std::unordered_map<uint32_t, uint32_t> resource_owner;    // render resource -> UTexture
   std::unordered_set<std::string> seen;
   std::unordered_map<uint32_t, std::string> owners;  // pointer -> "Object+offset"
+  std::unordered_map<uint32_t, std::string> class_names;
+  std::unordered_set<uint32_t> listed;  // objects already in objects.txt
+  FILE* objects = nullptr;
+  std::chrono::steady_clock::time_point next_scan{};
 };
 
 Trace& T() {
@@ -186,6 +191,45 @@ std::string Owner(Trace& t, const PPCContext& ctx, uint8_t* base, uint32_t point
   return t.owners.emplace(pointer, found).first->second;
 }
 
+// Every texture, material and font loaded (logs\objects.txt, added to every 20 seconds), so
+// images that aren't drawn through the canvas can be found by name.
+void ListObjects(Trace& t, const PPCContext& ctx, uint8_t* base) {
+  const auto now = std::chrono::steady_clock::now();
+  if (now < t.next_scan) return;
+  t.next_scan = now + std::chrono::seconds(20);
+  if (!t.objects) {
+    std::filesystem::path dir = "logs";
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) dir = std::filesystem::path(buf).parent_path() / "logs";
+#endif
+    t.objects = std::fopen((dir / "objects.txt").string().c_str(), "w");
+    if (!t.objects) return;
+  }
+  const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
+  if (!Readable(data) || count > 2000000) return;
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - t.start).count();
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t object = Load32(base, data + 4 * i);
+    if (!object || !Readable(object) || !Readable(object + 0x34) || t.listed.count(object)) continue;
+    const uint32_t cls = Load32(base, object + 0x30);
+    if (!cls || !Readable(cls) || !Readable(cls + 0x34)) continue;
+    auto it = t.class_names.find(cls);
+    if (it == t.class_names.end()) it = t.class_names.emplace(cls, PathName(ctx, base, cls)).first;
+    const std::string& c = it->second;
+    if (c.find("Texture") == std::string::npos && c.find("Material") == std::string::npos &&
+        c.find("Font") == std::string::npos && c.find("Particle") == std::string::npos &&
+        c.find("UI") == std::string::npos && c.find("HUD") == std::string::npos) {
+      continue;
+    }
+    t.listed.insert(object);
+    std::fprintf(t.objects, "%lld\t%08X\t%s\t%s\n", static_cast<long long>(ms), object, c.c_str(),
+                 PathName(ctx, base, object).c_str());
+  }
+  std::fflush(t.objects);
+}
+
 void Log(Trace& t, const char* function, const std::string& texture, uint32_t size_x,
          uint32_t size_y, const double (&part)[4], const double (&screen)[4]) {
   if (t.seen.size() >= kMaxEntries) {
@@ -261,6 +305,7 @@ void TraceText(PPCContext& ctx, uint8_t* base) {
   if (REXCVAR_GET(prompt_trace) && ctx.r6.u32 && ctx.r7.u32) {
     Trace& t = T();
     std::lock_guard<std::mutex> lock(t.mutex);
+    ListObjects(t, ctx, base);
     const uint32_t font = ctx.r7.u32;
     auto it = t.texture_names.find(font);
     if (it == t.texture_names.end()) {
@@ -374,4 +419,31 @@ extern "C" REX_FUNC(sub_82C49C20) {
     Log(t, function, name, size_x, size_y, part, screen);
   }
   __imp__sub_82C49C20(ctx, base);
+}
+
+// FBatchedElements::AddTriangle(batch, v0, v1, v2, FTexture* (r7), blend mode (r8)): what every
+// 2D draw ends in. Logged once per caller and texture, to catch images drawn some other way.
+extern "C" REX_FUNC(sub_82E3D288) {
+  if (REXCVAR_GET(prompt_trace)) {
+    Trace& t = T();
+    std::lock_guard<std::mutex> lock(t.mutex);
+    const uint32_t resource = ctx.r7.u32;
+    const uint32_t lr = static_cast<uint32_t>(ctx.lr);
+    char function[32];
+    std::snprintf(function, sizeof(function), "Batched@%08X", lr);
+    char key[64];
+    std::snprintf(key, sizeof(key), "B|%08X|%08X", lr, resource);
+    if (t.seen.size() < kMaxEntries && !t.seen.count(key)) {
+      t.seen.insert(key);
+      std::string name;
+      if (const auto owner = t.resource_owner.find(resource); owner != t.resource_owner.end()) {
+        name = t.texture_names[owner->second];
+      } else {
+        name = Owner(t, ctx, base, resource);
+      }
+      const double zero[4] = {0, 0, 0, 0};
+      Log(t, function, name, 0, 0, zero, zero);
+    }
+  }
+  __imp__sub_82E3D288(ctx, base);
 }

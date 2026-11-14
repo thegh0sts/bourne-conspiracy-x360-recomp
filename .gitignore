@@ -12,6 +12,7 @@ generated/default/
 assets/*
 !assets/keys/
 !assets/ps/
+assets/ps/*.dds
 
 # Logs and local junk
 tbc_log.txt

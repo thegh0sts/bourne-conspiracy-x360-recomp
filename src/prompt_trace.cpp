@@ -32,7 +32,9 @@
 
 #include "generated/default/tbc_pch.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -43,6 +45,8 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
+#include <rex/system/xmemory.h>
 
 #include "prompts.h"
 
@@ -63,6 +67,8 @@ REXCVAR_DEFINE_BOOL(prompt_trace, false, "Debug",
 REX_EXTERN(__imp__sub_82C4ACC0);  // UCanvas::DrawTile
 REX_EXTERN(__imp__sub_82C499C8);  // DrawTile(FCanvas*, ...)
 REX_EXTERN(__imp__sub_82C4ADD8);  // UCanvas::DrawMaterialTile
+REX_EXTERN(__imp__sub_82C48EC0);  // DrawTile(FCanvas*, ..., material render proxy)
+REX_EXTERN(__imp__sub_82C49C20);  // DrawTriangle2D(FCanvas*, ...)
 REX_EXTERN(sub_8291E040);         // UObject::GetPathName(FString* out, UObject*, UObject* stop)
 
 namespace {
@@ -75,6 +81,22 @@ uint32_t Load32(const uint8_t* base, uint32_t addr) {
   return __builtin_bswap32(v);
 }
 
+bool Readable(uint32_t addr) {
+  static std::unordered_map<uint32_t, bool> pages;
+  const uint32_t page = addr >> 12;
+  if (const auto it = pages.find(page); it != pages.end()) return it->second;
+  bool ok = false;
+  auto* runtime = rex::Runtime::instance();
+  if (runtime && runtime->memory()) {
+    if (auto* heap = runtime->memory()->LookupHeap(addr)) {
+      uint32_t protect = 0;
+      ok = heap->QueryProtect(addr, &protect) && (protect & rex::memory::kMemoryProtectRead);
+    }
+  }
+  pages.emplace(page, ok);
+  return ok;
+}
+
 struct Trace {
   std::mutex mutex;
   FILE* file = nullptr;
@@ -83,6 +105,7 @@ struct Trace {
   std::unordered_map<uint32_t, std::string> texture_names;  // UTexture -> path name
   std::unordered_map<uint32_t, uint32_t> resource_owner;    // render resource -> UTexture
   std::unordered_set<std::string> seen;
+  std::unordered_map<uint32_t, std::string> owners;  // pointer -> "Object+offset"
 };
 
 Trace& T() {
@@ -136,6 +159,31 @@ std::string PathName(const PPCContext& ctx, uint8_t* base, uint32_t object) {
     }
   }
   return name.empty() ? "?" : name;
+}
+
+// Which object holds this pointer (a texture's render resource, a material's render proxy):
+// every object in GObjObjects (0x83655774: data, count) is searched, its first 0x200 bytes.
+// Slow, but once per pointer, and only with the trace on.
+std::string Owner(Trace& t, const PPCContext& ctx, uint8_t* base, uint32_t pointer) {
+  if (const auto it = t.owners.find(pointer); it != t.owners.end()) return it->second;
+  std::string found;
+  const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
+  if (pointer && Readable(data) && count < 2000000) {
+    for (uint32_t i = 0; i < count && found.empty(); ++i) {
+      const uint32_t object = Load32(base, data + 4 * i);
+      if (!object || !Readable(object) || !Readable(object + 0x1FC)) continue;
+      for (uint32_t off = 0x34; off < 0x200; off += 4) {
+        if (Load32(base, object + off) == pointer) {
+          char buf[16];
+          std::snprintf(buf, sizeof(buf), "+%X", off);
+          found = PathName(ctx, base, object) + buf;
+          break;
+        }
+      }
+    }
+  }
+  if (found.empty()) found = "?" + std::to_string(pointer);
+  return t.owners.emplace(pointer, found).first->second;
 }
 
 void Log(Trace& t, const char* function, const std::string& texture, uint32_t size_x,
@@ -249,16 +297,81 @@ extern "C" REX_FUNC(sub_82C499C8) {
     Trace& t = T();
     std::lock_guard<std::mutex> lock(t.mutex);
     const uint32_t resource = Load32(base, ctx.r1.u32 + 100);
-    std::string name = "resource:" + std::to_string(resource);
+    std::string name;
     uint32_t size_x = 0, size_y = 0;
     if (const auto owner = t.resource_owner.find(resource); owner != t.resource_owner.end()) {
       name = t.texture_names[owner->second];
       size_x = Load32(base, owner->second + 200);
       size_y = Load32(base, owner->second + 204);
+    } else {
+      name = Owner(t, ctx, base, resource);  // drawn without UCanvas: find the texture
     }
     const double screen[4] = {ctx.f1.f64, ctx.f2.f64, ctx.f3.f64, ctx.f4.f64};
     const double part[4] = {ctx.f5.f64, ctx.f6.f64, ctx.f7.f64, ctx.f8.f64};
-    Log(t, "FCanvas", name, size_x, size_y, part, screen);
+    char function[32];
+    std::snprintf(function, sizeof(function), "FCanvas@%08X", static_cast<uint32_t>(ctx.lr));
+    Log(t, function, name, size_x, size_y, part, screen);
   }
   __imp__sub_82C499C8(ctx, base);
+}
+
+// DrawTile(FCanvas*, X, Y, SizeX, SizeY, U, V, SizeU, SizeV, FMaterialRenderProxy* (stack
+// r1+92), hit proxy (r1+100)): material images that don't come through
+// UCanvas::DrawMaterialTile (UI scenes, from sub_82C49BD0 and sub_82C4A808).
+extern "C" REX_FUNC(sub_82C48EC0) {
+  if (REXCVAR_GET(prompt_trace)) {
+    Trace& t = T();
+    std::lock_guard<std::mutex> lock(t.mutex);
+    const uint32_t proxy = Load32(base, ctx.r1.u32 + 92);
+    const std::string name = Owner(t, ctx, base, proxy);
+    char function[32];
+    std::snprintf(function, sizeof(function), "FMaterial@%08X", static_cast<uint32_t>(ctx.lr));
+    const double screen[4] = {ctx.f1.f64, ctx.f2.f64, ctx.f3.f64, ctx.f4.f64};
+    const double part[4] = {ctx.f5.f64, ctx.f6.f64, ctx.f7.f64, ctx.f8.f64};
+    Log(t, function, name, 0, 0, part, screen);
+  }
+  __imp__sub_82C48EC0(ctx, base);
+}
+
+// DrawTriangle2D(FCanvas*, Pos0, UV0, Pos1, UV1, Pos2, UV2 (FVector2D*: r4..r9), color (r10),
+// FTexture* (stack r1+84), alpha blend (r1+92)): meters and other shapes that aren't tiles.
+// Logged as the bounding box of the three corners and of their UVs.
+extern "C" REX_FUNC(sub_82C49C20) {
+  if (REXCVAR_GET(prompt_trace)) {
+    Trace& t = T();
+    std::lock_guard<std::mutex> lock(t.mutex);
+    auto F = [&](uint32_t a) {
+      const uint32_t v = Load32(base, a);
+      float f;
+      std::memcpy(&f, &v, 4);
+      return double(f);
+    };
+    const uint32_t pos[3] = {ctx.r4.u32, ctx.r6.u32, ctx.r8.u32};
+    const uint32_t uv[3] = {ctx.r5.u32, ctx.r7.u32, ctx.r9.u32};
+    double px0 = 1e9, py0 = 1e9, px1 = -1e9, py1 = -1e9, u0 = 1e9, v0 = 1e9, u1 = -1e9, v1 = -1e9;
+    for (int i = 0; i < 3; ++i) {
+      px0 = std::min(px0, F(pos[i])), px1 = std::max(px1, F(pos[i]));
+      py0 = std::min(py0, F(pos[i] + 4)), py1 = std::max(py1, F(pos[i] + 4));
+      u0 = std::min(u0, F(uv[i])), u1 = std::max(u1, F(uv[i]));
+      v0 = std::min(v0, F(uv[i] + 4)), v1 = std::max(v1, F(uv[i] + 4));
+    }
+    const uint32_t resource = Load32(base, ctx.r1.u32 + 84);
+    std::string name;
+    uint32_t size_x = 0, size_y = 0;
+    if (const auto owner = t.resource_owner.find(resource); owner != t.resource_owner.end()) {
+      name = t.texture_names[owner->second];
+      size_x = Load32(base, owner->second + 200);
+      size_y = Load32(base, owner->second + 204);
+    } else {
+      name = Owner(t, ctx, base, resource);
+    }
+    char function[32];
+    std::snprintf(function, sizeof(function), "Triangle@%08X", static_cast<uint32_t>(ctx.lr));
+    // Rounded so a meter that fills smoothly doesn't log every frame.
+    auto R = [](double x) { return std::round(x * 20) / 20; };
+    const double screen[4] = {std::round(px0), std::round(py0), std::round(px1 - px0), std::round(py1 - py0)};
+    const double part[4] = {R(u0), R(v0), R(u1 - u0), R(v1 - v0)};
+    Log(t, function, name, size_x, size_y, part, screen);
+  }
+  __imp__sub_82C49C20(ctx, base);
 }

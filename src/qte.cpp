@@ -28,6 +28,8 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
+#include <rex/system/xmemory.h>
 
 #include "prompts.h"
 #include "qte.h"
@@ -128,6 +130,24 @@ std::string Words(const uint8_t* base, uint32_t addr, uint32_t size) {
 
 bool Heap(uint32_t a) { return a >= 0x40000000 && a < 0x80000000; }
 
+// Whether a guest address can be read: the first probe crashed reading through a word that only
+// looked like a heap pointer. Answers are kept per 4 KB page.
+bool Readable(uint32_t addr) {
+  static std::unordered_map<uint32_t, bool> pages;
+  const uint32_t page = addr >> 12;
+  if (const auto it = pages.find(page); it != pages.end()) return it->second;
+  bool ok = false;
+  auto* runtime = rex::Runtime::instance();
+  if (runtime && runtime->memory()) {
+    if (auto* heap = runtime->memory()->LookupHeap(addr)) {
+      uint32_t protect = 0;
+      ok = heap->QueryProtect(addr, &protect) && (protect & rex::memory::kMemoryProtectRead);
+    }
+  }
+  pages.emplace(page, ok);
+  return ok;
+}
+
 struct Probe {
   uint32_t objects = 0;  // address of GObjObjects {Data, Num, Max}
   uint32_t player_class = 0, branch_class = 0;
@@ -153,7 +173,7 @@ void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
     const uint32_t ia = Load32(base, a + 4), ib = Load32(base, b + 4);
     for (uint32_t g = 0x82000000; g < 0x83740000; g += 4) {
       const uint32_t data = Load32(base, g);
-      if (!Heap(data)) continue;
+      if (!Heap(data) || !Readable(data + 4 * ia) || !Readable(data + 4 * ib)) continue;
       if (Load32(base, data + 4 * ia) == a && Load32(base, data + 4 * ib) == b) {
         p.objects = g;
         REXLOG_INFO("qte_probe: GObjObjects at {:08X}: data {:08X}, {} objects", g, data, Load32(base, g + 4));
@@ -167,8 +187,9 @@ void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
   p.players.clear();
   p.branches.clear();
   for (uint32_t i = 0; i < count; ++i) {
+    if ((i & 1023) == 0 && !Readable(data + 4 * i)) break;
     const uint32_t obj = Load32(base, data + 4 * i);
-    if (!Heap(obj)) continue;
+    if (!Heap(obj) || !Readable(obj + 0x30)) continue;
     const uint32_t cls = Load32(base, obj + 0x30);
     if (cls == p.player_class) p.players.push_back(obj);
     else if (cls == p.branch_class) p.branches.push_back(obj);

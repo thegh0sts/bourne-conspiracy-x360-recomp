@@ -30,6 +30,8 @@
 #include "generated/default/tbc_pch.h"
 
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -46,6 +48,8 @@
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 #include <rex/ui/image_decode.h>
+
+REX_EXTERN(sub_82920EE8);  // UObject::StaticFindObject(UClass*, UObject* outer, const TCHAR*, UBOOL exact)
 
 REXCVAR_DEFINE_BOOL(key_glyphs, true, "Input",
                     "Keyboard and mouse: draw keys that have a glyph (keys/*.png) as images in "
@@ -264,6 +268,29 @@ std::string Lower(std::string s) {
 std::mutex g_mutex;
 bool g_tried = false;
 std::unordered_map<std::string, uint32_t> g_chars;  // lower-case key name -> character
+struct Image {
+  std::vector<uint8_t> rgba;
+  int w = 0, h = 0;
+};
+std::unordered_map<std::string, Image> g_images;  // lower-case key name -> its PNG, decoded
+
+// An image without its transparent margin, so a badge's box is filled by the key itself.
+Image Cropped(const std::vector<uint8_t>& rgba, int w, int h) {
+  int x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x)
+      if (rgba[(size_t(y) * w + x) * 4 + 3] > 8) {
+        x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+      }
+  if (x1 < 0) return Image{rgba, w, h};
+  Image out;
+  out.w = x1 - x0 + 1;
+  out.h = y1 - y0 + 1;
+  out.rgba.resize(size_t(out.w) * out.h * 4);
+  for (int y = 0; y < out.h; ++y)
+    std::memcpy(&out.rgba[size_t(y) * out.w * 4], &rgba[(size_t(y0 + y) * w + x0) * 4], size_t(out.w) * 4);
+  return out;
+}
 
 std::filesystem::path KeysDir() {
   for (const char* dir : {"keys", "assets/keys"}) {
@@ -271,6 +298,120 @@ std::filesystem::path KeysDir() {
     if (std::filesystem::is_directory(dir, ec)) return dir;
   }
   return {};
+}
+
+// --- HUD badges ---------------------------------------------------------------------------
+// Some button badges aren't text but parts of HUD textures, drawn in the 3D scene: the A by a
+// door and the B on the takedown meter (BourneUIPlatformSpecific.InteractButtonIcons, 512x256
+// DXT5: A, B, X, Y in the top row, RT, LT, RB, LB below, one 128x128 cell each with the badge
+// in its lower-right part) and the single QTE prompt (ButtonPresses, 128x512: A, B, X, Y
+// cells top to bottom, each badge where it sits on the controller's diamond). Their layout is
+// from the textures as extracted (assets/*.dds). Each badge's area is cleared and the bound
+// key's glyph drawn there instead, scaled to fit, the way glyphs go into the button font.
+
+struct Badge {
+  int cell_x, cell_y;            // the cell's top-left texel
+  int clear[4];                  // area cleared, relative to the cell (x0, y0, x1, y1; 4-aligned)
+  float cx, cy, box_w, box_h;    // where the glyph goes (centre) and its largest size
+  const char* bind;              // whose key it shows
+};
+
+struct HudTexture {
+  const char* name;
+  uint32_t width, height;
+  std::vector<Badge> badges;
+  uint32_t object = 0, data = 0;  // patched: which object, its pixels, and a check block
+  uint8_t check[16] = {};
+  uint32_t check_x = 0, check_y = 0;
+  std::string keys;               // the keys drawn, to redo it when binds change
+};
+
+std::vector<HudTexture>& HudTextures() {
+  static std::vector<HudTexture> list = [] {
+    std::vector<HudTexture> v;
+    HudTexture interact{"BourneUIPlatformSpecific.InteractButtonIcons", 512, 256, {}};
+    const char* row0[4] = {"keybind_a", "keybind_b", "keybind_x", "keybind_y"};
+    const char* row1[4] = {"keybind_right_trigger", "keybind_left_trigger", "keybind_right_shoulder",
+                           "keybind_left_shoulder"};
+    for (int i = 0; i < 4; ++i) {
+      interact.badges.push_back({i * 128, 0, {64, 64, 128, 128}, 97.5f, 97.5f, 56, 40, row0[i]});
+      interact.badges.push_back({i * 128, 128, {64, 64, 128, 128}, 98.0f, 101.5f, 56, 40, row1[i]});
+    }
+    v.push_back(interact);
+    // QTE prompt: "@qte" binds show the W / A / S / D keys while --qte_wasd is on.
+    HudTexture presses{"BourneUIPlatformSpecific.ButtonPresses", 128, 512, {}};
+    presses.badges.push_back({0, 0, {40, 60, 88, 100}, 64.0f, 80.5f, 46, 34, "keybind_a@qte"});
+    presses.badges.push_back({0, 128, {80, 36, 128, 72}, 102.5f, 53.0f, 44, 32, "keybind_b@qte"});
+    presses.badges.push_back({0, 256, {0, 36, 48, 72}, 25.5f, 53.0f, 44, 32, "keybind_x@qte"});
+    presses.badges.push_back({0, 384, {44, 12, 84, 44}, 64.0f, 29.0f, 38, 30, "keybind_y@qte"});
+    v.push_back(presses);
+    return v;
+  }();
+  return list;
+}
+
+uint32_t FindObject(const PPCContext& ctx, uint8_t* base, const char* name) {
+  PPCContext tmp = ctx;
+  const uint32_t text = ctx.r1.u32 - 0x300;  // UTF-16BE name below the caller's frame
+  for (size_t i = 0;; ++i) {
+    const uint16_t c = uint8_t(name[i]);
+    base[text + 2 * i] = uint8_t(c >> 8);
+    base[text + 2 * i + 1] = uint8_t(c);
+    if (!c) break;
+  }
+  tmp.r1.u32 = ctx.r1.u32 - 0x600;
+  tmp.r3.u64 = 0;
+  tmp.r4.u64 = 0;
+  tmp.r5.u64 = text;
+  tmp.r6.u64 = 0;
+  sub_82920EE8(tmp, base);
+  return tmp.r3.u32;
+}
+
+// The texture's pixels, as for the font page; false if it isn't on the GPU (yet).
+bool TexturePage(uint8_t* base, uint32_t texture, Page& p, uint32_t& format) {
+  const uint32_t resource = Readable(texture + 0xBC) ? Load32(base, texture + 0xB8) : 0;
+  const uint32_t rhi = resource && Readable(resource + 0x18) ? Load32(base, resource + 0x14) : 0;
+  const uint32_t header = rhi && Readable(rhi + 0x0C) ? Load32(base, rhi + 0x08) : 0;
+  if (!header || !Readable(header + 0x28)) return false;
+  const uint32_t dw0 = Load32(base, header + 0x1C), dw1 = Load32(base, header + 0x20),
+                 dw2 = Load32(base, header + 0x24);
+  p.tiled = (dw0 >> 31) != 0;
+  p.blocks_wide = ((dw0 >> 22) & 0x1FF) * 32 / 4;
+  p.width = (dw2 & 0x1FFF) + 1;
+  p.height = ((dw2 >> 13) & 0x1FFF) + 1;
+  p.endian = (dw1 >> 6) & 3;
+  p.data = dw1 & 0xFFFFF000;
+  format = dw1 & 0x3F;
+  return p.data != 0 && Readable(p.data);
+}
+
+// Clears a badge's area and draws the key's image into it, centred, scaled to fit its box.
+void DrawBadge(uint8_t* base, const Page& p, const Badge& b, const Image* img) {
+  const int x0 = b.cell_x + b.clear[0], y0 = b.cell_y + b.clear[1];
+  const int x1 = b.cell_x + b.clear[2], y1 = b.cell_y + b.clear[3];
+  std::vector<uint8_t> glyph;
+  int gw = 0, gh = 0, gx = 0, gy = 0;
+  if (img && img->w > 0 && img->h > 0) {
+    const float scale = std::min(b.box_w / img->w, b.box_h / img->h);
+    gw = std::max(1, int(std::lround(img->w * scale)));
+    gh = std::max(1, int(std::lround(img->h * scale)));
+    gx = b.cell_x + int(std::lround(b.cx - gw / 2.0f));
+    gy = b.cell_y + int(std::lround(b.cy - gh / 2.0f));
+    glyph = Scale(img->rgba, img->w, img->h, gw, gh);
+  }
+  for (int by = y0 / 4; by < y1 / 4; ++by) {
+    for (int bx = x0 / 4; bx < x1 / 4; ++bx) {
+      uint8_t px[16][4] = {}, blk[16];
+      for (int i = 0; i < 16; ++i) {
+        const int x = bx * 4 + i % 4 - gx, y = by * 4 + i / 4 - gy;
+        if (!glyph.empty() && x >= 0 && y >= 0 && x < gw && y < gh)
+          std::memcpy(px[i], &glyph[(size_t(y) * gw + x) * 4], 4);
+      }
+      EncodeBlock(px, blk);
+      WriteBlock(base, p, uint32_t(bx), uint32_t(by), blk);
+    }
+  }
 }
 
 }  // namespace
@@ -376,6 +517,7 @@ void Install(uint8_t* base, uint32_t font) {
         {"esc", "escape"},     {"ctrl", "control"}};
     if (const auto it = kAlias.find(key); it != kAlias.end()) key = it->second;
     g_chars[key] = c;
+    g_images[key] = Cropped(rgba, sw, sh);
     REXLOG_INFO("key_glyphs: {} -> character {:02X} at {},{} ({}x{})", e.path().filename().string(), c, x, y, w, h);
     x += w + kGap;
   }
@@ -388,6 +530,62 @@ uint32_t CharFor(const std::string& key) {
   std::lock_guard<std::mutex> lock(g_mutex);
   const auto it = g_chars.find(Lower(key));
   return it == g_chars.end() ? 0 : it->second;
+}
+
+// Called on every button-font draw while keyboard and mouse are on (keyboard_prompts.cpp), with
+// the key each bind shows ("Space", "F", "LMB"). Once a second it checks each HUD texture:
+// loaded, and not yet patched with these keys (or reloaded since), it gets the key glyphs.
+void PatchHud(const PPCContext& ctx, uint8_t* base, const std::function<std::string(const char*)>& key_for) {
+  if (!REXCVAR_GET(key_glyphs)) return;
+  static auto next = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::seconds(1);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_images.empty()) return;
+  for (HudTexture& t : HudTextures()) {
+    const uint32_t object = FindObject(ctx, base, t.name);
+    if (!object) continue;
+    Page p;
+    uint32_t format = 0;
+    if (!TexturePage(base, object, p, format)) continue;
+    std::string keys;
+    std::vector<const Image*> images;
+    for (const Badge& b : t.badges) {
+      const std::string key = Lower(key_for(b.bind));
+      keys += key + ",";
+      const auto it = g_images.find(key);
+      images.push_back(it == g_images.end() ? nullptr : &it->second);
+    }
+    if (t.object == object && t.data == p.data && t.keys == keys) {
+      uint8_t blk[16];
+      ReadBlock(base, p, t.check_x, t.check_y, blk);
+      if (std::memcmp(blk, t.check, 16) == 0) continue;  // still ours
+    }
+    if (format != 0x14 || p.width != t.width || p.height != t.height ||
+        !Readable(p.data + p.blocks_wide * 16 * (p.height / 4) - 1)) {
+      if (t.object != object) {
+        REXLOG_WARN("key_glyphs: {} is {}x{} format {:02X}, not as expected; left as it is", t.name, p.width,
+                    p.height, format);
+        t.object = object;
+        t.data = p.data;
+        t.keys = keys;
+      }
+      continue;
+    }
+    for (size_t i = 0; i < t.badges.size(); ++i) {
+      // A key without an image keeps the controller badge: better than an empty space.
+      if (images[i]) DrawBadge(base, p, t.badges[i], images[i]);
+    }
+    const Badge& first = t.badges[0];
+    t.check_x = uint32_t((first.cell_x + first.clear[0]) / 4);
+    t.check_y = uint32_t((first.cell_y + first.clear[1]) / 4);
+    ReadBlock(base, p, t.check_x, t.check_y, t.check);
+    t.object = object;
+    t.data = p.data;
+    t.keys = keys;
+    REXLOG_INFO("key_glyphs: {} badges drawn as keys {}", t.name, keys);
+  }
 }
 
 // Development (--prompt_trace): a texture's top mip to logs/<name>.tga, to see how a HUD image

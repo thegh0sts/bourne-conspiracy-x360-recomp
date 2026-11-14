@@ -64,6 +64,7 @@ extern "C" REX_FUNC(sub_823213D8) {
     return;
   }
   tbc::qte::OnControllerState(base, state);
+  tbc::prompts::PatchHudTextures(ctx, base);
   // Title screen, keyboard and mouse: its prompt shows Enter (A's menu key), but the screen
   // only takes Start. A press of A (Enter, Space) also presses Start there.
   if (tbc::prompts::TitleScreenUp()) {

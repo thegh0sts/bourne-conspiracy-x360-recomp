@@ -42,6 +42,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -339,6 +340,8 @@ namespace tbc::glyphs {
 void ProbeFont(const PPCContext& ctx, uint8_t* base, uint32_t font);  // glyph_probe.cpp
 void Install(uint8_t* base, uint32_t font);                           // key_glyphs.cpp
 uint32_t CharFor(const std::string& key);                             // key_glyphs.cpp
+void PatchHud(const PPCContext& ctx, uint8_t* base,
+              const std::function<std::string(const char*)>& key_for);  // key_glyphs.cpp
 }
 
 extern "C" REX_FUNC(sub_82C49D88) {
@@ -463,6 +466,28 @@ extern "C" REX_FUNC(sub_82C49D88) {
 }
 
 namespace tbc::prompts {
+// HUD textures with button badges (door, takedown meter, QTE) get the keys' glyphs
+// (key_glyphs.cpp). Called on every controller poll (input_trace.cpp), which happens every
+// frame on the game's thread; the work itself is done at most once a second. "@qte" badges show
+// the W / A / S / D directions that answer QTEs (qte.cpp).
+void PatchHudTextures(const PPCContext& ctx, uint8_t* base) {
+  if (!REXCVAR_GET(keyboard_prompts)) return;
+  State& s = S();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  Refresh(s, std::chrono::steady_clock::now());
+  if (!s.keyboard_mode) return;
+  tbc::glyphs::PatchHud(ctx, base, [&s](const char* bind) -> std::string {
+    static const std::unordered_map<std::string, const char*> kQte = {
+        {"keybind_a@qte", "keybind_lstick_down"}, {"keybind_b@qte", "keybind_lstick_right"},
+        {"keybind_x@qte", "keybind_lstick_left"}, {"keybind_y@qte", "keybind_lstick_up"}};
+    std::string name = bind;
+    if (const auto it = kQte.find(name); it != kQte.end()) {
+      name = rex::cvar::Query<bool>("qte_wasd") ? it->second : name.substr(0, name.size() - 4);
+    }
+    return KeyFor(s, name.c_str(), false, false);
+  });
+}
+
 bool TitleScreenUp() {
   return std::chrono::steady_clock::now().time_since_epoch().count() < g_title_until.load() &&
          rex::cvar::Query<bool>("mnk_mode");

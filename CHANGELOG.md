@@ -5,6 +5,9 @@
 ### New
 - **The mouse in menus** (keyboard and mouse): in the main and pause menus the Windows cursor shows; point at an option to select it, left click to choose it, right click to go back. The menus are Unreal Engine 3 UI scenes: each option is a UIButton with its rectangle on screen (RenderBounds) and states (UIState_Focused for the selected one), found with `--ui_probe`. The option under the cursor is given focus with the game's own UIScreenObject.SetFocus, so it's highlighted as if reached with the keys. `--menu_mouse=false` keeps the mouse captured in menus.
 
+### Changes
+- **With keyboard and mouse on, a controller is ignored** (the launcher passes `--input_backend=none`, so the SDK loads no controller driver). That mode's config moves the fight attacks off X / Y onto the triggers and makes the camera turn 4x faster at full stick for mouse look, so a controller alongside played wrongly, and the prompts show keys. Untick Keyboard and mouse to play with a controller.
+
 **Updating to any release:** run the new `BourneConspiracy.exe` (from 0.2.5, the launcher can download it for you), then click **Reinstall from a disc image...** (or **Reinstall now** on the red notice) and pick your disc image. The game is built on your PC, so a release's changes only take effect once it's rebuilt. Your settings are kept.
 
 ## 0.2.5 (2026-11-14)

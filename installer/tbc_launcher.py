@@ -647,6 +647,10 @@ def game_args(s, screen=None):
     if s.get("show_fps"):
         args.append("--show_fps=true")
     if s.get("kbm"):
+        # Keyboard and mouse only: no controller driver. The config this mode writes (fight
+        # attacks off X / Y and onto the triggers, 4x camera turn rates for mouse look) would
+        # make a controller misbehave, and the prompts show keys.
+        args.append("--input_backend=none")
         args += ["--mnk_mode=true", "--mnk_mouse=true",
                  "--mnk_sensitivity", f"{int(s.get('mouse_sensitivity', 100)) / 100:.2f}",
                  # Mouse movement starts just past the game's stick dead zone (the same value

@@ -1,0 +1,17 @@
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index d9536f2..3405980 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -635,6 +635,12 @@ VkSampler Renderer::GetSampler(const rg::xenos::xe_gpu_texture_fetch_t& fetch,
+   info.minLod = float(fetch.mip_min_level);
+   info.maxLod = mip == xe::TextureFilter::kBaseMap ? info.minLod + 0.25f
+                                                    : float(std::max(fetch.mip_min_level, fetch.mip_max_level));
++  // BOTS_GFX_BASE_LEVEL_ONLY=1 (tbc, debugging 007's menu): every sampler reads the fetch's base level only.
++  static const bool base_level_only = [] {
++    const char* v = std::getenv("BOTS_GFX_BASE_LEVEL_ONLY");
++    return v && *v == '1';
++  }();
++  if (base_level_only) info.maxLod = info.minLod + 0.25f;
+   if (aniso != xe::AnisoFilter::kDisabled) {
+     // Like the SDK (and D3D): anisotropic filtering forces linear min/mag/mip.
+     info.magFilter = info.minFilter = VK_FILTER_LINEAR;

@@ -463,8 +463,8 @@ void DrawBadge(uint8_t* base, const Page& p, const Badge& b, const Image* img) {
 // With a PlayStation pad connected (SDK patch 0010: rex::input::ConnectedPadStyle), the Xbox
 // buttons in the button font and the HUD / QTE textures are painted over with the PlayStation
 // ones: cross / circle / square / triangle for A / B / X / Y, L1 / R1 / L2 / R2 for the
-// shoulders and triggers. The images are our own (assets/ps/*.png, installed beside the game
-// as ps/), drawn from simple shapes. Where each Xbox button sits was measured on the textures
+// shoulders and triggers, Share / Options for Back / Start. The images are our own
+// (assets/ps/*.png, installed beside the game as ps/). Where each Xbox button sits was measured on the textures
 // as extracted (assets/*.dds, not shipped). The pixels painted over are kept, so plugging an
 // Xbox pad back in puts them back.
 
@@ -500,6 +500,13 @@ std::vector<PadTexture>& PadTextures() {
         {{211, 267, 258, 306}, "r1"}, {{216, 216, 252, 253}, "l2"}, {{268, 216, 304, 253}, "r2"},
         {{112, 220, 148, 250}, "l1"}, {{164, 220, 200, 250}, "r1"}};
     for (const auto& b : shoulders)
+      font.draws.push_back({{b.r[0], b.r[1], b.r[2], b.r[3]}, {b.r[0], b.r[1], b.r[2], b.r[3]}, b.img, false});
+    // Back / Start (small and large pills) -> Share / Options, the DualSense's upright buttons
+    // (art drawn on the extracted page, assets/ps/*share*, *options*). "PRESS START" on the title screen.
+    const struct { int r[4]; const char* img; } menu[] = {
+        {{9, 221, 44, 248}, "share_small"}, {{61, 221, 96, 248}, "options_small"},
+        {{55, 269, 102, 304}, "share"}, {{107, 269, 154, 304}, "options"}};
+    for (const auto& b : menu)
       font.draws.push_back({{b.r[0], b.r[1], b.r[2], b.r[3]}, {b.r[0], b.r[1], b.r[2], b.r[3]}, b.img, false});
     v.push_back(std::move(font));
 
@@ -538,7 +545,7 @@ std::unordered_map<std::string, Image>& PadImages() {
     for (const char* dir : {"ps", "assets/ps"}) {
       std::error_code ec;
       if (!std::filesystem::is_directory(dir, ec)) continue;
-      for (const char* name : {"cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2"}) {
+      for (const char* name : {"cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "options", "share", "options_small", "share_small"}) {
         std::ifstream f(std::filesystem::path(dir) / (std::string(name) + ".png"), std::ios::binary);
         const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         int w = 0, h = 0;

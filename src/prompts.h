@@ -14,6 +14,9 @@ std::string ObjectPathName(const PPCContext& ctx, uint8_t* base, uint32_t object
 // Whether the title screen's "PRESS START" was drawn in the last half second, with keyboard
 // and mouse on (keyboard_prompts.cpp): its prompt shows Enter, so Enter has to work there.
 bool TitleScreenUp();
+// Whether a menu's prompts (" Accept", " Back", "Confirm", "Cancel", "Paused") were drawn in
+// the last half second (keyboard_prompts.cpp).
+bool MenuUp();
 // Key glyphs into the HUD textures' button badges (keyboard_prompts.cpp, key_glyphs.cpp);
 // called on each controller poll.
 void PatchHudTextures(const PPCContext& ctx, uint8_t* base);

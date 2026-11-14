@@ -188,14 +188,15 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
     ("keybind_rstick_press", "MMB", "Recentre camera / switch shoulder"),
     ("keybind_start", "Escape", "Pause"),
     ("keybind_back", "Tab", "Back"),
+    # The arrows also press the d-pad (below), which moves through menus; gameplay doesn't use it.
     ("keybind_rstick_up", "Up", "Camera up (as well as the mouse)"),
     ("keybind_rstick_down", "Down", "Camera down"),
     ("keybind_rstick_left", "Left", "Camera left"),
     ("keybind_rstick_right", "Right", "Camera right"),
-    ("keybind_dpad_up", "1", "D-pad up"),
-    ("keybind_dpad_down", "2", "D-pad down"),
-    ("keybind_dpad_left", "3", "D-pad left"),
-    ("keybind_dpad_right", "4", "D-pad right"),
+    ("keybind_dpad_up", "1,Up", "D-pad up; menus (the arrows also turn the camera)"),
+    ("keybind_dpad_down", "2,Down", "D-pad down; menus (the arrows also turn the camera)"),
+    ("keybind_dpad_left", "3,Left", "D-pad left; menus (the arrows also turn the camera)"),
+    ("keybind_dpad_right", "4,Right", "D-pad right; menus (the arrows also turn the camera)"),
 ]
 KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 # The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE

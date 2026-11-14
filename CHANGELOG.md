@@ -7,6 +7,7 @@
   - New launcher setting **Mouse camera smoothing** (default 10%): how much of the game's camera easing stays with mouse look. 0.2.5-0.2.6 kept 25%; lower is snappier. It never goes below 1% of the game's.
   - **Direct mouse look, now the default** (launcher checkbox **Direct (1:1)** beside mouse look; `--mouse_look_direct=false` turns it off): the mouse's movement is added straight to the camera's angles instead of being turned into a right-stick push, so it's exactly 1:1, with no stick dead zone, turn-speed cap or the game's look acceleration. It works in every camera mode (standing, crouching, aiming, sprinting, cover). The camera smoothing setting still applies. Where the player's camera isn't found (menus, loading) the mouse uses the stick method.
   - With the stick method (Direct unticked), fast flicks no longer lose movement: the camera's full-stick turn rate is now 6x the game's (was 4x), and any movement still past it is carried into the next frames instead of dropped (`--mouse_look_max_carry`, 180 degrees; 0 drops it as before).
+- **Arrow keys move through menus.** They now press the d-pad as well as turning the camera (the d-pad isn't used in gameplay), so menus work with the arrows as well as W / A / S / D and 1-4.
 
 ## 0.2.6 (2026-11-15)
 

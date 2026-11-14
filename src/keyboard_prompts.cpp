@@ -53,8 +53,13 @@
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 
+#include <rex/input/pad_style.h>
+
 #include "prompts.h"
 
+REXCVAR_DEFINE_STRING(pad_prompts, "auto", "Input",
+                      "Controller button prompts: auto (PlayStation symbols when a PlayStation pad is "
+                      "connected), xbox, playstation");
 REXCVAR_DEFINE_BOOL(keyboard_prompts, true, "UI",
                     "With keyboard and mouse on, show the bound keys in button prompts");
 REXCVAR_DEFINE_BOOL(keyboard_prompts_in_menus, true, "UI",
@@ -353,6 +358,7 @@ void Install(uint8_t* base, uint32_t font);                           // key_gly
 uint32_t CharFor(const std::string& key);                             // key_glyphs.cpp
 void PatchHud(const PPCContext& ctx, uint8_t* base,
               const std::function<std::string(const char*)>& key_for);  // key_glyphs.cpp
+void PatchPadPrompts(const PPCContext& ctx, uint8_t* base, bool playstation);  // key_glyphs.cpp
 }
 
 extern "C" REX_FUNC(sub_82C49D88) {
@@ -487,7 +493,14 @@ void PatchHudTextures(const PPCContext& ctx, uint8_t* base) {
   State& s = S();
   std::lock_guard<std::mutex> lock(s.mutex);
   Refresh(s, std::chrono::steady_clock::now());
-  if (!s.keyboard_mode) return;
+  if (!s.keyboard_mode) {
+    // A controller: its own kind of button prompts (--pad_prompts: auto follows the pad).
+    const std::string mode = REXCVAR_GET(pad_prompts);
+    const bool ps = mode == "playstation" ||
+                    (mode == "auto" && rex::input::ConnectedPadStyle() == rex::input::PadStyle::kPlayStation);
+    tbc::glyphs::PatchPadPrompts(ctx, base, ps);
+    return;
+  }
   tbc::glyphs::PatchHud(ctx, base, [&s](const char* bind) -> std::string {
     static const std::unordered_map<std::string, const char*> kQte = {
         {"keybind_a@qte", "keybind_lstick_down"}, {"keybind_b@qte", "keybind_lstick_right"},

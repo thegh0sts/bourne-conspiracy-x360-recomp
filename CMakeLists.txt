@@ -79,3 +79,8 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets/keys")
     add_custom_command(TARGET tbc POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/keys" "$<TARGET_FILE_DIR:tbc>/keys")
 endif()
+# PlayStation button images (assets/ps/*.png, key_glyphs.cpp's pad prompts) go beside it as ps/.
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/ps")
+    add_custom_command(TARGET tbc POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/ps" "$<TARGET_FILE_DIR:tbc>/ps")
+endif()

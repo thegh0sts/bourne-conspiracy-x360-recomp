@@ -17,7 +17,7 @@ set "SDK_FOLDER=%~1"
 if "%SDK_FOLDER%"=="" if exist "C:\rexglue-src\rexglue-sdk\out\install\win-amd64\lib\cmake\rexglue" set "SDK_FOLDER=C:\rexglue-src\rexglue-sdk\out\install\win-amd64"
 rem Name of the bundled SDK: bump the suffix whenever the SDK build changes, so existing
 rem installs replace their SDK on the next install or repair.
-set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc6-win-amd64.zip"
+set "SDK_BUNDLE=rexglue-sdk-0.10.1-tbc7-win-amd64.zip"
 
 echo Collecting project files into payload\project ...
 if exist payload rmdir /s /q payload
@@ -28,6 +28,9 @@ copy /y ..\generated\rexglue.cmake payload\project\generated\ >nul || goto :miss
 rem Key glyphs for the prompts (the game's build copies them beside tbc.exe as keys\).
 mkdir payload\project\assets\keys
 if exist ..\assets\keys\*.png copy /y ..\assets\keys\*.png payload\project\assets\keys\ >nul
+rem PlayStation button images (copied beside tbc.exe as ps\).
+mkdir payload\project\assets\ps
+if exist ..\assets\ps\*.png copy /y ..\assets\ps\*.png payload\project\assets\ps\ >nul
 copy /y ..\tools\tbc_config.py tbc_config.py >nul || goto :missing
 mkdir payload\licenses
 copy /y ..\licenses\*.txt payload\licenses\ >nul || goto :missing

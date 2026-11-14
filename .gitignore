@@ -11,6 +11,7 @@ generated/default/
 *.iso
 assets/*
 !assets/keys/
+!assets/ps/
 
 # Logs and local junk
 tbc_log.txt

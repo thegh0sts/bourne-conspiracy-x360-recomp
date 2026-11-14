@@ -1,0 +1,116 @@
+ReXGlue input: report which kind of controller is connected (for button prompts).
+
+rex::input::ConnectedPadStyle() (rex/input/pad_style.h) says whether the first connected
+controller is a PlayStation pad (SDL gamepad type PS3 / PS4 / PS5), another pad (Xbox), or
+there is none. The SDL driver updates it whenever a controller is added or removed. A game
+can use it to show matching button prompts.
+
+diff --git a/include/rex/input/pad_style.h b/include/rex/input/pad_style.h
+new file mode 100644
+index 0000000..6292ee5
+--- /dev/null
++++ b/include/rex/input/pad_style.h
+@@ -0,0 +1,16 @@
++/**
++ * @file        input/pad_style.h
++ * @brief       Which kind of controller is connected, for a game's button prompts.
++ */
++#pragma once
++
++namespace rex::input {
++
++enum class PadStyle : int { kNone = 0, kXbox = 1, kPlayStation = 2 };
++
++// The style of the first connected controller (SDL backend: PS3 / PS4 / PS5 pads are
++// PlayStation, anything else Xbox). kNone with no controller or another backend.
++PadStyle ConnectedPadStyle();
++void SetConnectedPadStyle(PadStyle style);
++
++}  // namespace rex::input
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index d896e77..bc99205 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cmath>
+ #include <cstring>
+ 
+@@ -20,6 +21,7 @@
+ #include <rex/input/input_system.h>
+ #include <rex/input/mnk/mnk_input_driver.h>
+ #include <rex/input/nop/nop_input_driver.h>
++#include <rex/input/pad_style.h>
+ #include <rex/input/sdl/sdl_input_driver.h>
+ #include <rex/input/state_merge.h>
+ #include <rex/input/xinput/xinput_input_driver.h>
+@@ -495,6 +497,13 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+   return any_connected ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
+ }
+ 
++namespace {
++std::atomic<int> g_pad_style{0};
++}
++
++PadStyle ConnectedPadStyle() { return static_cast<PadStyle>(g_pad_style.load(std::memory_order_relaxed)); }
++void SetConnectedPadStyle(PadStyle style) { g_pad_style.store(static_cast<int>(style), std::memory_order_relaxed); }
++
+ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
+   auto input = std::make_unique<InputSystem>(nullptr);
+ 
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index 57f65c4..8b170ba 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/input/flags.h>
++#include <rex/input/pad_style.h>
+ #include <rex/input/sdl/sdl_input_driver.h>
+ #include <rex/logging.h>
+ #include <rex/ui/virtual_key.h>
+@@ -588,6 +589,24 @@ void SDLInputDriver::OnJoystickDeviceAddedLocked(const SDL_Event& event) {
+   }
+ }
+ 
++// The first controller's style, for the game's button prompts (pad_style.h).
++static void PublishPadStyle(SDL_Gamepad* first) {
++  PadStyle style = PadStyle::kNone;
++  if (first) {
++    switch (SDL_GetGamepadType(first)) {
++      case SDL_GAMEPAD_TYPE_PS3:
++      case SDL_GAMEPAD_TYPE_PS4:
++      case SDL_GAMEPAD_TYPE_PS5:
++        style = PadStyle::kPlayStation;
++        break;
++      default:
++        style = PadStyle::kXbox;
++        break;
++    }
++  }
++  SetConnectedPadStyle(style);
++}
++
+ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+   const auto controller = SDL_OpenGamepad(event.gdevice.which);
+   if (!controller) {
+@@ -628,6 +647,7 @@ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+               static_cast<uint64_t>(state.id));
+   const char* mapping = SDL_GetGamepadMapping(controller);
+   REXLOG_INFO("SDL Controller {}: {}", ordinal, mapping ? mapping : "<none>");
++  PublishPadStyle(controllers_.front().sdl);
+ }
+ 
+ void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
+@@ -654,6 +674,7 @@ void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
+     SDL_SetGamepadPlayerIndex(controllers_[i].sdl, static_cast<int>(i));
+   }
+   REXLOG_INFO("SDL OnControllerDeviceRemoved: {} device(s) remain.", controllers_.size());
++  PublishPadStyle(controllers_.empty() ? nullptr : controllers_.front().sdl);
+ }
+ 
+ void SDLInputDriver::OnControllerDeviceAxisMotionLocked(const SDL_Event& event) {

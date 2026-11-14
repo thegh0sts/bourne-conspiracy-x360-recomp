@@ -30,6 +30,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <functional>
 #include <cctype>
@@ -458,6 +459,140 @@ void DrawBadge(uint8_t* base, const Page& p, const Badge& b, const Image* img) {
   }
 }
 
+// --- PlayStation prompts ------------------------------------------------------------------
+// With a PlayStation pad connected (SDK patch 0010: rex::input::ConnectedPadStyle), the Xbox
+// buttons in the button font and the HUD / QTE textures are painted over with the PlayStation
+// ones: cross / circle / square / triangle for A / B / X / Y, L1 / R1 / L2 / R2 for the
+// shoulders and triggers. The images are our own (assets/ps/*.png, installed beside the game
+// as ps/), drawn from simple shapes. Where each Xbox button sits was measured on the textures
+// as extracted (assets/*.dds, not shipped). The pixels painted over are kept, so plugging an
+// Xbox pad back in puts them back.
+
+struct PadDraw {
+  int clear[4];   // cleared first (x0, y0, x1, y1), or all 0
+  int dst[4];     // where the image goes
+  const char* image;
+  bool stretch;   // fill dst exactly (the QTE prompts' tilted ovals), else fit and centre
+};
+
+struct PadTexture {
+  const char* name;  // object to find; for the button font, the font (its page is the texture)
+  bool font;
+  std::vector<PadDraw> draws;
+  uint32_t object = 0, data = 0;
+  bool painted = false;
+  std::unordered_map<uint64_t, std::array<uint8_t, 16>> saved;  // block (x << 32 | y) -> original
+  uint8_t check[16] = {};
+  uint32_t check_x = 0, check_y = 0;
+};
+
+std::vector<PadTexture>& PadTextures() {
+  static std::vector<PadTexture> list = [] {
+    std::vector<PadTexture> v;
+    PadTexture font{"BourneUIPlatformSpecific.ControllerButtonFont", true, {}};
+    const struct { int r[4]; const char* img; } faces[] = {
+        {{376, 272, 405, 301}, "triangle"}, {{428, 272, 456, 300}, "circle"}, {{13, 325, 40, 352}, "square"},
+        {{64, 324, 92, 352}, "cross"},      {{328, 224, 349, 245}, "triangle"}, {{380, 224, 401, 245}, "circle"},
+        {{432, 224, 453, 245}, "square"},   {{16, 276, 37, 297}, "cross"}};
+    for (const auto& f : faces) font.draws.push_back({{0, 0, 0, 0}, {f.r[0], f.r[1], f.r[2], f.r[3]}, f.img, true});
+    const struct { int r[4]; const char* img; } shoulders[] = {
+        {{263, 262, 309, 310}, "l2"}, {{315, 262, 361, 310}, "r2"}, {{159, 267, 206, 306}, "l1"},
+        {{211, 267, 258, 306}, "r1"}, {{216, 216, 252, 253}, "l2"}, {{268, 216, 304, 253}, "r2"},
+        {{112, 220, 148, 250}, "l1"}, {{164, 220, 200, 250}, "r1"}};
+    for (const auto& b : shoulders)
+      font.draws.push_back({{b.r[0], b.r[1], b.r[2], b.r[3]}, {b.r[0], b.r[1], b.r[2], b.r[3]}, b.img, false});
+    v.push_back(std::move(font));
+
+    PadTexture interact{"BourneUIPlatformSpecific.InteractButtonIcons", false, {}};
+    const char* face_img[4] = {"cross", "circle", "square", "triangle"};
+    for (int i = 0; i < 4; ++i)
+      interact.draws.push_back({{0, 0, 0, 0}, {83 + 128 * i, 82, 113 + 128 * i, 113}, face_img[i], true});
+    const struct { int r[4]; const char* img; } trig[] = {{{74, 204, 122, 253}, "r2"}, {{202, 204, 250, 253}, "l2"},
+                                                          {{329, 207, 379, 247}, "r1"}, {{457, 207, 507, 247}, "l1"}};
+    for (const auto& t : trig)
+      interact.draws.push_back({{t.r[0] - 2, t.r[1] - 2, t.r[2] + 2, std::min(t.r[3] + 2, 256)},
+                                {t.r[0], t.r[1], t.r[2], t.r[3]}, t.img, false});
+    v.push_back(std::move(interact));
+
+    const int presses[4][4] = {{43, 64, 85, 97}, {83, 168, 122, 195}, {6, 296, 44, 323}, {46, 401, 82, 425}};
+    const int diamond[4][4] = {{43, 72, 85, 104}, {83, 173, 121, 199}, {6, 301, 44, 327}, {46, 406, 82, 430}};
+    PadTexture bp{"BourneUIPlatformSpecific.ButtonPresses", false, {}};
+    PadTexture bd{"BourneUIPlatformSpecific.ButtonPressesDiamond", false, {}};
+    PadTexture bn{"BourneUIPlatformSpecific.ButtonPressesDiamondNoOutline", false, {}};
+    for (int i = 0; i < 4; ++i) {
+      bp.draws.push_back({{0, 0, 0, 0}, {presses[i][0], presses[i][1], presses[i][2], presses[i][3]}, face_img[i], true});
+      bd.draws.push_back({{0, 0, 0, 0}, {diamond[i][0], diamond[i][1], diamond[i][2], diamond[i][3]}, face_img[i], true});
+      bn.draws.push_back({{0, 0, 0, 0}, {diamond[i][0], diamond[i][1], diamond[i][2], diamond[i][3]}, face_img[i], true});
+    }
+    v.push_back(std::move(bp));
+    v.push_back(std::move(bd));
+    v.push_back(std::move(bn));
+    return v;
+  }();
+  return list;
+}
+
+std::unordered_map<std::string, Image>& PadImages() {
+  static std::unordered_map<std::string, Image> images = [] {
+    std::unordered_map<std::string, Image> m;
+    for (const char* dir : {"ps", "assets/ps"}) {
+      std::error_code ec;
+      if (!std::filesystem::is_directory(dir, ec)) continue;
+      for (const char* name : {"cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2"}) {
+        std::ifstream f(std::filesystem::path(dir) / (std::string(name) + ".png"), std::ios::binary);
+        const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        int w = 0, h = 0;
+        std::vector<uint8_t> rgba = bytes.empty() ? std::vector<uint8_t>{} : rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
+        if (!rgba.empty()) m[name] = Cropped(rgba, w, h);
+      }
+      break;
+    }
+    REXLOG_INFO("pad_prompts: {} PlayStation images", m.size());
+    return m;
+  }();
+  return images;
+}
+
+// Blocks (4x4) a draw touches.
+void ForBlocks(const PadDraw& d, const std::function<void(uint32_t, uint32_t)>& fn) {
+  int x0 = d.dst[0], y0 = d.dst[1], x1 = d.dst[2], y1 = d.dst[3];
+  if (d.clear[2] > d.clear[0]) {
+    x0 = std::min(x0, d.clear[0]), y0 = std::min(y0, d.clear[1]);
+    x1 = std::max(x1, d.clear[2]), y1 = std::max(y1, d.clear[3]);
+  }
+  for (int by = std::max(0, y0) / 4; by < (y1 + 3) / 4; ++by)
+    for (int bx = std::max(0, x0) / 4; bx < (x1 + 3) / 4; ++bx) fn(uint32_t(bx), uint32_t(by));
+}
+
+void PaintPad(uint8_t* base, const Page& p, const PadDraw& d, const Image& img) {
+  int gw = d.dst[2] - d.dst[0], gh = d.dst[3] - d.dst[1], gx = d.dst[0], gy = d.dst[1];
+  if (!d.stretch) {
+    const float s = std::min(float(gw) / img.w, float(gh) / img.h);
+    const int w = std::max(1, int(std::lround(img.w * s))), h = std::max(1, int(std::lround(img.h * s)));
+    gx += (gw - w) / 2, gy += (gh - h) / 2, gw = w, gh = h;
+  }
+  const std::vector<uint8_t> glyph = Scale(img.rgba, img.w, img.h, gw, gh);
+  ForBlocks(d, [&](uint32_t bx, uint32_t by) {
+    if (bx * 4 >= p.width || by * 4 >= p.height) return;
+    uint8_t px[16][4], blk[16];
+    ReadBlock(base, p, bx, by, blk);
+    DecodeBlock(blk, px);
+    for (int i = 0; i < 16; ++i) {
+      const int tx = int(bx) * 4 + i % 4, ty = int(by) * 4 + i / 4;
+      if (tx >= d.clear[0] && tx < d.clear[2] && ty >= d.clear[1] && ty < d.clear[3]) std::memset(px[i], 0, 4);
+      const int x = tx - gx, y = ty - gy;
+      if (x < 0 || y < 0 || x >= gw || y >= gh) continue;
+      const uint8_t* g = &glyph[(size_t(y) * gw + x) * 4];
+      const float a = g[3] / 255.0f, da = px[i][3] / 255.0f, out = a + da * (1 - a);
+      if (out <= 0) continue;
+      for (int k = 0; k < 3; ++k) px[i][k] = uint8_t(std::lround((g[k] * a + px[i][k] * da * (1 - a)) / out));
+      px[i][3] = uint8_t(std::lround(out * 255));
+    }
+    EncodeBlock(px, blk);
+    WriteBlock(base, p, bx, by, blk);
+  });
+}
+
 }  // namespace
 
 namespace tbc::glyphs {
@@ -574,6 +709,78 @@ uint32_t CharFor(const std::string& key) {
   std::lock_guard<std::mutex> lock(g_mutex);
   const auto it = g_chars.find(Lower(key));
   return it == g_chars.end() ? 0 : it->second;
+}
+
+// Called on each controller poll while keyboard and mouse is off (keyboard_prompts.cpp), with
+// whether the prompts should be PlayStation's. Once a second each texture is checked: loaded,
+// and not as wanted (or reloaded since, which puts the Xbox buttons back), it's painted or
+// restored.
+void PatchPadPrompts(const PPCContext& ctx, uint8_t* base, bool playstation) {
+  static auto next = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::seconds(1);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto& images = PadImages();
+  if (playstation && images.size() < 8) return;
+  for (PadTexture& t : PadTextures()) {
+    uint32_t object = FindObject(ctx, base, t.name);
+    if (object && t.font) {
+      const uint32_t pages = Readable(object + 0x4C) ? Load32(base, object + 0x48) : 0;
+      object = pages && Readable(pages) ? Load32(base, pages) : 0;
+    }
+    if (!object) continue;
+    Page p;
+    uint32_t format = 0;
+    if (!TexturePage(base, object, p, format) || format != 0x14 ||
+        !Readable(p.data + p.blocks_wide * 16 * (p.height / 4) - 1)) {
+      continue;
+    }
+    if (t.object != object || t.data != p.data) {  // another texture (level change): start over
+      t.object = object;
+      t.data = p.data;
+      t.painted = false;
+      t.saved.clear();
+    }
+    if (t.painted) {
+      uint8_t blk[16];
+      ReadBlock(base, p, t.check_x, t.check_y, blk);
+      if (std::memcmp(blk, t.check, 16) != 0) {  // reloaded: the Xbox buttons are back
+        t.painted = false;
+        t.saved.clear();
+      }
+    }
+    if (playstation && !t.painted) {
+      for (const PadDraw& d : t.draws) {
+        ForBlocks(d, [&](uint32_t bx, uint32_t by) {
+          const uint64_t key = uint64_t(bx) << 32 | by;
+          if (t.saved.count(key)) return;
+          std::array<uint8_t, 16> b;
+          uint8_t raw[16];
+          ReadBlock(base, p, bx, by, raw);
+          std::memcpy(b.data(), raw, 16);
+          t.saved.emplace(key, b);
+        });
+      }
+      for (const PadDraw& d : t.draws) {
+        if (const auto it = images.find(d.image); it != images.end()) PaintPad(base, p, d, it->second);
+      }
+      t.check_x = uint32_t(t.draws[0].dst[0] + 8) / 4;
+      t.check_y = uint32_t(t.draws[0].dst[1] + 8) / 4;
+      ReadBlock(base, p, t.check_x, t.check_y, t.check);
+      t.painted = true;
+      REXLOG_INFO("pad_prompts: {} shows PlayStation buttons", t.name);
+    } else if (!playstation && t.painted) {
+      for (auto& [key, b] : t.saved) {
+        uint8_t raw[16];
+        std::memcpy(raw, b.data(), 16);
+        WriteBlock(base, p, uint32_t(key >> 32), uint32_t(key & 0xFFFFFFFF), raw);
+      }
+      t.saved.clear();
+      t.painted = false;
+      REXLOG_INFO("pad_prompts: {} shows Xbox buttons again", t.name);
+    }
+  }
 }
 
 // Called on every button-font draw while keyboard and mouse are on (keyboard_prompts.cpp), with

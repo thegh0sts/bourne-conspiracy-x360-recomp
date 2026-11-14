@@ -164,16 +164,16 @@ SKIPPED_SUFFIX = ".skipped"
 # for the d-pad...) clash with this layout. Key names are the SDK's (src/ui/keybinds.cpp);
 # a comma separates alternatives.
 KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.ini)
-    ("keybind_lstick_up", "W", "Move forward"),
-    ("keybind_lstick_down", "S", "Move back"),
-    ("keybind_lstick_left", "A", "Move left"),
-    ("keybind_lstick_right", "D", "Move right"),
-    ("keybind_right_trigger", "LMB", "Fire"),
-    ("keybind_left_trigger", "RMB", "Aim / targeting"),
+    ("keybind_lstick_up", "W", "Move forward; QTE top button"),
+    ("keybind_lstick_down", "S", "Move back; QTE bottom button"),
+    ("keybind_lstick_left", "A", "Move left; QTE left button"),
+    ("keybind_lstick_right", "D", "Move right; QTE right button"),
+    ("keybind_right_trigger", "LMB", "Fire; light attack in fights"),
+    ("keybind_left_trigger", "RMB", "Aim / pop out of cover; heavy attack in fights"),
     ("keybind_a", "Space,Return", "Action / block; accept in menus"),
     ("keybind_b", "F,Backspace", "Takedown / skip cutscene; back in menus"),
-    ("keybind_x", "E,R", "Light attack / reload"),
-    ("keybind_y", "Q", "Heavy attack / Bourne Instinct"),
+    ("keybind_x", "E,R", "Reload"),
+    ("keybind_y", "Q", "Bourne Instinct"),
     ("keybind_right_shoulder", "Shift", "Sprint"),
     ("keybind_left_shoulder", "G", "Weapon"),
     ("keybind_lstick_press", "Control", "Crouch"),
@@ -190,199 +190,24 @@ KBM_BINDS = [  # (setting, default keys, action in Bourne, from Xe-BourneInput.i
     ("keybind_dpad_right", "4", "D-pad right"),
 ]
 KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
-# The layout is fixed: tbc.exe uses these binds as they are and never changes them while the
-# game runs, so every key can be rebound. The prompts show the key bound to each button, and in
-# menus Enter / Backspace when A / B have them (keyboard_prompts.cpp). QTEs show the Xbox
-# button in the 3D scene, so the editor names the button beside the face buttons' keys.
-KBM_NOTES = {
-    "keybind_a": "QTE: A", "keybind_b": "QTE: B", "keybind_x": "QTE: X", "keybind_y": "QTE: Y",
-}
-# Keys the runtime keeps for itself: debug overlay, console, settings, achievements.
-RESERVED_KEYS = {"F3": "the debug overlay", "Backtick": "the console", "F4": "the settings overlay",
-                 "F7": "the achievements overlay"}
+# The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE
+# prompts (key_glyphs.cpp), the fight attacks on the mouse buttons and the QTEs on W / A / S / D
+# are all set up around it, so it isn't editable. The launcher shows it (Keys...).
 KEY_NAMES = {"LMB": "Left mouse", "RMB": "Right mouse", "MMB": "Middle mouse", "Return": "Enter",
              "Escape": "Esc", "Control": "Ctrl", "Backtick": "`", "LBracket": "[", "RBracket": "]",
              "Quote": "'", "Semicolon": ";", "Comma": ",", "Period": ".", "Slash": "/",
              "Backslash": "\\", "Minus": "-", "Plus": "="}
-# Tk key names (keysyms) to the SDK's key names (src/ui/keybinds.cpp).
-TK_KEYS = {"space": "Space", "Return": "Return", "Escape": "Escape", "Tab": "Tab", "BackSpace": "Backspace",
-           "Delete": "Delete", "Insert": "Insert", "Home": "Home", "End": "End", "Prior": "PageUp",
-           "Next": "PageDown", "Left": "Left", "Right": "Right", "Up": "Up", "Down": "Down",
-           "Shift_L": "Shift", "Shift_R": "Shift", "Control_L": "Control", "Control_R": "Control",
-           "Alt_L": "Alt", "Alt_R": "Alt", "grave": "Backtick", "minus": "Minus", "equal": "Plus",
-           "comma": "Comma", "period": "Period", "semicolon": "Semicolon", "slash": "Slash",
-           "backslash": "Backslash", "bracketleft": "LBracket", "bracketright": "RBracket",
-           "apostrophe": "Quote", "KP_Enter": "NumpadEnter", "KP_Add": "NumpadPlus",
-           "KP_Subtract": "NumpadMinus", "KP_Multiply": "NumpadStar", "KP_Divide": "NumpadSlash",
-           "Caps_Lock": "CapsLock", "Num_Lock": "NumLock", "Scroll_Lock": "ScrollLock", "Pause": "Pause",
-           "Print": "PrintScreen"}
-
-
-def tk_key_name(keysym):
-    """SDK key name for a Tk keysym, or None if the SDK can't bind it."""
-    if keysym in TK_KEYS:
-        return TK_KEYS[keysym]
-    if len(keysym) == 1 and keysym.isascii() and keysym.isalnum():
-        return keysym.upper()
-    if keysym.startswith("KP_") and keysym[3:].isdigit():
-        return "Numpad" + keysym[3:]
-    if keysym[:1] == "F" and keysym[1:].isdigit() and 1 <= int(keysym[1:]) <= 24:
-        return keysym
-    return None
-
-
 def key_label(keys):
     return " or ".join(KEY_NAMES.get(k, k) for k in keys.split(",") if k) or "(none)"
 
 
 def kbm_binds(s):
-    """The player's key binds, filled in from the defaults."""
-    binds = dict(KBM_DEFAULT)
-    saved = s.get("kbm_binds") or {}
-    binds.update({k: v for k, v in saved.items() if k in KBM_DEFAULT and isinstance(v, str)})
-    # From the earlier layout, where Enter was on Start (and moved to A by tbc.exe in menus):
-    # Enter now goes on A and Backspace on B, unless the player put them elsewhere.
-    if binds.get("keybind_start") == "Escape,Return":
-        binds["keybind_start"] = "Escape"
-    for name, key in (("keybind_a", "Return"), ("keybind_b", "Backspace")):
-        keys = [k for k in binds[name].split(",") if k]
-        if len(keys) < 2 and not any(key in v.split(",") for v in binds.values()):
-            binds[name] = ",".join(keys + [key])
-    return binds
+    """The key binds: the fixed layout (binds saved by older launchers are ignored)."""
+    return dict(KBM_DEFAULT)
 
 
 def kbm_layout_text(binds):
     return "\n".join(f"{key_label(binds[name])}: {what}" for name, _, what in KBM_BINDS)
-
-
-class KeyBindDialog(tk.Toplevel):
-    """Rebind the keyboard-and-mouse controls: two keys per action."""
-
-    def __init__(self, master, binds, on_save):
-        super().__init__(master, bg=BG)
-        self.title("Keyboard and mouse controls")
-        self.transient(master)
-        self.binds = dict(binds)
-        self.on_save = on_save
-        self.buttons = {}
-        self.waiting = None  # (setting, slot) while waiting for a key
-        self.note = tk.StringVar(value="Click a key, then press the new key or click the new mouse button. "
-                                       "The mouse always moves the camera. QTEs show Xbox buttons: the keys of "
-                                       "A, B, X and Y answer them.")
-        tk.Label(self, textvariable=self.note, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=520,
-                 justify="left").pack(anchor="w", padx=16, pady=(12, 6))
-        grid = tk.Frame(self, bg=PANEL, padx=12, pady=8)
-        grid.pack(fill="both", expand=True, padx=16)
-        for row, (name, _, what) in enumerate(KBM_BINDS):
-            tk.Label(grid, text=what, font=("Segoe UI", 9), fg=FG, bg=PANEL,
-                     anchor="w").grid(row=row, column=0, sticky="w", padx=(0, 12))
-            for slot in (0, 1):
-                b = tk.Button(grid, width=14, font=("Segoe UI", 9), bd=0, relief="flat",
-                              command=lambda n=name, sl=slot: self.start(n, sl))
-                b.grid(row=row, column=1 + slot, padx=2, pady=1)
-                self.buttons[(name, slot)] = b
-            if name in KBM_NOTES:
-                tk.Label(grid, text=KBM_NOTES[name], font=("Segoe UI", 8), fg=DIM, bg=PANEL,
-                         anchor="w").grid(row=row, column=3, sticky="w", padx=(6, 0))
-        foot = tk.Frame(self, bg=BG)
-        foot.pack(fill="x", padx=16, pady=12)
-        tk.Button(foot, text="Save", width=10, command=self.save, bg=ACCENT, fg="white", bd=0,
-                  font=("Segoe UI", 10, "bold")).pack(side="right")
-        tk.Button(foot, text="Cancel", width=10, command=self.destroy, bd=0,
-                  font=("Segoe UI", 10)).pack(side="right", padx=8)
-        tk.Button(foot, text="Defaults", width=10, command=self.defaults, bd=0,
-                  font=("Segoe UI", 10)).pack(side="left")
-        tk.Button(foot, text="Clear key", width=10, command=self.clear, bd=0,
-                  font=("Segoe UI", 10)).pack(side="left", padx=8)
-        self.bind("<KeyPress>", self.on_key)
-        self.refresh()
-        self.grab_set()
-        self.focus_set()
-
-    def keys_of(self, name):
-        return [k for k in self.binds[name].split(",") if k]
-
-    def refresh(self):
-        for (name, slot), b in self.buttons.items():
-            keys = self.keys_of(name)
-            waiting = self.waiting == (name, slot)
-            b.config(text="Press a key..." if waiting else (KEY_NAMES.get(keys[slot], keys[slot])
-                                                            if slot < len(keys) else "-"),
-                     bg=ACCENT if waiting else "#2a2f38", fg="white" if waiting else FG,
-                     activebackground=ACCENT)
-
-    def start(self, name, slot):
-        self.unbind_mouse()
-        self.waiting = (name, slot)
-        self.note.set("Press the new key, or click this button with the mouse button you want "
-                      "(left, right or middle). Clear key removes it.")
-        b = self.buttons[(name, slot)]
-        # Mouse buttons are caught on the button itself: 1 left, 2 middle, 3 right.
-        for n, key in (("1", "LMB"), ("2", "MMB"), ("3", "RMB")):
-            b.bind(f"<ButtonRelease-{n}>", lambda e, k=key: self.assign(k), add=False)
-        self.after(1, self.refresh)
-        self.focus_set()
-
-    def on_key(self, event):
-        if not self.waiting:
-            return
-        key = tk_key_name(event.keysym)
-        if key is None:
-            self.note.set(f"That key ({event.keysym}) can't be bound. Try another.")
-            return
-        self.assign(key)
-        return "break"
-
-    def assign(self, key):
-        if not self.waiting:
-            return
-        if key in RESERVED_KEYS:
-            self.note.set(f"{KEY_NAMES.get(key, key)} is kept for {RESERVED_KEYS[key]}. Choose another key.")
-            return "break"
-        name, slot = self.waiting
-        # A key does one thing: take it off any other action first.
-        moved = []
-        for other in self.binds:
-            if other != name and key in self.keys_of(other):
-                self.binds[other] = ",".join(k for k in self.keys_of(other) if k != key)
-                moved.append(dict((n, w) for n, _, w in KBM_BINDS)[other])
-        keys = [k for k in self.keys_of(name) if k != key]
-        keys.insert(min(slot, len(keys)), key)
-        self.binds[name] = ",".join(keys[:2])
-        self.note.set(f"{KEY_NAMES.get(key, key)} moved here from: {', '.join(moved)}." if moved
-                      else "Saved when you click Save. Click another key to change it.")
-        self.stop()
-        return "break"
-
-    def unbind_mouse(self):
-        if self.waiting:
-            b = self.buttons[self.waiting]
-            for n in ("1", "2", "3"):
-                b.unbind(f"<ButtonRelease-{n}>")
-
-    def stop(self):
-        self.unbind_mouse()
-        self.waiting = None
-        self.refresh()
-
-    def clear(self):
-        if not self.waiting:
-            self.note.set("Click the key you want to clear first, then Clear key.")
-            return
-        name, slot = self.waiting
-        keys = self.keys_of(name)
-        if slot < len(keys):
-            del keys[slot]
-        self.binds[name] = ",".join(keys)
-        self.stop()
-
-    def defaults(self):
-        self.binds = dict(KBM_DEFAULT)
-        self.stop()
-
-    def save(self):
-        self.on_save(self.binds)
-        self.destroy()
 
 
 DEFAULTS = {
@@ -824,7 +649,7 @@ class SettingsView(tk.Frame):
         v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
-        self._link(line, "Edit keys...", self.edit_keys).pack(side="left", padx=14)
+        self._link(line, "Keys...", self.show_keys).pack(side="left", padx=14)
         self._check(box, 2, "mouse_look", "Mouse turns the camera directly (mouse look)")
         self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
         self._slider(box, 4, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
@@ -926,15 +751,9 @@ class SettingsView(tk.Frame):
             if k != "render_scale":
                 v.set(DEFAULTS[k])
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
-        self.s["kbm_binds"] = {}  # key binds back to the default layout too
 
-    def edit_keys(self):
-        def saved(binds):
-            changed = {k: v for k, v in binds.items() if v != KBM_DEFAULT[k]}
-            self.s["kbm_binds"] = changed
-            save_settings(self.collect())
-            self.status.set("Key binds saved." if changed else "Key binds back to defaults.")
-        KeyBindDialog(self.winfo_toplevel(), kbm_binds(self.s), saved)
+    def show_keys(self):
+        messagebox.showinfo("Keyboard and mouse", kbm_layout_text(kbm_binds(self.s)))
 
     def open_logs(self):
         folder = logs_dir(self.info)

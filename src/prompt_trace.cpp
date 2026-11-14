@@ -72,7 +72,19 @@ REX_EXTERN(__imp__sub_82C49C20);  // DrawTriangle2D(FCanvas*, ...)
 REX_EXTERN(__imp__sub_82E3D288);  // FBatchedElements::AddTriangle
 REX_EXTERN(sub_8291E040);         // UObject::GetPathName(FString* out, UObject*, UObject* stop)
 
+namespace tbc::glyphs {
+bool DumpTexture(uint8_t* base, uint32_t texture, const std::string& name);  // key_glyphs.cpp
+}
+
 namespace {
+
+// HUD images drawn outside the canvas (in the 3D scene), written to logs\<name>.tga once
+// loaded, to see their layout: the door's and takedown meter's button badges, the QTE prompts.
+constexpr const char* kDumpTextures[] = {
+    "BourneUIPlatformSpecific.InteractButtonIcons", "BourneHUD.InteractIcons",
+    "BourneHUD.InteractIconsBG", "BourneHUD.TakedownIcon", "BourneHUD.OverdriveMeter",
+    "BourneUIPlatformSpecific.ButtonPresses", "BourneUIPlatformSpecific.ButtonPressesDiamond",
+    "BourneUIPlatformSpecific.ButtonPressesTriggers"};
 
 constexpr size_t kMaxEntries = 20000;
 
@@ -109,6 +121,7 @@ struct Trace {
   std::unordered_map<uint32_t, std::string> owners;  // pointer -> "Object+offset"
   std::unordered_map<uint32_t, std::string> class_names;
   std::unordered_set<uint32_t> listed;  // objects already in objects.txt
+  std::unordered_map<uint32_t, std::string> to_dump;  // textures in kDumpTextures not yet dumped
   FILE* objects = nullptr;
   std::chrono::steady_clock::time_point next_scan{};
 };
@@ -210,6 +223,9 @@ void ListObjects(Trace& t, const PPCContext& ctx, uint8_t* base) {
   const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
   if (!Readable(data) || count > 2000000) return;
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - t.start).count();
+  for (auto it = t.to_dump.begin(); it != t.to_dump.end();) {
+    it = tbc::glyphs::DumpTexture(base, it->first, it->second) ? t.to_dump.erase(it) : std::next(it);
+  }
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t object = Load32(base, data + 4 * i);
     if (!object || !Readable(object) || !Readable(object + 0x34) || t.listed.count(object)) continue;
@@ -224,8 +240,14 @@ void ListObjects(Trace& t, const PPCContext& ctx, uint8_t* base) {
       continue;
     }
     t.listed.insert(object);
+    const std::string name = PathName(ctx, base, object);
     std::fprintf(t.objects, "%lld\t%08X\t%s\t%s\n", static_cast<long long>(ms), object, c.c_str(),
-                 PathName(ctx, base, object).c_str());
+                 name.c_str());
+    if (c == "Engine.Texture2D") {
+      for (const char* want : kDumpTextures) {
+        if (name == want && !tbc::glyphs::DumpTexture(base, object, name)) t.to_dump.emplace(object, name);
+      }
+    }
   }
   std::fflush(t.objects);
 }

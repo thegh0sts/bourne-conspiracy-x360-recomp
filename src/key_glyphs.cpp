@@ -390,4 +390,74 @@ uint32_t CharFor(const std::string& key) {
   return it == g_chars.end() ? 0 : it->second;
 }
 
+// Development (--prompt_trace): a texture's top mip to logs/<name>.tga, to see how a HUD image
+// is laid out. DXT1, DXT3/5 and 8888 only. False if it isn't on the GPU yet.
+bool DumpTexture(uint8_t* base, uint32_t texture, const std::string& name) {
+  const uint32_t resource = Readable(texture + 0xBC) ? Load32(base, texture + 0xB8) : 0;
+  const uint32_t rhi = resource && Readable(resource + 0x18) ? Load32(base, resource + 0x14) : 0;
+  const uint32_t header = rhi && Readable(rhi + 0x0C) ? Load32(base, rhi + 0x08) : 0;
+  if (!header || !Readable(header + 0x28)) return false;
+  const uint32_t dw0 = Load32(base, header + 0x1C), dw1 = Load32(base, header + 0x20),
+                 dw2 = Load32(base, header + 0x24);
+  const uint32_t format = dw1 & 0x3F;
+  const bool tiled = (dw0 >> 31) != 0;
+  const uint32_t pitch = ((dw0 >> 22) & 0x1FF) * 32;  // texels
+  const uint32_t width = (dw2 & 0x1FFF) + 1, height = ((dw2 >> 13) & 0x1FFF) + 1;
+  const uint32_t endian = (dw1 >> 6) & 3, data = dw1 & 0xFFFFF000;
+  REXLOG_INFO("texture_dump: {} {}x{}, format {:02X}, {}, pitch {}, endian {}, data {:08X}", name, width,
+              height, format, tiled ? "tiled" : "linear", pitch, endian, data);
+  if (!data || !Readable(data) || width > 4096 || height > 4096) return true;
+  const bool block = format == 0x12 || format == 0x13 || format == 0x14;
+  const uint32_t unit = block ? 4 : 1;  // texels per block side
+  const uint32_t bytes = format == 0x12 ? 8 : block ? 16 : 4;
+  const uint32_t log_bpp = bytes == 16 ? 4 : bytes == 8 ? 3 : 2;
+  if (!block && format != 0x06) return true;
+  const uint32_t bw = std::max<uint32_t>(pitch / unit, 1);
+  const uint32_t aligned_h = (height + 31) & ~31u;
+  if (!Readable(data + bw * (aligned_h / unit) * bytes - 1)) return true;
+  std::vector<uint8_t> rgba(size_t(width) * height * 4);
+  for (uint32_t by = 0; by < (height + unit - 1) / unit; ++by) {
+    for (uint32_t bx = 0; bx < (width + unit - 1) / unit; ++bx) {
+      const uint32_t off = tiled ? TiledInner(bx, by, log_bpp, TiledOuter(by, bw, log_bpp)) : (by * bw + bx) * bytes;
+      uint8_t in[16] = {};
+      std::memcpy(in, base + data + off, bytes);
+      if (endian == 1)
+        for (uint32_t i = 0; i < bytes; i += 2) std::swap(in[i], in[i + 1]);
+      else if (endian == 2)
+        for (uint32_t i = 0; i < bytes; i += 4) std::swap(in[i], in[i + 3]), std::swap(in[i + 1], in[i + 2]);
+      uint8_t px[16][4];
+      if (format == 0x06) {  // k_8_8_8_8 as stored: A R G B? log as B G R A after swap
+        px[0][0] = in[2]; px[0][1] = in[1]; px[0][2] = in[0]; px[0][3] = in[3];
+      } else if (format == 0x12) {
+        uint8_t full[16] = {255, 255, 255, 255, 255, 255, 255, 255};
+        std::memcpy(full + 8, in, 8);
+        DecodeBlock(full, px);
+        const uint16_t c0 = uint16_t(in[0] | in[1] << 8), c1 = uint16_t(in[2] | in[3] << 8);
+        if (c0 <= c1) {  // 3-colour mode: index 3 is transparent
+          const uint32_t bits = uint32_t(in[4] | in[5] << 8 | in[6] << 16 | uint32_t(in[7]) << 24);
+          for (int i = 0; i < 16; ++i)
+            if (((bits >> (2 * i)) & 3) == 3) px[i][3] = 0;
+        }
+      } else {
+        DecodeBlock(in, px);  // DXT3's alpha isn't decoded (shown as DXT5's)
+      }
+      for (uint32_t i = 0; i < unit * unit; ++i) {
+        const uint32_t x = bx * unit + i % unit, y = by * unit + i / unit;
+        if (x < width && y < height) std::memcpy(&rgba[(size_t(y) * width + x) * 4], px[i], 4);
+      }
+    }
+  }
+  std::filesystem::create_directories("logs");
+  std::ofstream f("logs/" + name + ".tga", std::ios::binary);
+  const uint8_t tga[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, uint8_t(width), uint8_t(width >> 8),
+                           uint8_t(height), uint8_t(height >> 8), 32, 0x28};
+  f.write(reinterpret_cast<const char*>(tga), 18);
+  for (size_t i = 0; i < rgba.size(); i += 4) {
+    const char bgra[4] = {char(rgba[i + 2]), char(rgba[i + 1]), char(rgba[i]), char(rgba[i + 3])};
+    f.write(bgra, 4);
+  }
+  return true;
+}
+
 }  // namespace tbc::glyphs
+

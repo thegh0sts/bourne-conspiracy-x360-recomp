@@ -6,6 +6,7 @@
 - **PlayStation button prompts with a PlayStation pad.** With a DualShock or DualSense connected (and keyboard and mouse off), the prompts show cross / circle / square / triangle and L1 / R1 / L2 / R2, and Share / Options for Back / Start (PRESS START on the title screen), instead of the Xbox buttons: in text prompts (the button font), on the door / takedown badges and on the QTE prompts. It follows the first connected pad and switches back if an Xbox pad is plugged in instead. The PlayStation images are our own (`assets/ps`, installed beside the game as `ps/`), painted over the Xbox buttons in the game's textures, whose original pixels are kept for switching back. SDK patch 0010 tells the game which kind of pad is connected. `--pad_prompts=xbox` / `playstation` overrides it.
 
 ### Changes
+- **Launcher: Graphics path and Anti-aliasing are greyed out unless the renderer is Xenos** (they only apply to Xenos).
 - **With keyboard and mouse on, a controller is ignored** (the launcher passes `--input_backend=none`, so the SDK loads no controller driver). That mode's config moves the fight attacks off X / Y onto the triggers and makes the camera turn 4x faster at full stick for mouse look, so a controller alongside played wrongly, and the prompts show keys. Untick Keyboard and mouse to play with a controller.
 
 ### Fixes

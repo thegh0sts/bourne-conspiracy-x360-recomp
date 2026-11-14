@@ -751,6 +751,7 @@ class SettingsView(tk.Frame):
         self.s = load_settings()
         self.vars = {}
         self.combos = {}
+        self.combo_labels = {}
 
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=28, pady=(20, 4))
@@ -800,6 +801,7 @@ class SettingsView(tk.Frame):
         self._combo(box, 5, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
         self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
         self._combo(box, 7, "aa", "Anti-aliasing (Xenos only)", AA)
+        self._display_changed()  # grey out the Xenos-only settings for the native renderer
         self._combo(box, 8, "fps", "Frame rate", FPS)
         self._checks(box, 9, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
         self._check(box, 10, "original_pacing", "Original Xbox 360 frame pacing (slower)")
@@ -876,11 +878,12 @@ class SettingsView(tk.Frame):
 
     def _combo(self, box, row, key, text, values):
         v = self.vars[key] = tk.StringVar(value=self.s[key] if self.s[key] in values else DEFAULTS[key])
-        tk.Label(box, text=text, font=("Segoe UI", 10), fg=FG, bg=PANEL).grid(row=row, column=0, sticky="w",
-                                                                             pady=2)
+        label = tk.Label(box, text=text, font=("Segoe UI", 10), fg=FG, bg=PANEL)
+        label.grid(row=row, column=0, sticky="w", pady=2)
         combo = ttk.Combobox(box, textvariable=v, values=values, state="readonly", width=32)
         combo.grid(row=row, column=1, sticky="e", pady=2)
         self.combos[key] = combo
+        self.combo_labels[key] = label
 
     def _resolutions(self):
         """Output resolutions: the ultrawide ones only with the native renderer."""
@@ -891,6 +894,12 @@ class SettingsView(tk.Frame):
         """Keep the output and render resolutions consistent with the renderer and each other."""
         if "render_scale" not in self.combos:
             return  # still building the screen
+        # Graphics path and anti-aliasing are Xenos settings: greyed out with the native renderer.
+        xenos = RENDERER_PLUGIN.get(self.vars["renderer"].get()) == "xenos"
+        for key in ("render_path", "aa"):
+            if key in self.combos:
+                self.combos[key].configure(state="readonly" if xenos else "disabled")
+                self.combo_labels[key].configure(fg=FG if xenos else DIM)
         resolutions = self._resolutions()
         self.combos["resolution"]["values"] = resolutions
         if self.vars["resolution"].get() not in resolutions:

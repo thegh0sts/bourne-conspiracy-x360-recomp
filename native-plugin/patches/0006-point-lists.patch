@@ -1,0 +1,121 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 18190a4..169a064 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -855,6 +855,12 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   // Primitive type -> host topology.
+   const xe::PrimitiveType prim = draw.initiator.prim_type;
+   const bool rect = prim == xe::PrimitiveType::kRectangleList;
++  // Point lists (point sprites: menus and HUD drawn one quad per point) are expanded in the vertex shader, as the SDK's
++  // Vulkan backend does without geometry shaders: two-triangle strips, host vertex 4 * point + corner, the corner
++  // offset by the point size (PA_SU_POINT_SIZE or the shader's), texture coordinates for the pixel shader generated.
++  const bool point = prim == xe::PrimitiveType::kPointList;
++  // Primitives drawn as two-triangle strips built in the vertex shader.
++  const bool expanded = rect || point;
+   VkPrimitiveTopology topology;
+   // Which draws are refused, in the log (the first 20 of each kind: primitive type, index source).
+   auto unsupported = [&](const char* why) {
+@@ -879,7 +885,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     case xe::PrimitiveType::kQuadList: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+     case xe::PrimitiveType::kTriangleStrip:
+     case xe::PrimitiveType::kQuadStrip:  // the same vertex order as a triangle strip
+-    case xe::PrimitiveType::kRectangleList: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
++    case xe::PrimitiveType::kRectangleList:
++    case xe::PrimitiveType::kPointList: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+     default:
+       unsupported("primitive");
+       return;
+@@ -899,16 +906,19 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   const Translator& translator = shaders_->translator();
+   Translator::Modification vmod(translator.GetDefaultVertexShaderModification(
+       vshader->GetDynamicAddressableRegisterCount(program_cntl.vs_num_reg),
+-      rect ? rg::Shader::HostVertexShaderType::kRectangleListAsTriangleStrip
+-           : rg::Shader::HostVertexShaderType::kVertex));
++      rect    ? rg::Shader::HostVertexShaderType::kRectangleListAsTriangleStrip
++      : point ? rg::Shader::HostVertexShaderType::kPointListAsTriangleStrip
++              : rg::Shader::HostVertexShaderType::kVertex));
+   const auto clip = regs.Get<reg::PA_CL_CLIP_CNTL>();
+   uint32_t user_clip_planes = clip.clip_disable ? 0 : clip.ucp_ena;
+   vmod.vertex.interpolator_mask = interpolator_mask;
+-  vmod.vertex.user_clip_plane_cull = user_clip_planes && clip.ucp_cull_only_ena && props.shaderCullDistance;
++  vmod.vertex.user_clip_plane_cull =
++      !point && user_clip_planes && clip.ucp_cull_only_ena && props.shaderCullDistance;
+   if (!vmod.vertex.user_clip_plane_cull && !props.shaderClipDistance) user_clip_planes = 0;
+   vmod.vertex.user_clip_plane_count = std::popcount(user_clip_planes);
+   vmod.vertex.point_ps_ucp_mode = clip.ps_ucp_mode;
+-  vmod.vertex.output_point_parameters = 0;
++  // Expanded points: whether the vertex shader outputs the point coordinates the pixel shader's PsParamGen reads.
++  vmod.vertex.output_point_parameters = point && pshader && param_gen_pos < xe::kMaxInterpolators;
+   vmod.vertex.vertex_kill_and = props.shaderCullDistance &&
+                                 (vshader->writes_point_size_edge_flag_kill_vertex() & 0b100) && !clip.vtx_kill_or;
+   Translator::Modification pmod(0);
+@@ -936,7 +946,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   // Shaders are translated and pipelines created on worker threads; a draw whose aren't ready yet is skipped (a new
+   // effect shows up a few frames late instead of stalling the frame). Rectangle lists - XDK clears and screen-space
+   // passes, few and cheap - wait instead, as does everything when not live (replay, shadow: exact frames).
+-  const bool sync = !async_pipelines_ || !tracker_ || rect;
++  const bool sync = !async_pipelines_ || !tracker_ || rect || point;
+   ShaderCache::Translation *vt = nullptr, *pt = nullptr;
+   const Async vs_state = shaders_->Request(*vshader, vmod.value, vt, sync);
+   const Async ps_state = pshader ? shaders_->Request(*pshader, pmod.value, pt, sync) : Async::kReady;
+@@ -963,7 +973,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         if (fetch.type == xe::FetchConstantType::kVertex) tracker_->Request(fetch.address << 2, fetch.size << 2);
+       }
+     }
+-    if (rect && source == xe::SourceSelect::kDMA) {
++    if (expanded && source == xe::SourceSelect::kDMA) {
+       tracker_->Request(draw.index_base, draw.index_words * (index32 ? 4 : 2));
+     }
+   }
+@@ -1128,10 +1138,11 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     }
+     return true;
+   };
+-  if (rect) {
++  if (expanded) {
+     // Two-triangle strips; the vertex shader turns host vertex (4 * rect + corner) into guest vertex
+-    // (3 * rect + corner), loading the guest index itself for DMA draws.
+-    const uint32_t rects = count / 3;
++    // (3 * rect + corner), or (4 * point + corner) into guest vertex point, loading the guest index itself for DMA
++    // draws.
++    const uint32_t rects = point ? count : count / 3;
+     if (!rects) return;
+     host.reserve(size_t(rects) * 5);
+     for (uint32_t r = 0; r < rects; ++r) {
+@@ -1206,7 +1217,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                             topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
+     }
+   }
+-  if (!host.empty() || rect) {
++  if (!host.empty() || expanded) {
+     uint8_t* p = Upload(host.size() * 4, 4, index_offset);
+     std::memcpy(p, host.data(), host.size() * 4);
+     host_count = uint32_t(host.size());
+@@ -1227,7 +1238,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   Translator::SystemConstants sc;
+   std::memset(&sc, 0, sizeof(sc));
+   uint32_t flags = 0;
+-  if (rect && dma) {
++  if (expanded && dma) {
+     flags |= Translator::kSysFlag_ComputeOrPrimitiveVertexIndexLoad;
+     if (index32) flags |= Translator::kSysFlag_ComputeOrPrimitiveVertexIndexLoad32Bit;
+     sc.vertex_index_load_address = draw.index_base;
+@@ -1275,6 +1286,18 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     }
+   }
+   for (int i = 0; i < 3; ++i) sc.ndc_scale[i] = viewport.ndc_scale[i], sc.ndc_offset[i] = viewport.ndc_offset[i];
++  if (point) {
++    // As VulkanCommandProcessor::UpdateSystemConstantValues: sizes in 1/8 pixel units (12.4 radius), and the
++    // diameter in guest pixels to the NDC radius (the viewport extent is in samples, as the diameter is scaled).
++    const auto minmax = regs.Get<reg::PA_SU_POINT_MINMAX>();
++    const auto size = regs.Get<reg::PA_SU_POINT_SIZE>();
++    sc.point_vertex_diameter_min = float(minmax.min_size) * (2.0f / 16.0f);
++    sc.point_vertex_diameter_max = float(minmax.max_size) * (2.0f / 16.0f);
++    sc.point_constant_diameter[0] = float(size.width) * (2.0f / 16.0f);
++    sc.point_constant_diameter[1] = float(size.height) * (2.0f / 16.0f);
++    sc.point_screen_diameter_to_ndc_radius[0] = float(samples_x) / float(std::max(viewport.xy_extent[0], uint32_t(1)));
++    sc.point_screen_diameter_to_ndc_radius[1] = float(samples_y) / float(std::max(viewport.xy_extent[1], uint32_t(1)));
++  }
+   for (uint32_t i = 0; i < 32; ++i) {
+     sc.texture_swizzles[i >> 1] |= texture_swizzles[i] << (12 * (i & 1));  // used without view swizzles
+     sc.texture_swizzled_signs[i >> 2] |= texture_signs[i] << (8 * (i & 3));

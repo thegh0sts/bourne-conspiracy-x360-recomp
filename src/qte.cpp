@@ -6,7 +6,10 @@
 // the prompt stays up (1.2 to 2.0 s in the first level). The button it wants is one of the four
 // face buttons, shown on a diamond: Y top, X left, B right, A bottom.
 //
-// With keyboard and mouse on (--mnk_mode), for that long after a QTE starts, the left stick's
+// Takedown prompts (multi-takedowns) run natively instead; see TakedownPromptUp below.
+//
+// With keyboard and mouse on (--mnk_mode), for that long after a QTE starts (or while a
+// takedown prompt is up), the left stick's
 // four directions (W / A / S / D) press the face button in the same place on the diamond:
 // W = Y, A = X, S = A, D = B, and the stick itself reads centred. Only a fresh press counts: a
 // direction already held when the QTE starts (running with W) is ignored until it's let go,
@@ -54,7 +57,7 @@ std::atomic<int64_t> g_until{0};  // QTE active until this steady_clock tick cou
 std::atomic<uint32_t> g_starts{0};
 
 std::mutex g_mutex;
-std::unordered_map<uint32_t, bool> g_is_qte;  // UFunction -> is OnBnQuickAction
+std::unordered_map<uint32_t, int> g_kind;  // UFunction -> 0 other, 1 OnBnQuickAction, 2 *Takedown
 uint32_t g_seen_start = 0;
 uint8_t g_blocked = 0;  // directions held when the QTE started: up 1, left 2, down 4, right 8
 
@@ -233,6 +236,65 @@ void ProbeDiff(uint8_t* base) {
   for (size_t k = 0; k < p.players.size(); ++k) Diff(base, "player", p.players[k], 0, p.player_last[k]);
   for (size_t k = 0; k < p.branches.size(); ++k) Diff(base, "branch", p.branches[k], kBranchFrom, p.branch_last[k]);
 }
+
+// Takedown prompts (multi-takedowns). These don't go through OnBnQuickAction: the takedown's
+// branches (BnTakedownBranch objects, found with --qte_probe) run them natively. While a branch
+// plays, +0x88 counts its time up; when its takedown starts, +0x98 (ActualQuickActionStartTime)
+// is set to -1, and to the branch time at which the prompt appears once it does (0.78 s and
+// 1.72 s in the two seen). So a prompt is up while +0x98 >= 0, the branch time is within
+// kPromptWindow of it, and the branch time is still moving (a takedown that ends or is cut
+// short leaves a branch frozen, which mustn't keep W / A / S / D remapped).
+// The branches are looked up through GObjObjects (the engine's list of every object, a global
+// TArray at 0x83655774: data, count) whenever a takedown starts.
+constexpr uint32_t kObjects = 0x83655774;
+constexpr float kPromptWindow = 1.5f;
+uint32_t g_branch_class = 0;
+struct Branch {
+  uint32_t addr;
+  float last_time;
+  Clock::time_point moved;
+};
+std::vector<Branch> g_branches;
+
+void RefreshBranches(const PPCContext& ctx, uint8_t* base) {  // holds g_mutex
+  if (!g_branch_class) {
+    g_branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
+    if (!g_branch_class) return;
+  }
+  const uint32_t data = Load32(base, kObjects);
+  const uint32_t count = std::min<uint32_t>(Load32(base, kObjects + 4), 2000000);
+  if (!Heap(data) || Load32(base, data + 4 * Load32(base, g_branch_class + 4)) != g_branch_class) {
+    return;  // not the list we know: leave takedown prompts alone
+  }
+  std::vector<Branch> found;
+  for (uint32_t i = 0; i < count; ++i) {
+    if ((i & 1023) == 0 && !Readable(data + 4 * i)) break;
+    const uint32_t obj = Load32(base, data + 4 * i);
+    if (!Heap(obj) || !Readable(obj + 0x30)) continue;
+    if (Load32(base, obj + 0x30) == g_branch_class) {
+      found.push_back({obj, LoadFloat(base, obj + 0x88), Clock::time_point{}});
+    }
+  }
+  g_branches = std::move(found);
+}
+
+bool TakedownPromptUp(uint8_t* base) {  // holds g_mutex
+  const auto now = Clock::now();
+  bool up = false;
+  for (Branch& b : g_branches) {
+    const float time = LoadFloat(base, b.addr + 0x88);
+    if (time != b.last_time) {
+      b.last_time = time;
+      b.moved = now;
+    }
+    const float start = LoadFloat(base, b.addr + 0x98);
+    if (start >= 0.0f && time >= start && time <= start + kPromptWindow &&
+        now - b.moved < std::chrono::milliseconds(250)) {
+      up = true;
+    }
+  }
+  return up;
+}
 }  // namespace
 
 namespace tbc::qte {
@@ -259,23 +321,23 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
     }
   }
   if (!REXCVAR_GET(qte_wasd) || !function || !KeyboardOn()) return;
-  bool is_qte;
+  int kind;  // 0 other, 1 QTE (OnBnQuickAction), 2 a takedown starting
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    const auto it = g_is_qte.find(function);
-    if (it != g_is_qte.end()) {
-      is_qte = it->second;
-    } else {
-      is_qte = false;
-    }
-    if (it != g_is_qte.end() && !is_qte) return;
-    if (it == g_is_qte.end()) {
+    auto it = g_kind.find(function);
+    if (it == g_kind.end()) {
       // Named once per UFunction (a guest call); every later call is a map lookup.
-      is_qte = tbc::prompts::ObjectPathName(ctx, base, function).ends_with(":OnBnQuickAction");
-      g_is_qte.emplace(function, is_qte);
-      if (!is_qte) return;
+      const std::string name = tbc::prompts::ObjectPathName(ctx, base, function);
+      it = g_kind.emplace(function, name.ends_with(":OnBnQuickAction") ? 1 : name.ends_with("Takedown") ? 2 : 0)
+               .first;
+    }
+    kind = it->second;
+    if (kind == 2) {
+      RefreshBranches(ctx, base);
+      return;
     }
   }
+  if (kind != 1) return;
   const uint32_t parms = ctx.r5.u32;
   const uint32_t action = parms ? Load32(base, parms) : 0;
   float window = action >= 0x40000000 && action < 0x80000000 ? LoadFloat(base, action + 0xEC) : 0.0f;
@@ -290,17 +352,25 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
 
 void OnControllerState(uint8_t* base, uint32_t state) {
   if (REXCVAR_GET(qte_probe)) ProbeDiff(base);
-  if (!REXCVAR_GET(qte_wasd)) return;
+  if (!REXCVAR_GET(qte_wasd) || !KeyboardOn()) return;
+  std::lock_guard<std::mutex> lock(g_mutex);
   const int64_t until = g_until.load();
-  if (!until || Clock::now().time_since_epoch().count() >= until || !KeyboardOn()) return;
+  const bool qte = until && Clock::now().time_since_epoch().count() < until;
+  static bool was_takedown = false;
+  const bool takedown = !g_branches.empty() && TakedownPromptUp(base);
+  if (takedown && !was_takedown) {
+    g_starts.fetch_add(1);
+    if (REXCVAR_GET(qte_wasd_log)) REXLOG_INFO("qte: takedown prompt");
+  }
+  was_takedown = takedown;
+  if (!qte && !takedown) return;
   auto load16 = [&](uint32_t a) { return int16_t(uint16_t(base[a] << 8 | base[a + 1])); };
   const int16_t lx = load16(state + 8), ly = load16(state + 10);
   const uint8_t dirs = Directions(lx, ly);
-  std::lock_guard<std::mutex> lock(g_mutex);
   const uint32_t starts = g_starts.load();
   if (starts != g_seen_start) {
     g_seen_start = starts;
-    g_blocked = dirs;  // held when the QTE began: not an answer
+    g_blocked = dirs;  // held when the prompt appeared: not an answer
   }
   g_blocked &= dirs;  // let go: from now on it counts
   const uint8_t fresh = dirs & ~g_blocked;

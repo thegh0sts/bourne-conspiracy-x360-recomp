@@ -2,26 +2,29 @@
 
 ## 0.2.5 (2026-11-14)
 
-Keyboard and mouse, finished: mouse look, the player's keys in every prompt (text, HUD badges and QTE prompts), W / A / S / D for every QTE, a fixed key layout, and an update check in the launcher.
+Keyboard and mouse, finished: mouse look, your keys in every prompt, W / A / S / D for every quick-time event, a fixed key layout, and an update check in the launcher.
 
-### Updating from 0.2.4 / 0.2.4-1
-Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game is rebuilt and the bundled SDK replaced (now `tbc6`, with the mouse look patch). Your settings are kept; custom key binds are not (the layout is now fixed).
-
-### Fixes
-- **The title screen showed Enter but only took Esc** (keyboard and mouse): Enter and Space now start the game there too.
-- **"Hold LT to pop out" and other trigger / bumper / stick / d-pad prompts kept the Xbox button**: every button in the button font now shows its key.
-
-### Launcher
-- **The keyboard layout is fixed.** The prompts, the key images in the HUD, the fight attacks on the mouse buttons and QTEs on W / A / S / D are all built around it, so rebinding could break them. "Key binds" opens a window listing it (and [the same on GitHub](docs/keyboard-and-mouse.md)).
-- **Fights on the mouse buttons are always on with keyboard and mouse** (the checkbox is gone).
-- **Mouse look** option (on by default), the mouse sensitivity slider now sets its speed (10 to 400%), and "Camera turn speed" is now "Stick turn speed" (controller and arrow keys).
-- **Update check**: on opening, and with the new "Check for updates" link, the launcher asks GitHub for the newest release and shows a Download link when there's one.
+### Updating from 0.2.4 or 0.2.4-1
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen. The game is rebuilt and the bundled SDK replaced (now `tbc6`, with the mouse look patch). Your settings are kept; custom key binds are not, since the layout is now fixed.
 
 ### New
-- **Mouse look** (keyboard and mouse): the camera turns by as much as the mouse moves, whatever the frame rate, instead of the mouse pushing the right stick (dead zone, a turn rate that ramps up after half a second, smoothing). Each poll, the mouse's movement becomes the stick deflection that turns the camera that far in that poll's time (SDK patch 0009 hands the game the raw movement); the launcher raises the camera's full-stick turn rates 4x, turns the ramp off and quarters the orbit smoothing so fast flicks fit. Launcher: "Mouse turns the camera directly" (on by default) and the mouse sensitivity slider (100% = 0.044 degrees per count, `--mouse_look_sensitivity=2`); the camera turn speed slider is now "Stick turn speed", for a controller and the arrow keys. Needs the SDK rebuilt.
-- **Key glyphs in button prompts** (keyboard and mouse): prompts show the key's own image where they showed an Xbox button (W, A, S, D, E, F, G, Q, R, Space, Shift, Ctrl, Enter, Esc, Backspace, left and right mouse; `assets/keys`, installed beside the game as `keys/`). They go into free space on the button font's own texture at start-up, so they're sized and placed exactly like the button. Keys without an image keep a text label. `--key_glyphs=false` turns it off.
-- **HUD button badges show keys too**: the A by doors and other things to interact with, the B on the takedown meter (and the other buttons on that texture: X, Y, triggers, bumpers), and the QTE prompts, single and animated, which show the W / A / S / D key that answers them (the animated diamond shows the other three small and faded). These aren't text but parts of HUD textures (`InteractButtonIcons`, `ButtonPresses`, `ButtonPressesDiamond`, `ButtonPressesDiamondNoOutline`), so each badge's area is cleared and the bound key's glyph drawn into the texture itself, once it's loaded (checked once a second, redone if the binds change or the texture is reloaded). A key without a glyph keeps the Xbox badge.
-- **Multi-takedown and boss takedown prompts take W / A / S / D too.** They don't go through the event normal quick-time events use; their state is read from the takedown's branches instead (`BnTakedownBranch`: the prompt's start time in the branch at +0x98, the branch's clock at +0x88).
+- **Mouse look.** The camera turns by as much as the mouse moves, at any frame rate. Before, the mouse pushed the right stick, so it went through the stick's dead zone, a turn rate that sped up after half a second, and smoothing, and turned further at low frame rates. Now the driver hands the game the mouse's raw movement (SDK patch 0009) and each poll it becomes exactly the stick push that turns the camera that far in that poll's time. With keyboard and mouse on, the launcher also raises the camera's full-stick turn rates 4x, turns the speed-up off and cuts the camera smoothing to a quarter (BourneCamera.ini), so fast flicks aren't capped. Set the speed with the mouse sensitivity slider (100% = 0.044 degrees per mouse count).
+- **Your keys in the prompts.** Text prompts show the key's own image where they showed an Xbox button: W, A, S, D, E, F, G, Q, R, Space, Shift, Ctrl, Enter, Esc, Backspace, and the left and right mouse buttons (`assets/keys`, installed beside the game as `keys/`). The images go into free space on the button font's texture when the game starts, so they're sized and placed exactly like the buttons. Every button in that font now shows its key: face buttons, triggers, bumpers, stick presses, d-pad, Start and Back.
+- **Keys on the HUD badges and QTE prompts.** The A beside doors and other things to interact with, the B on the takedown meter, and the quick-time-event prompts aren't text but parts of HUD textures, drawn in the 3D scene. The game now paints the key images straight into those textures once they're loaded: Space by doors, F on the takedown meter, and W / A / S / D on QTE prompts, in the button's place on the diamond. The animated prompt shows the key to press large, with the other three small and faded.
+- **W / A / S / D for every QTE.** Multi-takedowns and boss takedowns now take them too (read from the takedown's own state, `BnTakedownBranch`, since they don't use the normal QTE event).
+- **Launcher update check.** When it opens, the launcher asks GitHub for the newest release and shows a Download link if there's a newer one. "Check for updates" (next to Open logs) does the same on demand and says what it found.
+
+### Changes
+- **The keyboard layout is fixed.** The prompts, the key images in the HUD, the fight attacks on the mouse buttons and QTEs on W / A / S / D are all built around it, so rebinding could break them. The key editor is gone; **Key binds** in the launcher opens a window listing the layout (also in [docs/keyboard-and-mouse.md](docs/keyboard-and-mouse.md)).
+- **Fights are always on the mouse buttons** with keyboard and mouse (left = light attack, right = heavy attack); the checkbox is gone.
+- **Launcher controls:** a "Mouse turns the camera directly" option (on by default), the mouse sensitivity slider now sets mouse look's speed (10 to 400%), and "Camera turn speed" is now "Stick turn speed", for a controller and the arrow keys.
+
+### Fixes
+- **The title screen showed Enter but only took Esc** with keyboard and mouse. Enter and Space now start the game there.
+- **"Hold LT to pop out" kept the Xbox LT**, as did other trigger, bumper, stick-press and d-pad prompts.
+
+### Known issues
+- Looking up and down stops at the game's own camera limits (about 20 degrees either way on foot), as on the Xbox 360.
 
 ## 0.2.4-1 (2026-11-14)
 

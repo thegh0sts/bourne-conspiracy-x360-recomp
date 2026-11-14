@@ -137,39 +137,73 @@ FILE* File(Probe& p) {
   return p.file;
 }
 
-// Finds the controller and the objects it points to, and their classes' properties.
+// The objects worth watching, from the controller: itself, its PlayerInput (+0x408), its
+// camera (PlayerCamera) and the camera's active strategy (HmCamera +0x350), that strategy's
+// CameraState (+0xE4) and AnchorPoint (+0xE8) and its behaviours (+0xF8, an array), and the
+// current look scales (HmPlayerController +0x554).
+std::vector<std::pair<std::string, uint32_t>> Targets(uint8_t* base, uint32_t controller, const std::vector<Prop>& props) {
+  std::vector<std::pair<std::string, uint32_t>> out;
+  auto add = [&](const std::string& what, uint32_t o) {
+    if (!IsObject(o)) return;
+    for (const auto& t : out)
+      if (t.second == o) return;
+    out.emplace_back(what, o);
+  };
+  add("controller", controller);
+  add("input", Load32(base, controller + 0x408));
+  add("lookscales", Load32(base, controller + 0x554));
+  uint32_t camera = 0;
+  for (const Prop& pr : props)
+    if (pr.name == "PlayerController:PlayerCamera") camera = Load32(base, controller + pr.offset);
+  add("camera", camera);
+  if (IsObject(camera)) {
+    const uint32_t strategy = Load32(base, camera + 0x350);
+    add("strategy", strategy);
+    if (IsObject(strategy)) {
+      add("strategy.state", Load32(base, strategy + 0xE4));
+      add("strategy.anchor", Load32(base, strategy + 0xE8));
+      const uint32_t data = Load32(base, strategy + 0xF8), count = Load32(base, strategy + 0xFC);
+      for (uint32_t i = 0; IsObject(data) && i < count && i < 12; ++i)
+        add("strategy.behavior" + std::to_string(i), Load32(base, data + 4 * i));
+    }
+  }
+  return out;
+}
+
 void Find(Probe& p, const PPCContext& ctx, uint8_t* base) {
   const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
   if (!Readable(data) || count > 2000000) return;
-  uint32_t controller = 0;
-  std::unordered_map<uint32_t, std::string> class_names;
+  static std::unordered_map<uint32_t, std::string> class_names;
   auto class_name = [&](uint32_t cls) -> const std::string& {
     auto it = class_names.find(cls);
     if (it == class_names.end()) it = class_names.emplace(cls, Name(p, ctx, base, cls)).first;
     return it->second;
   };
-  for (uint32_t i = 0; i < count && !controller; ++i) {
-    const uint32_t o = Load32(base, data + 4 * i);
-    if (!IsObject(o)) continue;
-    const uint32_t cls = Load32(base, o + 0x30);
-    if (!IsObject(cls) || class_name(cls) != "BourneNative.BnPlayerController") continue;
-    if (Name(p, ctx, base, o).find("Default__") != std::string::npos) continue;
-    controller = o;
-  }
-  if (!controller || controller == p.controller) return;
-  p.controller = controller;
-  p.watched.clear();
-
-  // Every property object, by its outer (the class or struct it belongs to).
-  std::unordered_map<uint32_t, std::vector<uint32_t>> by_outer;
-  for (uint32_t i = 0; i < count; ++i) {
-    const uint32_t o = Load32(base, data + 4 * i);
-    if (!IsObject(o)) continue;
-    const uint32_t cls = Load32(base, o + 0x30);
-    if (!IsObject(cls)) continue;
-    const std::string& c = class_name(cls);
-    if (c.size() < 8 || c.compare(c.size() - 8, 8, "Property") != 0) continue;
-    by_outer[Load32(base, o + 0x28)].push_back(o);
+  static std::unordered_map<uint32_t, std::vector<uint32_t>> by_outer;  // properties by class
+  const bool controller_ok = IsObject(p.controller) && IsObject(Load32(base, p.controller + 0x30)) &&
+                             class_name(Load32(base, p.controller + 0x30)) == "BourneNative.BnPlayerController";
+  if (!controller_ok) {
+    p.controller = 0;
+    p.watched.clear();
+    for (uint32_t i = 0; i < count && !p.controller; ++i) {
+      const uint32_t o = Load32(base, data + 4 * i);
+      if (!IsObject(o)) continue;
+      const uint32_t cls = Load32(base, o + 0x30);
+      if (!IsObject(cls) || class_name(cls) != "BourneNative.BnPlayerController") continue;
+      if (Name(p, ctx, base, o).find("Default__") != std::string::npos) continue;
+      p.controller = o;
+    }
+    if (!p.controller) return;
+    by_outer.clear();
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t o = Load32(base, data + 4 * i);
+      if (!IsObject(o)) continue;
+      const uint32_t cls = Load32(base, o + 0x30);
+      if (!IsObject(cls)) continue;
+      const std::string& c = class_name(cls);
+      if (c.size() < 8 || c.compare(c.size() - 8, 8, "Property") != 0) continue;
+      by_outer[Load32(base, o + 0x28)].push_back(o);
+    }
   }
   auto props_of = [&](uint32_t object) {
     std::vector<Prop> props;
@@ -186,9 +220,21 @@ void Find(Probe& p, const PPCContext& ctx, uint8_t* base) {
     }
     return props;
   };
+  if (p.watched.empty()) p.watched.push_back(Watched{"controller", p.controller, props_of(p.controller), {}});
+  const auto targets = Targets(base, p.controller, p.watched[0].props);
   FILE* f = File(p);
-  auto watch = [&](const std::string& what, uint32_t object) {
-    if (!IsObject(object)) return;
+  std::vector<Watched> next;
+  for (const auto& [what, object] : targets) {
+    bool kept = false;
+    for (Watched& w : p.watched) {
+      if (w.object == object) {
+        w.what = what;
+        next.push_back(std::move(w));
+        kept = true;
+        break;
+      }
+    }
+    if (kept) continue;
     Watched w{what, object, props_of(object), {}};
     if (f) {
       std::fprintf(f, "# %s %08X %s (%s), %zu properties\n", what.c_str(), object, Name(p, ctx, base, object).c_str(),
@@ -196,20 +242,9 @@ void Find(Probe& p, const PPCContext& ctx, uint8_t* base) {
       for (const Prop& pr : w.props)
         std::fprintf(f, "#   +%03X %-3u %-18s %s\n", pr.offset, pr.size, pr.type.c_str(), pr.name.c_str());
     }
-    p.watched.push_back(std::move(w));
-  };
-  watch("controller", controller);
-  for (const Prop& pr : p.watched[0].props) {
-    const std::string field = pr.name.substr(pr.name.rfind('.') + 1);
-    if (pr.type == "Core.ObjectProperty" &&
-        (field == "PlayerInput" || field == "PlayerCamera" || field == "Pawn" || field == "CameraModule" ||
-         field.find("Camera") != std::string::npos)) {
-      const uint32_t target = Load32(base, controller + pr.offset);
-      bool seen = false;
-      for (const Watched& w : p.watched) seen |= w.object == target;
-      if (!seen) watch(field, target);
-    }
+    next.push_back(std::move(w));
   }
+  p.watched = std::move(next);
   if (f) std::fflush(f);
 }
 
@@ -226,7 +261,7 @@ void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
   if (now < p.next) return;
   p.next = now + std::chrono::milliseconds(100);
   if (now >= p.next_find) {
-    p.next_find = now + std::chrono::seconds(5);
+    p.next_find = now + std::chrono::seconds(1);
     Find(p, ctx, base);
   }
   FILE* f = File(p);
@@ -246,6 +281,10 @@ void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
           pr.type.find("StrProperty") != std::string::npos || pr.type.find("ArrayProperty") != std::string::npos)
         continue;
       if (std::memcmp(&cur[pr.offset], &w.last[pr.offset], pr.size) == 0) continue;
+      if (pr.type == "Core.BoolProperty" || pr.name.find("Timer") != std::string::npos ||
+          pr.name.find("SightCounter") != std::string::npos || pr.name.find("OverlapTag") != std::string::npos ||
+          pr.name.find("ObjectFlags") != std::string::npos)
+        continue;
       std::string vals;
       char buf[64];
       for (uint32_t k = 0; k + 4 <= pr.size && k < 24; k += 4) {

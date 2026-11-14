@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.5 (2026-11-14)
+## 0.2.4-1 (2026-11-14)
 
 An installer fix for PCs with another Clang installed, Shift and Ctrl working as keyboard binds, and quick-time events on W / A / S / D.
 

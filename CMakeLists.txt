@@ -5,7 +5,9 @@
 cmake_minimum_required(VERSION 3.25)
 # The release number. Shown in the log's first line (version_log.cpp); keep it the same as VERSION in
 # installer/tbc_launcher.py.
-project(tbc VERSION 0.2.5 LANGUAGES CXX)
+project(tbc VERSION 0.2.4 LANGUAGES CXX)
+# The release name, which can carry a suffix CMake's VERSION can't (0.2.4-1).
+set(TBC_RELEASE "0.2.4-1")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +42,7 @@ else()
 endif()
 
 rexglue_setup_target(tbc GPU_PLUGINS xenos)
-target_compile_definitions(tbc PRIVATE TBC_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(tbc PRIVATE TBC_VERSION="${TBC_RELEASE}")
 
 # AMD FidelityFX runtime (FSR / CAS output filters). Only present when the SDK was built with
 # REXGLUE_ENABLE_FIDELITYFX (tools/build_sdk.bat); the runtime DLL needs it next to tbc.exe.

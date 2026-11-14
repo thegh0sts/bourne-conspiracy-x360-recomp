@@ -15,6 +15,10 @@
 //                                  game (a QTE) and the functions first seen then are its own
 //   --script_trace_filter=Qte|Quick   also log every call of functions whose name contains one
 //                                  of these (case-sensitive), at most 50 lines a second
+//   --script_trace_dump=OnBnQuickAction   for functions whose name contains one of these, also
+//                                  log the parameters (UFunction +142 = ParmsSize) and, when the
+//                                  first parameter is an object (Kismet handlers get their
+//                                  action: OnX(SeqAct_X Action)), its name and first 0x200 bytes
 
 #include "generated/default/tbc_pch.h"
 
@@ -36,6 +40,10 @@ REXCVAR_DEFINE_BOOL(script_trace, false, "Debug",
 REXCVAR_DEFINE_STRING(script_trace_filter, "", "Debug",
                       "Also log every call of script events whose name contains one of these "
                       "(separated by |); development only");
+
+REXCVAR_DEFINE_STRING(script_trace_dump, "", "Debug",
+                      "For script events whose name contains one of these (separated by |), "
+                      "log their parameters and the object passed first; development only");
 
 REX_EXTERN(__imp__sub_828B8750);  // UObject::ProcessEvent(UFunction*, void* Parms, void* Result)
 
@@ -67,6 +75,41 @@ std::vector<std::string> Split(const std::string& text) {
   return out;
 }
 
+uint32_t Load32(const uint8_t* base, uint32_t addr) {
+  return uint32_t(base[addr]) << 24 | uint32_t(base[addr + 1]) << 16 | uint32_t(base[addr + 2]) << 8 |
+         base[addr + 3];
+}
+
+std::string Hex(const uint8_t* base, uint32_t addr, uint32_t size) {
+  std::string out;
+  char buf[16];
+  for (uint32_t i = 0; i < size; i += 4) {
+    if (i % 32 == 0) {
+      std::snprintf(buf, sizeof(buf), "%s    +%03X", i ? "\n" : "", i);
+      out += buf;
+    }
+    std::snprintf(buf, sizeof(buf), " %08X", Load32(base, addr + i));
+    out += buf;
+  }
+  return out;
+}
+
+// Parameters of a matching event, and the object passed first (see --script_trace_dump).
+void Dump(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t object, uint32_t function) {
+  static int dumps = 0;
+  if (dumps >= 40) return;
+  ++dumps;
+  const uint32_t parms = ctx.r5.u32;
+  const uint32_t size = std::min<uint32_t>(uint32_t(base[function + 142]) << 8 | base[function + 143], 64);
+  REXLOG_INFO("script_trace dump: {} on {:08X} parms {:08X} ({} bytes)\n{}", name, object, parms, size,
+              parms && size ? Hex(base, parms, (size + 3) & ~3u) : std::string("    (none)"));
+  if (!parms || size < 4) return;
+  const uint32_t first = Load32(base, parms);
+  if (first < 0x40000000 || first >= 0x80000000) return;
+  const std::string first_name = tbc::prompts::ObjectPathName(ctx, base, first);
+  REXLOG_INFO("script_trace dump: first parameter {:08X} = {}\n{}", first, first_name, Hex(base, first, 0x200));
+}
+
 }  // namespace
 
 extern "C" REX_FUNC(sub_828B8750) {
@@ -74,7 +117,8 @@ extern "C" REX_FUNC(sub_828B8750) {
   const std::string& filter_text = REXCVAR_GET(script_trace_filter);
   const uint32_t object = ctx.r3.u32;
   const uint32_t function = ctx.r4.u32;
-  if ((!trace && filter_text.empty()) || !object || !function) {
+  const std::string& dump_text = REXCVAR_GET(script_trace_dump);
+  if ((!trace && filter_text.empty() && dump_text.empty()) || !object || !function) {
     __imp__sub_828B8750(ctx, base);
     return;
   }
@@ -113,6 +157,14 @@ extern "C" REX_FUNC(sub_828B8750) {
         REXLOG_INFO("script_trace: {} on {:08X}", name, object);
       }
       break;
+    }
+  }
+  if (!dump_text.empty()) {
+    for (const std::string& part : Split(dump_text)) {
+      if (name.find(part) != std::string::npos) {
+        Dump(ctx, base, name, object, function);
+        break;
+      }
     }
   }
   __imp__sub_828B8750(ctx, base);

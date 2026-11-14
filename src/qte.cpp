@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -35,6 +36,11 @@ REXCVAR_DEFINE_BOOL(qte_wasd, true, "Input",
                     "Keyboard and mouse: during a quick-time event, W / A / S / D press the face "
                     "button in the same place on the prompt's diamond (Y / X / A / B)");
 REXCVAR_DEFINE_BOOL(qte_wasd_log, false, "Debug", "Log quick-time events and the W / A / S / D presses");
+REXCVAR_DEFINE_BOOL(qte_probe, false, "Debug",
+                    "Development: find where the game keeps its quick-action state (property "
+                    "lookups, and the player controller's changes for 4 s after a QTE or takedown)");
+
+REX_EXTERN(sub_82920EE8);  // UObject::StaticFindObject(UClass*, UObject* outer, const TCHAR*, UBOOL exact)
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -77,11 +83,134 @@ uint32_t Load32(const uint8_t* base, uint32_t addr) {
 uint8_t Directions(int16_t lx, int16_t ly) {
   return (ly >= kFull ? 1 : 0) | (lx <= -kFull ? 2 : 0) | (ly <= -kFull ? 4 : 0) | (lx >= kFull ? 8 : 0);
 }
+
+// --qte_probe (development). Multi-takedowns run their quick actions from native takedown
+// code, not through OnBnQuickAction; the strings name the state they keep (QuickActionButton,
+// QuickActionStartTime, QuickActionType, QuickActionResult, QuickActionStageIdx,
+// SkilledTakedownQuickActionLength). Look those properties up by name and dump them (their
+// offset is in there), and log what changes in the player controller around a QTE or takedown.
+std::atomic<uint32_t> g_probe_object{0};
+std::atomic<int64_t> g_probe_until{0};
+std::vector<uint8_t> g_probe_last;
+int g_probe_lines = 0;
+
+uint32_t FindObject(const PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t outer) {
+  PPCContext tmp = ctx;
+  const uint32_t text = ctx.r1.u32 - 0x300;  // UTF-16BE name below the caller's frame
+  for (size_t i = 0; i <= name.size() && i < 120; ++i) {
+    const uint16_t c = i < name.size() ? uint16_t(name[i]) : 0;
+    base[text + 2 * i] = uint8_t(c >> 8);
+    base[text + 2 * i + 1] = uint8_t(c);
+  }
+  tmp.r1.u32 = ctx.r1.u32 - 0x600;
+  tmp.r3.u64 = 0;
+  tmp.r4.u64 = outer;
+  tmp.r5.u64 = text;
+  tmp.r6.u64 = 0;
+  sub_82920EE8(tmp, base);
+  return tmp.r3.u32;
+}
+
+std::string Words(const uint8_t* base, uint32_t addr, uint32_t size) {
+  std::string out;
+  char buf[24];
+  for (uint32_t i = 0; i < size; i += 4) {
+    if (i % 32 == 0) {
+      std::snprintf(buf, sizeof(buf), "\n    +%03X", i);
+      out += buf;
+    }
+    std::snprintf(buf, sizeof(buf), " %08X", Load32(base, addr + i));
+    out += buf;
+  }
+  return out;
+}
+
+void ProbeProperties(const PPCContext& ctx, uint8_t* base) {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  const char* props[] = {"QuickActionButton", "QuickActionStartTime", "QuickActionType", "QuickActionResult",
+                         "QuickActionStageIdx", "ActualQuickActionStartTime", "SkilledTakedownQuickActionLength",
+                         "CurrentTakedown", "TakedownRunner"};
+  const char* classes[] = {"BourneNative.BnPlayerController", "BourneNative.BnPlayerPawn",
+                           "BourneNative.BnPlayerFightingComponent", "BourneNative.BnTakedownRunner",
+                           "BourneNative.BnTakedowner", "BourneNative.BnTakedownSequencePlayer",
+                           "BourneNative.BnTakedownSequence", "BourneNative.SeqAct_BnQuickAction",
+                           "BourneNative.BnTakedownBranch", "BourneNative.BnFightingComponent"};
+  for (const char* prop : props) {
+    bool found = false;
+    for (const char* cls : classes) {
+      const std::string path = std::string(cls) + "." + prop;
+      if (const uint32_t obj = FindObject(ctx, base, path, 0)) {
+        found = true;
+        REXLOG_INFO("qte_probe: {} = {:08X} {}{}", path, obj, tbc::prompts::ObjectPathName(ctx, base, obj),
+                    Words(base, obj, 0x80));
+      }
+    }
+    if (!found) {
+      const uint32_t obj = FindObject(ctx, base, prop, 0xFFFFFFFF);  // ANY_PACKAGE
+      REXLOG_INFO("qte_probe: {} not in the listed classes; any package: {:08X} {}", prop, obj,
+                  obj ? tbc::prompts::ObjectPathName(ctx, base, obj) : std::string("-"));
+      if (obj) REXLOG_INFO("qte_probe: {}{}", prop, Words(base, obj, 0x80));
+    }
+  }
+}
+
+// From the input thread: what changed in the probed object since the last poll.
+void ProbeDiff(uint8_t* base) {
+  const int64_t until = g_probe_until.load();
+  const uint32_t object = g_probe_object.load();
+  if (!until || !object) return;
+  constexpr uint32_t kSize = 0x1000;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (Clock::now().time_since_epoch().count() >= until) {
+    g_probe_until.store(0);
+    g_probe_last.clear();
+    REXLOG_INFO("qte_probe: end");
+    return;
+  }
+  if (g_probe_last.size() != kSize) {
+    g_probe_last.assign(base + object, base + object + kSize);
+    return;
+  }
+  for (uint32_t i = 0; i < kSize && g_probe_lines < 4000; i += 4) {
+    if (std::memcmp(&g_probe_last[i], base + object + i, 4) != 0) {
+      const uint32_t was = uint32_t(g_probe_last[i]) << 24 | uint32_t(g_probe_last[i + 1]) << 16 |
+                           uint32_t(g_probe_last[i + 2]) << 8 | g_probe_last[i + 3];
+      REXLOG_INFO("qte_probe: +{:03X} {:08X} -> {:08X}", i, was, Load32(base, object + i));
+      ++g_probe_lines;
+    }
+  }
+  std::memcpy(g_probe_last.data(), base + object, kSize);
+}
 }  // namespace
 
 namespace tbc::qte {
 
 void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
+  if (REXCVAR_GET(qte_probe) && function) {
+    static std::unordered_map<uint32_t, int> kinds;  // 0 other, 1 QTE, 2 takedown
+    int kind;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      auto it = kinds.find(function);
+      if (it == kinds.end()) {
+        const std::string name = tbc::prompts::ObjectPathName(ctx, base, function);
+        kind = name.ends_with(":OnBnQuickAction") ? 1 : name.ends_with("Takedown") ? 2 : 0;
+        it = kinds.emplace(function, kind).first;
+      }
+      kind = it->second;
+    }
+    if (kind) {
+      ProbeProperties(ctx, base);
+      const uint32_t object = ctx.r3.u32;
+      REXLOG_INFO("qte_probe: {} on {:08X}: watching it for 4 s", kind == 1 ? "QTE" : "takedown", object);
+      std::lock_guard<std::mutex> lock(g_mutex);
+      g_probe_object.store(object);
+      g_probe_last.clear();
+      g_probe_until.store((Clock::now() + std::chrono::seconds(4)).time_since_epoch().count());
+    }
+  }
   if (!REXCVAR_GET(qte_wasd) || !function || !KeyboardOn()) return;
   bool is_qte;
   {
@@ -113,6 +242,7 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
 }
 
 void OnControllerState(uint8_t* base, uint32_t state) {
+  if (REXCVAR_GET(qte_probe)) ProbeDiff(base);
   if (!REXCVAR_GET(qte_wasd)) return;
   const int64_t until = g_until.load();
   if (!until || Clock::now().time_since_epoch().count() >= until || !KeyboardOn()) return;

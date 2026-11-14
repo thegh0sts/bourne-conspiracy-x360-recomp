@@ -23,18 +23,24 @@
 //   --mouse_look_sensitivity=2.0       0.022 degrees per mouse count times this (as in Source
 //                                      games)
 //   --mouse_look_invert_y=true         mouse up looks down
-//   --mouse_look_direct=true           (experimental) add the mouse's movement straight to the
-//                                      camera's target angle instead of faking a stick
+//   --mouse_look_direct=false          fake a right-stick push instead of adding the mouse's
+//                                      movement straight to the camera's angles (the default)
 //
-// Direct mode: Bourne's player input object (BourneNative.BnPlayerInput, the controller's
-// +0x408) keeps the camera's target rotation in HmPlayerInput.CurrentControlRotation (+0x180,
-// an FRotator: pitch, yaw, roll as ints, 65536 to a turn). Each frame the orbit yaw / pitch
-// behaviours add stick x turn rate x frame time to it and the orbit smoother eases the view
-// towards it (found with a camera probe: logs\camera_probe.txt). Adding the mouse's movement to
-// it, in those units, turns the camera exactly as far as the mouse moved: no stick dead zone,
-// turn rate cap or the game's look acceleration (PlayerInput.LookRightScale grows while the
-// stick is held). The smoother still applies (the launcher's Mouse camera smoothing). The
-// right stick isn't touched, so keys bound to it still work.
+// Direct mode (the default): the camera's orbit is kept in three places, all FRotators (pitch,
+// yaw, roll as ints, 65536 to a turn), found with --mouse_look_probe:
+//   - Bourne's player input (BourneNative.BnPlayerInput, the controller's +0x408):
+//     HmPlayerInput.CurrentControlRotation (+0x180), where the orbit yaw / pitch behaviours add
+//     stick x turn rate x frame time;
+//   - the active strategy's orbit smoother (HmOrbitSmootherCameraBehavior):
+//     SmoothedOrbitRotation (+0x44), which eases the view towards it;
+//   - the strategy's result, +0x38: in the camera state (strategy +0xE4 -> +0x3C) and the
+//     camera's copy (BnCamera +0x370). Some strategies spring the view back to this one, so
+//     without it the camera was pulled back within a second.
+// Adding the mouse's movement to all of them, in those units, turns the camera exactly as far as
+// the mouse moved: no stick dead zone, turn rate cap or the game's look acceleration
+// (PlayerInput.LookRightScale grows while the stick is held). The smoother still applies (the
+// launcher's Mouse camera smoothing). The right stick isn't touched, so keys bound to it still
+// work.
 
 #include "generated/default/tbc_pch.h"
 
@@ -62,9 +68,9 @@ REXCVAR_DEFINE_DOUBLE(mouse_look_sensitivity, 2.0, "Input",
                       "Mouse look: 0.022 degrees of turn per mouse count times this")
     .range(0.05, 20.0);
 REXCVAR_DEFINE_BOOL(mouse_look_invert_y, false, "Input", "Mouse look: moving the mouse up looks down");
-REXCVAR_DEFINE_BOOL(mouse_look_direct, false, "Input",
-                    "Mouse look (experimental): add the mouse's movement straight to the camera's "
-                    "target angle (HmPlayerInput.CurrentControlRotation) instead of the right stick");
+REXCVAR_DEFINE_BOOL(mouse_look_direct, true, "Input",
+                    "Mouse look: add the mouse's movement straight to the camera's angles (1:1, no "
+                    "stick dead zone, turn cap or look acceleration); false fakes a right-stick push");
 REXCVAR_DEFINE_BOOL(mouse_look_probe, false, "Debug",
                     "Development: every 100 ms, log the camera's stored orbit (control and smoothed "
                     "rotations, the camera state's strategy result, the camera's cache) to game.log");
@@ -224,25 +230,6 @@ void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
               words(g_player.camera + 0x2A0, 8));
 }
 
-// Once per strategy: its behaviours, by class (what else might pull the view around).
-void LogBehaviours(const PPCContext& ctx, uint8_t* base, uint32_t strategy) {
-  static uint32_t logged = 0;
-  if (strategy == logged || !IsObject(strategy)) return;
-  logged = strategy;
-  const uint32_t data = Load32(base, strategy + 0xF8), count = Load32(base, strategy + 0xFC);
-  if (!Readable(data) || count > 32) return;
-  std::string out;
-  for (uint32_t i = 0; i < count; ++i) {
-    const uint32_t b = Load32(base, data + 4 * i);
-    if (!IsObject(b) || !IsObject(Load32(base, b + 0x30))) continue;
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), " %08X ", b);
-    out += buf + ClassName(ctx, base, Load32(base, b + 0x30));
-  }
-  REXLOG_INFO("mouse_look_direct: strategy {:08X} ({}) behaviours:{}", strategy,
-              ClassName(ctx, base, Load32(base, strategy + 0x30)), out);
-}
-
 void AddRotator(uint8_t* base, uint32_t rot, int32_t pitch, int32_t yaw) {
   Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + pitch));
   Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + yaw));
@@ -295,25 +282,14 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   if (dt > 0.1) g_carry_yaw = g_carry_pitch = 0.0;  // a long gap (loading): drop what was left
   dt = std::clamp(dt, 0.004, 0.1);  // one poll's time; a long gap (loading) isn't a slow move
   const double degrees = 0.022 * REXCVAR_GET(mouse_look_sensitivity);
-  if (REXCVAR_GET(mouse_look_direct)) {
+  // Direct when the player's controller and camera are there; otherwise (menus, loading, a
+  // level without them) the stick method below.
+  const uint32_t input = REXCVAR_GET(mouse_look_direct) && FindPlayer(ctx, base)
+                             ? Load32(base, g_player.controller + 0x408)
+                             : 0;
+  if (IsObject(input)) {
     g_carry_yaw = g_carry_pitch = 0.0;
-    if (!FindPlayer(ctx, base)) return;
-    const uint32_t input = Load32(base, g_player.controller + 0x408);
-    if (!IsObject(input)) return;
     const uint32_t smoother = Smoother(ctx, base);
-    // Diagnostics, once a second: whether last poll's addition is still there (or the game
-    // rewrote the angles from something else).
-    static std::chrono::steady_clock::time_point next_log{};
-    static int32_t expect_ccr = 0, expect_smooth = 0, expect_orbit = 0;
-    static bool have_expect = false;
-    if (now >= next_log && have_expect) {
-      next_log = now + std::chrono::seconds(1);
-      REXLOG_INFO("mouse_look_direct: control yaw {} (expected {}), smoothed yaw {} (expected {}), orbit yaw {} "
-                  "(expected {}), smoother {:08X}",
-                  int32_t(Load32(base, input + 0x184)), expect_ccr,
-                  smoother ? int32_t(Load32(base, smoother + 0x48)) : 0, expect_smooth,
-                  int32_t(Load32(base, g_player.camera + 0x370 + 0x3C)), expect_orbit, smoother);
-    }
     if (!moved) return;
     // Degrees to rotator units (65536 a turn), keeping the fraction for the next poll.
     static double frac_yaw = 0.0, frac_pitch = 0.0;
@@ -338,14 +314,9 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     };
     if (IsObject(cam_state)) add_orbit(cam_state + 0x3C + 0x38);
     add_orbit(g_player.camera + 0x370 + 0x38);
-    LogBehaviours(ctx, base, strategy);
-    expect_ccr = int32_t(Load32(base, input + 0x184));
-    expect_smooth = smoother ? int32_t(Load32(base, smoother + 0x48)) : 0;
-    expect_orbit = int32_t(Load32(base, g_player.camera + 0x370 + 0x3C));
-    have_expect = true;
     if (!g_logged) {
       g_logged = true;
-      REXLOG_INFO("mouse_look: direct, mouse movement added to the camera's target angle (sensitivity {})",
+      REXLOG_INFO("mouse_look: direct, mouse movement added to the camera's angles (sensitivity {})",
                   REXCVAR_GET(mouse_look_sensitivity));
     }
     return;

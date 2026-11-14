@@ -322,7 +322,7 @@ DEFAULTS = {
     "mouse_sensitivity": 100,
     "mouse_look": True,
     "mouse_smoothing": 10,
-    "mouse_look_direct": False,
+    "mouse_look_direct": True,
     "turn_speed": 100,
     "close_on_play": True,
 }
@@ -723,8 +723,10 @@ def game_args(s, screen=None):
         args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
         # The full-stick turn rate the camera edit gives the game (65 degrees a second x the factor).
         args.append(f"--mouse_look_full_rate={65 * MOUSE_RATE_FACTOR}")
-        if s.get("mouse_look_direct"):
-            args.append("--mouse_look_direct=true")
+        # Direct (the default): the mouse's movement goes straight into the camera's angles;
+        # unticked, it's turned into a right-stick push as in 0.2.5-0.2.6.
+        if not s.get("mouse_look_direct", True):
+            args.append("--mouse_look_direct=false")
         if not s.get("mouse_look", True):
             args.append("--mouse_look=false")
         # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp), to
@@ -835,7 +837,7 @@ class SettingsView(tk.Frame):
         line2 = tk.Frame(box, bg=PANEL)
         line2.grid(row=2, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
-                          ("mouse_look_direct", "Direct (experimental)")):
+                          ("mouse_look_direct", "Direct (1:1)")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))

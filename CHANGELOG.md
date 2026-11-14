@@ -1,5 +1,7 @@
 # Changelog
 
+**Updating to any release:** run the new `BourneConspiracy.exe`, then click **Reinstall from a disc image...** on the launcher's settings screen and pick your disc image. The game is built on your PC, so a release's changes only take effect once it's rebuilt. Your settings are kept.
+
 ## 0.2.5 (2026-11-14)
 
 Keyboard and mouse, finished: mouse look, your keys in every prompt, W / A / S / D for every quick-time event, a fixed key layout, and an update check in the launcher.
@@ -118,6 +120,9 @@ WetRecomp by nikolaygorb (MIT): the GPU-wait hook, display refresh matching, the
 
 Keyboard and mouse, and camera turn speed.
 
+### Updating from 0.2.0
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen so the game is rebuilt with the new code. Your settings are kept.
+
 ### New
 - **Keyboard and mouse** (experimental). Tick **Keyboard and mouse** under Controls in the launcher: W A S D to move, the mouse for the camera, left mouse to fire, right mouse to aim, and keys for every other action. A controller keeps working alongside. The mouse acts as a controller stick, so the game's stick dead zone still applies: a lower **Stick dead zone** makes small mouse movements count.
 - **Editable key binds.** **Edit keys...** next to the switch lets you change any action: two keys per action, mouse buttons included, with **Defaults** to go back. A key already in use moves to the new action; F3, F4, F7 and \` stay reserved for the runtime's overlays.
@@ -140,6 +145,9 @@ ReGPU and Glue2GPU by zer0ducksgiven (MIT). Licence texts in `licenses/`.
 ## 0.2.0 (2026-11-10)
 
 Performance, frame rate and image options, built on a patched ReXGlue SDK.
+
+### Updating from 0.1.0
+Run the new exe, then click **Reinstall from a disc image...** on the launcher's settings screen so the game is rebuilt with the new code and SDK. Your settings are kept.
 
 ### New
 - **60 FPS and higher.** The game was locked to 30 FPS by its own Direct3D setup; a new **Frame rate** option offers 30 (original), 60, and experimental 120, 144 and unlimited. 60 FPS is experimental too: the game was only tuned for 30, so switch back if anything plays too fast or breaks.

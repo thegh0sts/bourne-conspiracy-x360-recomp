@@ -1,6 +1,6 @@
 **Keyboard and mouse, and camera turn speed.** You need your own copy of the game (Xbox 360 disc image); nothing from the game is included.
 
-**Download `BourneConspiracy.exe`** and run it. Already on 0.2.0? Run the new exe; it opens as the launcher and keeps your settings.
+**Download `BourneConspiracy.exe`** and run it. Already on 0.2.0? Run the new exe; it opens as the launcher and keeps your settings. Then click **Reinstall from a disc image...** on the settings screen so the game is rebuilt with the new code.
 
 ### Highlights
 - **Keyboard and mouse** (experimental): tick **Keyboard and mouse** under Controls. W A S D, mouse camera, left mouse fire, right mouse aim; a controller still works alongside.

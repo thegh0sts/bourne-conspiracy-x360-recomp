@@ -4,6 +4,18 @@ A native Windows port of *Robert Ludlum's The Bourne Conspiracy* (Xbox 360, titl
 
 **This repository contains no game files.** You need your own legally obtained copy of the game.
 
+## Install and update
+
+For players: download **`BourneConspiracy.exe`** from the [latest release](https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest) and run it. It builds the game on your PC from your own disc image (it installs the Visual Studio build tools it needs), then becomes the launcher.
+
+**Every new release needs the game reinstalled.** Each release changes the game's code, and the game is built on your PC, so the new code only takes effect once it's rebuilt:
+
+1. Download the new `BourneConspiracy.exe` and run it. It opens as the launcher and keeps your settings.
+2. Click **Reinstall from a disc image...** on the settings screen and pick your disc image again. Keep your ISO for this.
+3. Wait for the build (several minutes; the game files aren't extracted again if they're already there).
+
+The launcher tells you when a new release is out (and **Check for updates** asks on demand).
+
 ## Status
 
 Early, but playable: boots through the intro videos and main menu into gameplay, tested through the first levels.

@@ -1,6 +1,6 @@
 **Keyboard and mouse, finished: mouse look, your keys in every prompt, W / A / S / D for every QTE, and an update check.** You need your own copy of the game (Xbox 360 disc image); nothing from the game is included.
 
-**Download `BourneConspiracy.exe`** and run it. Already on 0.2.4 or 0.2.4-1? Run the new exe; it opens as the launcher and keeps your settings. Then click **Reinstall from a disc image...** on the settings screen so the game is rebuilt with the new code and SDK.
+**Download `BourneConspiracy.exe`** and run it. Already on 0.2.4 or 0.2.4-1? Run the new exe; it opens as the launcher and keeps your settings. Then click **Reinstall from a disc image...** on the settings screen and pick your disc image, so the game is rebuilt with the new code and SDK. **This is needed for every release**: nothing in this one takes effect until the game is reinstalled.
 
 ### New
 - **Mouse look**: the camera turns by as much as the mouse moves, at any frame rate. No more dead zone, slow start or speed-up after half a second. Set the speed with the launcher's mouse sensitivity slider.

@@ -25,6 +25,7 @@
 
 #include "generated/default/tbc_pch.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -135,9 +136,12 @@ struct Rect {
 struct State {
   std::mutex mutex;
   bool ready = false;
-  uint32_t button_class = 0, focused_class = 0;
-  std::unordered_map<uint32_t, bool> is_button;  // class -> descends from Engine.UIButton
-  std::vector<uint32_t> buttons;                 // UIButtons in Transient (live menus)
+  uint32_t button_class = 0, slider_class = 0, checkbox_class = 0, label_button_class = 0;
+  uint32_t focused_class = 0, disabled_class = 0;
+  // class -> kind: 0 not a control, 1 button, 2 checkbox, 3 slider (label buttons count as 1)
+  std::unordered_map<uint32_t, int> kind;
+  std::vector<uint32_t> buttons;                 // the menus' controls (buttons, checkboxes, sliders)
+  int slider_repeat = 0;                         // polls until the next slider step
   std::chrono::steady_clock::time_point next_scan{};
   bool menu = false;           // last poll: a menu was up (mouse released)
   long last_x = -1, last_y = -1;
@@ -156,15 +160,16 @@ State& S() {
   return s;
 }
 
-bool Focused(const State& s, const uint8_t* base, uint32_t o) {
-  if (!Readable(o + kStateStack + 8)) return false;
+bool HasState(const uint8_t* base, uint32_t o, uint32_t state_class) {
+  if (!state_class || !Readable(o + kStateStack + 8)) return false;
   const uint32_t arr = Load32(base, o + kStateStack), n = Load32(base, o + kStateStack + 4);
   for (uint32_t k = 0; k < n && k < 8 && IsObject(arr); ++k) {
     const uint32_t st = Load32(base, arr + 4 * k);
-    if (IsObject(st) && Load32(base, st + 0x30) == s.focused_class) return true;
+    if (IsObject(st) && Load32(base, st + 0x30) == state_class) return true;
   }
   return false;
 }
+bool Focused(const State& s, const uint8_t* base, uint32_t o) { return HasState(base, o, s.focused_class); }
 
 Rect Bounds(const uint8_t* base, uint32_t o) {
   return {LoadF(base, o + kRenderBounds), LoadF(base, o + kRenderBounds + 4), LoadF(base, o + kRenderBounds + 8),
@@ -174,13 +179,18 @@ Rect Bounds(const uint8_t* base, uint32_t o) {
 // Classes, once.
 void Init(State& s, const PPCContext& ctx, uint8_t* base) {
   s.button_class = FindObject(ctx, base, "Engine.UIButton");
+  s.slider_class = FindObject(ctx, base, "Engine.UISlider");
+  s.checkbox_class = FindObject(ctx, base, "Engine.UICheckbox");
+  s.label_button_class = FindObject(ctx, base, "Engine.UILabelButton");
   s.focused_class = FindObject(ctx, base, "Engine.UIState_Focused");
+  s.disabled_class = FindObject(ctx, base, "Engine.UIState_Disabled");
   s.ready = s.button_class && s.focused_class;
   REXLOG_INFO("menu_mouse: UIButton {:08X}, UIState_Focused {:08X}{}", s.button_class, s.focused_class,
               s.ready ? "" : " - not found, the mouse stays captured in menus");
 }
 
-// Every UIButton that's a live menu's (in the Transient package, where scenes are opened).
+// Every control of the open menus: buttons (UIButton and subclasses: UILabelButton,
+// UICheckbox) and sliders (UISlider), found with --ui_probe in the main menu and Options.
 void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
   s.buttons.clear();
   const uint32_t data = Load32(base, 0x83655774), count = Load32(base, 0x83655778);
@@ -190,11 +200,15 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
     if (!IsObject(o) || !Readable(o + kRenderBounds + 16)) continue;
     const uint32_t cls = Load32(base, o + 0x30);
     if (!IsObject(cls)) continue;
-    auto it = s.is_button.find(cls);
-    if (it == s.is_button.end()) {
-      bool b = false;
-      for (uint32_t c : ClassChain(base, cls)) b |= c == s.button_class;
-      it = s.is_button.emplace(cls, b).first;
+    auto it = s.kind.find(cls);
+    if (it == s.kind.end()) {
+      int k = 0;
+      for (uint32_t c : ClassChain(base, cls)) {
+        if (c == s.slider_class) k = 3;
+        else if (c == s.checkbox_class && k < 2) k = 2;
+        else if (c == s.button_class && k < 1) k = 1;
+      }
+      it = s.kind.emplace(cls, k).first;
     }
     if (!it->second || !IsObject(Load32(base, o + kOwnerScene))) continue;
     s.buttons.push_back(o);
@@ -290,12 +304,17 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     s.next_scan = now + std::chrono::milliseconds(500);  // a full object scan: not every frame
     Scan(s, ctx, base);
   }
-  // The focused option: its scene is the menu on screen.
-  uint32_t focused = 0;
+  // The focused option: its scene is the menu on screen. A menu opened on top of another (Options
+  // over the main menu) leaves the one below with its focused option too, so the focused
+  // option of the newest scene (the highest object index, +0x04) wins.
+  uint32_t focused = 0, focused_index = 0;
   for (uint32_t o : s.buttons) {
-    if (IsObject(o) && Focused(s, base, o)) {
+    if (!IsObject(o) || !Focused(s, base, o)) continue;
+    const uint32_t scene = Load32(base, o + kOwnerScene);
+    const uint32_t index = IsObject(scene) ? Load32(base, scene + 4) : 0;
+    if (!focused || index > focused_index) {
       focused = o;
-      break;
+      focused_index = index;
     }
   }
   // A focused option alone isn't enough: a closed menu's last option can keep its focus state.
@@ -324,12 +343,36 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     return;
   }
   if (Cursor(base, x, y, rx, ry)) {
+    // The menu's controls. A checkbox or slider and the label button beside it (Options:
+    // "Subtitles", "Music Volume") make one control: the label isn't focusable on its own, so
+    // its rectangle joins the control's and it isn't a target itself. Disabled options aren't
+    // targets.
     const uint32_t scene = Load32(base, focused + kOwnerScene);
+    struct Hit { uint32_t o; Rect r; };
+    std::vector<Hit> controls, labels;
     for (uint32_t o : s.buttons) {
       if (!IsObject(o) || Load32(base, o + kOwnerScene) != scene) continue;
-      const Rect r = Bounds(base, o);
-      if (x >= r.l && x < r.r && y >= r.t && y < r.b) {
-        hovered = o;
+      const int k = s.kind[Load32(base, o + 0x30)];
+      (k >= 2 ? controls : labels).push_back({o, Bounds(base, o)});
+    }
+    auto same_row = [](const Rect& a, const Rect& b) {
+      const float overlap = std::min(a.b, b.b) - std::max(a.t, b.t);
+      return overlap > 0.5f * std::min(a.b - a.t, b.b - b.t);
+    };
+    for (const Hit& l : labels) {
+      bool joined = false;
+      for (Hit& c : controls) {
+        if (same_row(c.r, l.r) && l.r.l < c.r.r + 40 && l.r.r > c.r.l - 40) {
+          c.r = {std::min(c.r.l, l.r.l), std::min(c.r.t, l.r.t), std::max(c.r.r, l.r.r), std::max(c.r.b, l.r.b)};
+          joined = true;
+        }
+      }
+      if (!joined) controls.push_back(l);
+    }
+    for (const Hit& h : controls) {
+      if (x >= h.r.l && x < h.r.r && y >= h.r.t && y < h.r.b &&
+          (h.o == focused || !HasState(base, h.o, s.disabled_class))) {
+        hovered = h.o;
         break;
       }
     }
@@ -373,9 +416,26 @@ void MenuMouse(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     }
   }
   // Mouse buttons (the triggers in keyboard-and-mouse mode): left = A on an option, right = B.
+  // On a slider, holding the left button on its left or right part steps it down or up.
   const bool left = base[state + 7] > 64, right = base[state + 6] > 64;
   base[state + 6] = base[state + 7] = 0;
-  s.click_a = left && !s.dead && (s.click_a || (hovered && hovered == focused));
+  const bool on_slider = hovered && hovered == focused && s.kind[Load32(base, focused + 0x30)] == 3;
+  if (left && on_slider && !s.dead && !s.target) {
+    const Rect r = Bounds(base, focused);  // the slider bar itself, without its label
+    if (s.slider_repeat > 0) {
+      --s.slider_repeat;
+    } else if (x < r.l + (r.r - r.l) * 0.4f || x > r.r) {
+      dpad = x < r.l + (r.r - r.l) * 0.4f ? kLeft : kRight;
+      s.slider_repeat = 5;
+    } else if (x > r.l + (r.r - r.l) * 0.6f) {
+      dpad = kRight;
+      s.slider_repeat = 5;
+    }
+    s.click_a = false;
+  } else {
+    s.slider_repeat = 0;
+    s.click_a = left && !s.dead && !on_slider && (s.click_a || (hovered && hovered == focused));
+  }
   s.click_b = right;
   SetButtons(base, state, uint16_t((s.click_a ? kA : 0) | (s.click_b ? kB : 0) | dpad), 0);
 }

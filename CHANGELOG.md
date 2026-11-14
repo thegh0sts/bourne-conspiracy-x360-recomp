@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (0.2.7)
+
+### Changes
+- **More responsive mouse look.**
+  - New launcher setting **Mouse camera smoothing** (default 10%): how much of the game's camera easing stays with mouse look. 0.2.5-0.2.6 kept 25%; lower is snappier. It never goes below 1% of the game's.
+  - Fast flicks no longer lose movement: the camera's full-stick turn rate is now 6x the game's (was 4x), and any movement still past it is carried into the next frames instead of dropped (`--mouse_look_max_carry`, 180 degrees; 0 drops it as before).
+
 ## 0.2.6 (2026-11-15)
 
 PlayStation button prompts, controller swapping mid-game, and a fix for the game closing at startup when the Documents folder has non-English letters.

@@ -38,6 +38,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -237,6 +238,7 @@ uint32_t GuestString(State& s, uint8_t* base, const std::string& text) {
 }
 
 constexpr auto kRecent = std::chrono::milliseconds(500);
+std::atomic<int64_t> g_title_until{0};  // steady_clock ticks: PRESS START on screen until then
 
 // Binds and --mnk_mode are read again every half second, so a change made while the game
 // runs (the runtime's settings overlay) shows up in the labels.
@@ -368,7 +370,10 @@ extern "C" REX_FUNC(sub_82C49D88) {
     menu = now - s.menu_seen < kRecent;
     // The title screen's "PRESS START (Start)": A takes it too, so it shows A's menu key
     // (Enter) rather than Start's (Esc, which reads like "quit").
-    if (Is(base, text, "PRESS START (")) s.title_seen = now;
+    if (Is(base, text, "PRESS START (")) {
+      s.title_seen = now;
+      g_title_until.store((now + kRecent).time_since_epoch().count());
+    }
     const bool title = now - s.title_seen < kRecent;
     if (REXCVAR_GET(keyboard_mouse_attacks)) {
       // Remember the words on screen and where (not the buttons themselves).
@@ -456,3 +461,10 @@ extern "C" REX_FUNC(sub_82C49D88) {
   ctx = call;
   ctx.r3.u64 = result;
 }
+
+namespace tbc::prompts {
+bool TitleScreenUp() {
+  return std::chrono::steady_clock::now().time_since_epoch().count() < g_title_until.load() &&
+         rex::cvar::Query<bool>("mnk_mode");
+}
+}  // namespace tbc::prompts

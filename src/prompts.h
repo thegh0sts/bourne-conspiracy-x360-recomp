@@ -11,4 +11,7 @@ namespace tbc::prompts {
 void TraceText(PPCContext& ctx, uint8_t* base);
 // A game object's full name ("Package.Object"), through the game's own GetPathName.
 std::string ObjectPathName(const PPCContext& ctx, uint8_t* base, uint32_t object);
+// Whether the title screen's "PRESS START" was drawn in the last half second, with keyboard
+// and mouse on (keyboard_prompts.cpp): its prompt shows Enter, so Enter has to work there.
+bool TitleScreenUp();
 }  // namespace tbc::prompts

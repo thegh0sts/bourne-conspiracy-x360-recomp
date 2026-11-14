@@ -17,6 +17,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "prompts.h"
 #include "qte.h"
 
 REXCVAR_DEFINE_BOOL(input_trace, false, "Debug",
@@ -63,6 +64,15 @@ extern "C" REX_FUNC(sub_823213D8) {
     return;
   }
   tbc::qte::OnControllerState(base, state);
+  // Title screen, keyboard and mouse: its prompt shows Enter (A's menu key), but the screen
+  // only takes Start. A press of A (Enter, Space) also presses Start there.
+  if (tbc::prompts::TitleScreenUp()) {
+    const uint16_t buttons = Load16(base, state + 4);
+    if (buttons & 0x1000) {
+      base[state + 4] = uint8_t((buttons | 0x0010) >> 8);
+      base[state + 5] = uint8_t(buttons | 0x0010);
+    }
+  }
   if (REXCVAR_GET(trigger_ramp)) {
     std::lock_guard<std::mutex> lock(g_mutex);
     base[state + 6] = Ramp(g_ramp[user][0], base[state + 6]);

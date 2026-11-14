@@ -420,6 +420,7 @@ def load_settings():
     except (OSError, ValueError):
         pass
     s["render_scale"] = OLD_SCALE_NAMES.get(s["render_scale"], s["render_scale"])
+    s["mouse_sensitivity"] = min(400, max(10, int(s.get("mouse_sensitivity", 100))))  # slider was 10-1000
     s.pop("aspect", None)  # the old separate "picture shape" setting: now set by the resolution
     if s.get("resolution") not in RESOLUTIONS + ULTRAWIDE:
         s["resolution"] = DEFAULTS["resolution"]
@@ -824,9 +825,13 @@ class SettingsView(tk.Frame):
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
         self._link(line, "Edit keys...", self.edit_keys).pack(side="left", padx=14)
-        self._slider(box, 2, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 1000, 10)
-        self._slider(box, 3, "turn_speed", "Camera turn speed (%)", 50, 300, 10)
-        self._check(box, 4, "mouse_attacks", "Fights: left / right mouse = light / heavy attack")
+        self._check(box, 2, "mouse_look", "Mouse turns the camera directly (mouse look)")
+        self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
+        self._slider(box, 4, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
+        tk.Label(box, text="Stick turn speed is for a controller and the arrow keys; with mouse look the "
+                           "camera follows the mouse.", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
+                 ).grid(row=5, column=0, columnspan=2, sticky="w")
+        self._check(box, 6, "mouse_attacks", "Fights: left / right mouse = light / heavy attack")
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)

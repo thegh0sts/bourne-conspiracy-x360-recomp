@@ -1,0 +1,19 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index f27ba2e..dbdcb1b 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1016,7 +1016,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                                                                   : fetch.dimension == xe::DataDimension::k1D ||
+                                                                         fetch.dimension == xe::DataDimension::k2DOrStacked;
+       const bool flat = fetch.dimension != xe::DataDimension::k3D && fetch.dimension != xe::DataDimension::kCube;
+-      if (!compatible) {
++      // BOTS_GFX_NO_TEXTURES=1 (tbc, debugging 007's menu): every fetch reads the placeholder image (white with
++      // BOTS_NULL_TEXTURE_WHITE=1), to tell a texture that samples as zero from a vertex colour that is zero.
++      static const bool no_textures = [] {
++        const char* v = std::getenv("BOTS_GFX_NO_TEXTURES");
++        return v && *v == '1';
++      }();
++      if (!compatible || no_textures) {
+         view = null_image->view;
+       } else if (Image* resolved = flat ? ResolvedTexture(fetch) : nullptr) {
+         // Render-to-texture: a resolve destination is sampled straight from its host image.

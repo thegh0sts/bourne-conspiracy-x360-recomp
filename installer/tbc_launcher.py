@@ -564,6 +564,63 @@ def apply_intro_skip(game: Path, skip: bool) -> None:
             off.rename(on)
 
 
+def documents_dir():
+    """The Documents folder the game puts its save data in (FOLDERID_Documents), or None."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", wintypes.DWORD), ("d2", wintypes.WORD), ("d3", wintypes.WORD), ("d4", ctypes.c_ubyte * 8)]
+
+    docs = GUID(0xFDD39AD0, 0x238F, 0x46AF, (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
+    out = ctypes.c_wchar_p()
+    try:
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(docs), 0, None, ctypes.byref(out)) != 0:
+            return None
+        return Path(out.value)
+    except (OSError, AttributeError):
+        return None
+    finally:
+        if out:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+
+
+def ansi_safe(path) -> bool:
+    """Whether a path survives the Windows ANSI code page (older runtime builds crash on ones that don't)."""
+    try:
+        str(path).encode("mbcs", "strict")
+        return True
+    except UnicodeEncodeError:
+        return False
+    except LookupError:  # no "mbcs" codec: not Windows
+        return True
+
+
+def user_data_args(info, exe: Path) -> list:
+    """Point the game's save data at <install>\\userdata when the Documents path has characters the
+    ANSI code page can't hold (an Arabic or Cyrillic OneDrive Documents folder, say). Builds made
+    before the SDK's UTF-8 path fix close a few seconds after starting with such a path. A
+    user_data_root already set in tbc.toml is left alone."""
+    docs = documents_dir()
+    if docs is None or ansi_safe(docs):
+        return []
+    try:
+        if "user_data_root" in (exe.parent / "tbc.toml").read_text(encoding="utf-8", errors="replace"):
+            return []
+    except OSError:
+        pass
+    target = logs_dir(info) / "userdata"
+    if not ansi_safe(target):
+        return []
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return []
+    return ["--user_data_root", str(target)]
+
+
 def logs_dir(info) -> Path:
     return Path(info.get("root") or Path(info["exe"]).parent)
 
@@ -1030,6 +1087,7 @@ class SettingsView(tk.Frame):
             messagebox.showwarning("Play", f"Couldn't change the intro movies ({e}). Starting anyway.")
         log = Path(self.info.get("root", exe.parent)) / "game.log"
         args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
+        args += user_data_args(self.info, exe)
         try:
             if RENDERER_PLUGIN.get(s.get("renderer")) == "native" and not any(exe.parent.glob("rexgpu-native*.dll")):
                 messagebox.showwarning("Play", "The native renderer isn't installed (this build's SDK "

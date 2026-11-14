@@ -6,7 +6,7 @@
 - **Mouse look**: the camera turns by as much as the mouse moves, at any frame rate. No more dead zone, slow start or speed-up after half a second. Set the speed with the launcher's mouse sensitivity slider.
 - **Your keys in the prompts**: key images instead of Xbox buttons in text prompts, on the door / interact badge, the takedown meter and the QTE prompts.
 - **Every QTE on W / A / S / D**, multi-takedowns and boss takedowns included. The QTE prompt shows the key in the button's place on the diamond.
-- **Update check** in the launcher: it tells you when a new release is out (and there's a "Check for updates" link).
+- **Updates from the launcher**: it tells you when a new release is out and can download it (**Download and update**), and after an update it shows a notice until the game is reinstalled. (From 0.2.5 on: to get 0.2.5 itself, download it below.)
 
 ### Changes
 - **The keyboard layout is fixed** (no more key editor): the prompts and key images are drawn for it. "Key binds" in the launcher shows it; also [here](https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md).

@@ -256,15 +256,42 @@ def version_key(tag):
 
 
 def latest_release(timeout=5):
-    """(tag, page URL) of the newest GitHub release, or None if it can't be had."""
+    """(tag, page URL, BourneConspiracy.exe download URL or None) of the newest GitHub release,
+    or None if it can't be had."""
     req = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json",
                                                         "User-Agent": f"BourneConspiracyPC-launcher/{VERSION}"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
-        return data["tag_name"], data.get("html_url") or RELEASES_URL
+        exe = next((a.get("browser_download_url") for a in data.get("assets", [])
+                    if a.get("name", "").lower() == "bourneconspiracy.exe"), None)
+        return data["tag_name"], data.get("html_url") or RELEASES_URL, exe
     except Exception:  # offline, rate-limited, blocked: no update notice, nothing else
         return None
+
+
+def built_version(info):
+    """The launcher version the installed game was built with; installs from before 0.2.5
+    didn't record it."""
+    return (info or {}).get("version") or "0.2.4-1"
+
+
+def download_file(url, dest, progress, timeout=30):
+    """Downloads url to dest (via a .part file), calling progress(fraction or None)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    req = urllib.request.Request(url, headers={"User-Agent": f"BourneConspiracyPC-launcher/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(part, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = r.read(1 << 16)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            progress(done / total if total else None)
+    part.replace(dest)
 
 
 def kbm_binds(s):
@@ -335,8 +362,10 @@ def load_install():
 
 
 def save_install(exe, game, root=None):
+    """Remembers the install, and that this launcher's version built it ("version"): a newer
+    launcher then knows the game needs rebuilding (SettingsView's rebuild notice)."""
     LAUNCHER_HOME.mkdir(parents=True, exist_ok=True)
-    info = {"exe": str(exe), "game": str(game), "root": str(root or Path(exe).parent)}
+    info = {"exe": str(exe), "game": str(game), "root": str(root or Path(exe).parent), "version": VERSION}
     install_info_path().write_text(json.dumps(info, indent=2), encoding="utf-8")
     return info
 
@@ -669,6 +698,20 @@ class SettingsView(tk.Frame):
         # Filled in by the update check, if a newer release is out.
         self.update_line = tk.Frame(self, bg=BG)
         self.update_line.pack(fill="x", padx=28)
+        # This launcher is newer than the build of the game: the new code isn't in the game until
+        # it's reinstalled (rebuilt), so say so where it can't be missed.
+        if version_key(built_version(info)) < version_key(VERSION):
+            box = tk.Frame(self, bg=ACCENT)
+            box.pack(fill="x", padx=28, pady=(6, 2))
+            tk.Label(box, text=f"Your game was built with {built_version(info)}; this launcher is {VERSION}. "
+                               "Reinstall to rebuild the game with this version's changes.",
+                     font=("Segoe UI", 10, "bold"), fg="white", bg=ACCENT, wraplength=520, justify="left"
+                     ).pack(side="left", padx=10, pady=8)
+            tk.Button(box, text="Reinstall now", command=on_reinstall, font=("Segoe UI", 10, "bold"),
+                      bd=0, padx=10, pady=4).pack(side="right", padx=10)
+            self.needs_rebuild = True
+        else:
+            self.needs_rebuild = False
         self._update_shown = False
         self.check_updates(manual=False)
 
@@ -843,20 +886,71 @@ class SettingsView(tk.Frame):
             if found and version_key(found[0]) > version_key(VERSION):
                 self._show_update(*found)
                 if manual:
-                    self.status.set(f"Version {found[0].lstrip('vV')} is out: use the Download link above.")
+                    self.status.set(f"Version {found[0].lstrip('vV')} is out: \"Download and update\" above.")
             elif manual:
                 self.status.set(f"You have the latest version ({VERSION})." if found
                                 else "Couldn't reach GitHub to check for updates.")
         except tk.TclError:  # the view was replaced (reinstall) meanwhile
             pass
 
-    def _show_update(self, tag, url):
+    def _show_update(self, tag, url, exe_url=None):
         if self._update_shown:
             return
         self._update_shown = True
-        tk.Button(self.update_line, text=f"Update available: {tag.lstrip('vV')} (you have {VERSION}). Download...",
-                  command=lambda: webbrowser.open(url), font=("Segoe UI", 10, "bold", "underline"), fg=ACCENT,
-                  bg=BG, activebackground=BG, activeforeground=FG, bd=0, cursor="hand2").pack(anchor="w")
+        version = tag.lstrip("vV")
+        tk.Label(self.update_line, text=f"Update available: {version} (you have {VERSION}).",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=BG).pack(side="left")
+        if exe_url:
+            tk.Button(self.update_line, text="Download and update", font=("Segoe UI", 10, "bold"), bd=0, padx=8,
+                      command=lambda: self.download_update(version, exe_url)).pack(side="left", padx=10)
+        self._link_bg(self.update_line, "What's new", lambda: webbrowser.open(url)).pack(side="left")
+
+    def _link_bg(self, parent, text, cmd):
+        return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 9, "underline"), fg=FG, bg=BG,
+                         activebackground=BG, activeforeground=ACCENT, bd=0, cursor="hand2")
+
+    def download_update(self, version, exe_url):
+        """Downloads the new release's exe beside the launcher's settings, then offers to start it.
+        The new launcher opens on the same install and asks for the reinstall (the rebuild
+        notice), which also makes it the launcher the desktop shortcut starts."""
+        dest = LAUNCHER_HOME / "updates" / f"BourneConspiracy-{version}.exe"
+        state = {"frac": None, "done": False, "error": None}
+
+        def work():
+            try:
+                download_file(exe_url, dest, lambda f: state.update(frac=f))
+            except Exception as e:  # network, disk: reported below
+                state["error"] = e
+            state["done"] = True
+
+        def poll():
+            try:
+                if not self.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if not state["done"]:
+                f = state["frac"]
+                self.status.set(f"Downloading {version}..." + (f" {int(f * 100)}%" if f is not None else ""))
+                self.after(250, poll)
+                return
+            if state["error"]:
+                self.status.set(f"Download failed ({state['error']}). Use \"What's new\" to download it yourself.")
+                return
+            self.status.set(f"Downloaded {version} to {dest.parent}.")
+            if messagebox.askyesno("Update", f"{version} is downloaded.\n\nStart it now? This launcher closes, "
+                                             "and the new one asks you to reinstall the game (pick your disc "
+                                             "image) so the game is rebuilt with the update."):
+                try:
+                    subprocess.Popen([str(dest)], cwd=str(dest.parent))
+                except OSError as e:
+                    messagebox.showerror("Update", f"Couldn't start {dest}: {e}")
+                    return
+                self.winfo_toplevel().destroy()
+
+        threading.Thread(target=work, daemon=True).start()
+        self.status.set(f"Downloading {version}...")
+        self.after(250, poll)
 
     def show_keys(self):
         win = tk.Toplevel(self)
@@ -909,6 +1003,10 @@ class SettingsView(tk.Frame):
                                             "your launcher settings and any crash dump (no game files).")
 
     def play(self):
+        if self.needs_rebuild and not messagebox.askyesno(
+                "Play", f"The game hasn't been rebuilt for {VERSION} yet, so this version's changes aren't "
+                        "in it, and its new settings may not work.\n\nPlay anyway? (Reinstall now to rebuild it.)"):
+            return
         s = self.collect()
         save_settings(s)
         exe, game = Path(self.info["exe"]), Path(self.info["game"])

@@ -10,11 +10,9 @@ For players: download **`BourneConspiracy.exe`** from the [latest release](https
 
 **Every new release needs the game reinstalled.** Each release changes the game's code, and the game is built on your PC, so the new code only takes effect once it's rebuilt:
 
-1. Download the new `BourneConspiracy.exe` and run it. It opens as the launcher and keeps your settings.
-2. Click **Reinstall from a disc image...** on the settings screen and pick your disc image again. Keep your ISO for this.
+1. Get the new `BourneConspiracy.exe`: the launcher tells you when a release is out, and **Download and update** downloads it and starts it (or download it from the releases page and run it). It opens as the launcher and keeps your settings.
+2. The new launcher shows a red notice that the game needs rebuilding. Click **Reinstall now** (or **Reinstall from a disc image...**) and pick your disc image again. Keep your ISO for this.
 3. Wait for the build (several minutes; the game files aren't extracted again if they're already there).
-
-The launcher tells you when a new release is out (and **Check for updates** asks on demand).
 
 ## Status
 

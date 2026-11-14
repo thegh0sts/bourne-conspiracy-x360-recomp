@@ -1,6 +1,6 @@
 # Changelog
 
-**Updating to any release:** run the new `BourneConspiracy.exe`, then click **Reinstall from a disc image...** on the launcher's settings screen and pick your disc image. The game is built on your PC, so a release's changes only take effect once it's rebuilt. Your settings are kept.
+**Updating to any release:** run the new `BourneConspiracy.exe` (from 0.2.5, the launcher can download it for you), then click **Reinstall from a disc image...** (or **Reinstall now** on the red notice) and pick your disc image. The game is built on your PC, so a release's changes only take effect once it's rebuilt. Your settings are kept.
 
 ## 0.2.5 (2026-11-14)
 
@@ -14,7 +14,8 @@ Run the new exe, then click **Reinstall from a disc image...** on the launcher's
 - **Your keys in the prompts.** Text prompts show the key's own image where they showed an Xbox button: W, A, S, D, E, F, G, Q, R, Space, Shift, Ctrl, Enter, Esc, Backspace, and the left and right mouse buttons (`assets/keys`, installed beside the game as `keys/`). The images go into free space on the button font's texture when the game starts, so they're sized and placed exactly like the buttons. Every button in that font now shows its key: face buttons, triggers, bumpers, stick presses, d-pad, Start and Back.
 - **Keys on the HUD badges and QTE prompts.** The A beside doors and other things to interact with, the B on the takedown meter, and the quick-time-event prompts aren't text but parts of HUD textures, drawn in the 3D scene. The game now paints the key images straight into those textures once they're loaded: Space by doors, F on the takedown meter, and W / A / S / D on QTE prompts, in the button's place on the diamond. The animated prompt shows the key to press large, with the other three small and faded.
 - **W / A / S / D for every QTE.** Multi-takedowns and boss takedowns now take them too (read from the takedown's own state, `BnTakedownBranch`, since they don't use the normal QTE event).
-- **Launcher update check.** When it opens, the launcher asks GitHub for the newest release and shows a Download link if there's a newer one. "Check for updates" (next to Open logs) does the same on demand and says what it found.
+- **Launcher updates.** When it opens (and with **Check for updates**, next to Open logs), the launcher asks GitHub for the newest release. If there's a newer one, **Download and update** downloads its exe and offers to start it.
+- **Rebuild notice.** The launcher now records which version built the game. When the launcher is newer than the game's build (after an update), a red notice says the game needs rebuilding, with a **Reinstall now** button, and Play asks first. Installs from before 0.2.5 count as built with 0.2.4-1.
 
 ### Changes
 - **The keyboard layout is fixed.** The prompts, the key images in the HUD, the fight attacks on the mouse buttons and QTEs on W / A / S / D are all built around it, so rebinding could break them. The key editor is gone; **Key binds** in the launcher opens a window listing the layout (also in [docs/keyboard-and-mouse.md](docs/keyboard-and-mouse.md)).

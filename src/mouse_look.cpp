@@ -224,6 +224,25 @@ void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
               words(g_player.camera + 0x2A0, 8));
 }
 
+// Once per strategy: its behaviours, by class (what else might pull the view around).
+void LogBehaviours(const PPCContext& ctx, uint8_t* base, uint32_t strategy) {
+  static uint32_t logged = 0;
+  if (strategy == logged || !IsObject(strategy)) return;
+  logged = strategy;
+  const uint32_t data = Load32(base, strategy + 0xF8), count = Load32(base, strategy + 0xFC);
+  if (!Readable(data) || count > 32) return;
+  std::string out;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t b = Load32(base, data + 4 * i);
+    if (!IsObject(b) || !IsObject(Load32(base, b + 0x30))) continue;
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), " %08X ", b);
+    out += buf + ClassName(ctx, base, Load32(base, b + 0x30));
+  }
+  REXLOG_INFO("mouse_look_direct: strategy {:08X} ({}) behaviours:{}", strategy,
+              ClassName(ctx, base, Load32(base, strategy + 0x30)), out);
+}
+
 void AddRotator(uint8_t* base, uint32_t rot, int32_t pitch, int32_t yaw) {
   Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + pitch));
   Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + yaw));
@@ -285,13 +304,15 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     // Diagnostics, once a second: whether last poll's addition is still there (or the game
     // rewrote the angles from something else).
     static std::chrono::steady_clock::time_point next_log{};
-    static int32_t expect_ccr = 0, expect_smooth = 0;
+    static int32_t expect_ccr = 0, expect_smooth = 0, expect_orbit = 0;
     static bool have_expect = false;
     if (now >= next_log && have_expect) {
       next_log = now + std::chrono::seconds(1);
-      REXLOG_INFO("mouse_look_direct: control yaw {} (expected {}), smoothed yaw {} (expected {}), smoother {:08X}",
+      REXLOG_INFO("mouse_look_direct: control yaw {} (expected {}), smoothed yaw {} (expected {}), orbit yaw {} "
+                  "(expected {}), smoother {:08X}",
                   int32_t(Load32(base, input + 0x184)), expect_ccr,
-                  smoother ? int32_t(Load32(base, smoother + 0x48)) : 0, expect_smooth, smoother);
+                  smoother ? int32_t(Load32(base, smoother + 0x48)) : 0, expect_smooth,
+                  int32_t(Load32(base, g_player.camera + 0x370 + 0x3C)), expect_orbit, smoother);
     }
     if (!moved) return;
     // Degrees to rotator units (65536 a turn), keeping the fraction for the next poll.
@@ -306,8 +327,21 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
     // pitch, yaw, roll.
     AddRotator(base, input + 0x180, add_pitch, add_yaw);
     if (smoother) AddRotator(base, smoother + 0x44, add_pitch, add_yaw);
+    // The orbit the camera springs back to (a probe found it fixed at the level's start angle
+    // while the view was pulled back to it): the strategy result's second rotator, +0x38, in
+    // the camera state (strategy +0xE4 -> +0x3C) and the camera's copy (+0x370).
+    const uint32_t strategy = Load32(base, g_player.camera + 0x350);
+    const uint32_t cam_state = IsObject(strategy) ? Load32(base, strategy + 0xE4) : 0;
+    auto add_orbit = [&](uint32_t rot) {
+      const int32_t p0 = int32_t(Load32(base, rot)), y0 = int32_t(Load32(base, rot + 4));
+      if (std::abs(p0) < 0x200000 && std::abs(y0) < 0x200000) AddRotator(base, rot, add_pitch, add_yaw);
+    };
+    if (IsObject(cam_state)) add_orbit(cam_state + 0x3C + 0x38);
+    add_orbit(g_player.camera + 0x370 + 0x38);
+    LogBehaviours(ctx, base, strategy);
     expect_ccr = int32_t(Load32(base, input + 0x184));
     expect_smooth = smoother ? int32_t(Load32(base, smoother + 0x48)) : 0;
+    expect_orbit = int32_t(Load32(base, g_player.camera + 0x370 + 0x3C));
     have_expect = true;
     if (!g_logged) {
       g_logged = true;

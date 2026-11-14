@@ -35,7 +35,7 @@ VERSION = "0.2.4-1"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
-# The keyboard-and-mouse layout, explained (the launcher's "Key binds" link).
+# The keyboard-and-mouse layout, explained (the "Key binds" window's full-page link).
 CONTROLS_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
@@ -201,6 +201,47 @@ KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 # The layout is fixed: the button prompts, the key glyphs drawn into the HUD's badges and QTE
 # prompts (key_glyphs.cpp), the fight attacks on the mouse buttons and the QTEs on W / A / S / D
 # are all set up around it, so it isn't editable. The launcher links to docs/keyboard-and-mouse.md.
+# The keyboard-and-mouse layout as the "Key binds" window shows it (docs/keyboard-and-mouse.md
+# has the same, with notes).
+CONTROLS = [
+    ("On foot", [
+        ("W / A / S / D", "Move"),
+        ("Mouse", "Look around"),
+        ("Left mouse", "Fire"),
+        ("Right mouse", "Aim; in cover with a gun, pop out"),
+        ("Shift", "Sprint"),
+        ("Ctrl", "Crouch"),
+        ("Space or Enter", "Action: doors, climb, vault, cover; block"),
+        ("F or Backspace", "Takedown; skip cutscenes"),
+        ("E or R", "Reload"),
+        ("Q", "Bourne Instinct"),
+        ("G", "Draw / holster the gun"),
+        ("Middle mouse", "Recentre the camera; switch shoulder when aiming"),
+        ("Arrow keys", "Turn the camera"),
+        ("1 / 2 / 3 / 4", "D-pad up / down / left / right"),
+        ("Esc", "Pause"),
+        ("Tab", "Back"),
+    ]),
+    ("Fights (with \"Fights: left / right mouse\" on)", [
+        ("Left mouse", "Light attack"),
+        ("Right mouse", "Heavy attack"),
+        ("Space", "Block"),
+        ("F", "Takedown, once a tier of the adrenaline meter is full"),
+    ]),
+    ("Quick-time events: the button's place on the diamond", [
+        ("W", "Top (Y)"),
+        ("A", "Left (X)"),
+        ("S", "Bottom (A)"),
+        ("D", "Right (B)"),
+    ]),
+    ("Menus", [
+        ("Enter or Space", "Accept; start on the title screen"),
+        ("Backspace or F", "Back"),
+        ("W / S", "Move up and down"),
+    ]),
+]
+
+
 def version_key(tag):
     """'v0.2.4-1' -> (0, 2, 4, 1): numbers to compare; anything else in the tag counts as 0."""
     tag = tag.strip().lstrip("vV")
@@ -823,7 +864,37 @@ class SettingsView(tk.Frame):
                   bg=BG, activebackground=BG, activeforeground=FG, bd=0, cursor="hand2").pack(anchor="w")
 
     def show_keys(self):
-        webbrowser.open(CONTROLS_URL)
+        win = tk.Toplevel(self)
+        win.title("Keyboard and mouse")
+        win.configure(bg=BG)
+        win.transient(self.winfo_toplevel())
+        win.resizable(False, False)
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=22, pady=(16, 8))
+        row = 0
+        for title, keys in CONTROLS:
+            tk.Label(body, text=title, font=("Segoe UI", 11, "bold"), fg=ACCENT, bg=BG, anchor="w"
+                     ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10 if row else 0, 2))
+            row += 1
+            for key, action in keys:
+                tk.Label(body, text=key, font=("Segoe UI", 10, "bold"), fg=FG, bg=BG, anchor="w"
+                         ).grid(row=row, column=0, sticky="w", padx=(0, 18))
+                tk.Label(body, text=action, font=("Segoe UI", 10), fg=FG, bg=BG, anchor="w"
+                         ).grid(row=row, column=1, sticky="w")
+                row += 1
+        tk.Label(body, text="The layout is fixed: the prompts and the key images in the game are drawn for it.",
+                 font=("Segoe UI", 8), fg=DIM, bg=BG, anchor="w").grid(row=row, column=0, columnspan=2,
+                                                                       sticky="w", pady=(12, 0))
+        foot = tk.Frame(win, bg=BG)
+        foot.pack(fill="x", padx=22, pady=(4, 16))
+        tk.Button(foot, text="Close", width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
+                  ).pack(side="right")
+        tk.Button(foot, text="Full page with notes", command=lambda: webbrowser.open(CONTROLS_URL),
+                  font=("Segoe UI", 9, "underline"), fg=DIM, bg=BG, activebackground=BG, activeforeground=ACCENT,
+                  bd=0, cursor="hand2").pack(side="left")
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.grab_set()
+        win.focus_set()
 
     def open_logs(self):
         folder = logs_dir(self.info)

@@ -154,6 +154,7 @@ struct State {
   bool keyboard_mode = false;                            // --mnk_mode
   std::chrono::steady_clock::time_point settings_read{};
   std::chrono::steady_clock::time_point menu_seen{};
+  std::chrono::steady_clock::time_point title_seen{};  // "PRESS START (" drawn
   // Text drawn lately, with its height on screen: tells what a button's line is about.
   struct Recent {
     double y;
@@ -365,6 +366,10 @@ extern "C" REX_FUNC(sub_82C49D88) {
       s.menu_seen = now;
     }
     menu = now - s.menu_seen < kRecent;
+    // The title screen's "PRESS START (Start)": A takes it too, so it shows A's menu key
+    // (Enter) rather than Start's (Esc, which reads like "quit").
+    if (Is(base, text, "PRESS START (")) s.title_seen = now;
+    const bool title = now - s.title_seen < kRecent;
     if (REXCVAR_GET(keyboard_mouse_attacks)) {
       // Remember the words on screen and where (not the buttons themselves).
       if (base[text + 2] != 0 || base[text + 3] != 0) {
@@ -385,16 +390,21 @@ extern "C" REX_FUNC(sub_82C49D88) {
       // A button is one character: anything longer is left alone.
       const char16_t c = char16_t(base[text] << 8 | base[text + 1]);
       const bool single = base[text + 2] == 0 && base[text + 3] == 0;
-      if (const char* bind = single ? BindFor(c) : nullptr) {
+      const char* bind = single ? BindFor(c) : nullptr;
+      if (bind && title && c == u'.') {
+        bind = "keybind_a";
+      }
+      if (bind) {
         const bool fight = REXCVAR_GET(keyboard_mouse_attacks) && !menu &&
                            (c == u'X' || c == u'Y') && FightLine(s, ctx.f2.f64, now);
-        if (const uint32_t glyph = tbc::glyphs::CharFor(KeyFor(s, bind, menu, fight))) {
+        const bool as_menu = menu || title;
+        if (const uint32_t glyph = tbc::glyphs::CharFor(KeyFor(s, bind, as_menu, fight))) {
           // The key's own glyph, one character of the button font itself.
           label_text = GuestString(s, base, std::string(1, char(glyph)));
           label_font = font;
           glyph_label = true;
         } else {
-          label_text = GuestString(s, base, LabelFor(s, bind, menu, fight));
+          label_text = GuestString(s, base, LabelFor(s, bind, as_menu, fight));
           label_font = s.label_font;
         }
       }

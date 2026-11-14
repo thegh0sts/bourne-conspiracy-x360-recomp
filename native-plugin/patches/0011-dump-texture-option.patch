@@ -1,0 +1,41 @@
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index 3405980..da76f9e 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -540,6 +540,36 @@ void Renderer::LoadTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, Guest
+     } else {
+       ApplyShuffle(host.shuffle, staging, bytes);
+     }
++    // BOTS_DUMP_TEXTURE=<hex address> (tbc, debugging 007's menu): the first 4 loads of the texture at that address
++    // write its base level to the working folder - texture-<address>-<n>-guest.bin (the guest bytes as stored, tiled
++    // and byte-swapped as in memory) and texture-<address>-<n>-host.bin (what is uploaded: untiled, swapped, decoded),
++    // with a line in the trace.
++    static const uint32_t dump_texture = [] {
++      const char* v = std::getenv("BOTS_DUMP_TEXTURE");
++      return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
++    }();
++    static uint32_t dumped = 0;
++    if (dump_texture && level == 0 && (base_page << 12) == dump_texture && dumped < 4) {
++      const uint32_t n = dumped++;
++      char name[96];
++      std::snprintf(name, sizeof(name), "texture-%08X-%u-guest.bin", dump_texture, n);
++      if (FILE* f = std::fopen(name, "wb")) {
++        if (const uint8_t* g = memory_(base_page << 12)) std::fwrite(g, 1, layout.base.level_data_extent_bytes, f);
++        std::fclose(f);
++      }
++      std::snprintf(name, sizeof(name), "texture-%08X-%u-host.bin", dump_texture, n);
++      if (FILE* f = std::fopen(name, "wb")) {
++        std::fwrite(staging, 1, size_t(upload_bytes), f);
++        std::fclose(f);
++      }
++      std::fprintf(stderr,
++                   "texture dump %u: %08X %ux%u format %u tiled %u endian %u pitch %u packed_mips %u packed_level %u "
++                   "mip %08X guest %u bytes host %llu bytes decode %d host format %d\n",
++                   n, dump_texture, width, height, uint32_t(fetch.format), uint32_t(fetch.tiled),
++                   uint32_t(fetch.endianness), uint32_t(fetch.pitch), uint32_t(fetch.packed_mips),
++                   uint32_t(layout.packed_level), mip_page << 12, uint32_t(layout.base.level_data_extent_bytes),
++                   (unsigned long long)upload_bytes, int(decode), int(image_format));
++    }
+     VkBufferImageCopy region{};
+     region.bufferOffset = offset;
+     region.bufferRowLength = blocks_x * format_info->block_width;

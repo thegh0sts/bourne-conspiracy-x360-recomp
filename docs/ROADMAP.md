@@ -90,7 +90,7 @@ It's controller emulation, so the game's stick dead zone and acceleration still 
 
 Camera tuning for the mouse (0.2.1): **Camera turn speed** scales every `[<Mode>LookScales BnLookScales]` turn rate in `Xe-BourneGame.ini` and `[BourneNative.BnPlayerInput] MaxYawRate` (100) in `Xe-BourneInput.ini`; with keyboard and mouse on, `BelowStepMultiplier` goes to 1 (over the shoulder: 0.3 below 95% stick). Confirmed written to the game's config; not yet confirmed that the game reads them at runtime (test: a controller at 300% turn speed should turn visibly faster). If it doesn't, the next options are a mouse-only dead-zone offset in the SDK's keyboard-and-mouse driver (`mnk_input_driver.cpp`, an SDK rebuild) or finding Bourne's look code. Also worth a look: `CameraSensitivity=4` (the in-game option's default) and the running camera's `MaxStickResistance`, which pulls the camera back behind Jason.
 
-## 0.2.7: more responsive mouse look (done on the `mouse-look-0.2.7` branch)
+## 0.2.7: more responsive mouse look (done)
 
 1. **Less camera smoothing with keyboard and mouse:** the launcher's Mouse camera smoothing setting (default 10% of the
    game's `SmoothTime`; 0.2.5-0.2.6 used 25%).

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.2.7)
+## 0.2.7 (2026-11-15)
 
 ### Changes
 - **More responsive mouse look.**

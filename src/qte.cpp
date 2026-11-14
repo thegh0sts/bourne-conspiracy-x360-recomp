@@ -85,15 +85,16 @@ uint8_t Directions(int16_t lx, int16_t ly) {
 }
 
 // --qte_probe (development). Multi-takedowns run their quick actions from native takedown
-// code, not through OnBnQuickAction; the strings name the state they keep (QuickActionButton,
-// QuickActionStartTime, QuickActionType, QuickActionResult, QuickActionStageIdx,
-// SkilledTakedownQuickActionLength). Look those properties up by name and dump them (their
-// offset is in there), and log what changes in the player controller around a QTE or takedown.
-std::atomic<uint32_t> g_probe_object{0};
-std::atomic<int64_t> g_probe_until{0};
-std::vector<uint8_t> g_probe_last;
-int g_probe_lines = 0;
-
+// code, not through OnBnQuickAction. The first probe (property lookups by name) found where
+// the state lives, from each UProperty's Offset (+0x60) and ElementSize (+0x48):
+//   BnTakedownBranch           +0x64 QuickActionStartTime (float), +0x68 QuickActionButton
+//                              (byte), +0x6A QuickActionType (byte), +0x8C QuickActionResult
+//                              (byte), +0x98 ActualQuickActionStartTime (float)
+//   BnTakedownSequencePlayer   +0x48 SkilledTakedownQuickActionLength (float), +0x58
+//                              TakedownRunner, +0x74 QuickActionStageIdx (int)
+// UObject: +0x04 index in GObjObjects, +0x28 Outer, +0x2C Name, +0x30 Class.
+// This probe finds GObjObjects, then every instance of those two classes, and logs how those
+// fields change for 4 s after each QTE or takedown starts.
 uint32_t FindObject(const PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t outer) {
   PPCContext tmp = ctx;
   const uint32_t text = ctx.r1.u32 - 0x300;  // UTF-16BE name below the caller's frame
@@ -125,63 +126,91 @@ std::string Words(const uint8_t* base, uint32_t addr, uint32_t size) {
   return out;
 }
 
-void ProbeProperties(const PPCContext& ctx, uint8_t* base) {
-  static bool done = false;
-  if (done) return;
-  done = true;
-  const char* props[] = {"QuickActionButton", "QuickActionStartTime", "QuickActionType", "QuickActionResult",
-                         "QuickActionStageIdx", "ActualQuickActionStartTime", "SkilledTakedownQuickActionLength",
-                         "CurrentTakedown", "TakedownRunner"};
-  const char* classes[] = {"BourneNative.BnPlayerController", "BourneNative.BnPlayerPawn",
-                           "BourneNative.BnPlayerFightingComponent", "BourneNative.BnTakedownRunner",
-                           "BourneNative.BnTakedowner", "BourneNative.BnTakedownSequencePlayer",
-                           "BourneNative.BnTakedownSequence", "BourneNative.SeqAct_BnQuickAction",
-                           "BourneNative.BnTakedownBranch", "BourneNative.BnFightingComponent"};
-  for (const char* prop : props) {
-    bool found = false;
-    for (const char* cls : classes) {
-      const std::string path = std::string(cls) + "." + prop;
-      if (const uint32_t obj = FindObject(ctx, base, path, 0)) {
-        found = true;
-        REXLOG_INFO("qte_probe: {} = {:08X} {}{}", path, obj, tbc::prompts::ObjectPathName(ctx, base, obj),
-                    Words(base, obj, 0x80));
+bool Heap(uint32_t a) { return a >= 0x40000000 && a < 0x80000000; }
+
+struct Probe {
+  uint32_t objects = 0;  // address of GObjObjects {Data, Num, Max}
+  uint32_t player_class = 0, branch_class = 0;
+  std::vector<uint32_t> players, branches;
+  std::vector<std::vector<uint8_t>> player_last, branch_last;
+  int64_t until = 0;
+  int lines = 0;
+} g_probe;
+
+constexpr uint32_t kPlayerBytes = 0x100;
+constexpr uint32_t kBranchFrom = 0x60, kBranchBytes = 0x40;  // +0x60..+0x9F
+
+void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
+  Probe& p = g_probe;
+  if (!p.player_class) {
+    p.player_class = FindObject(ctx, base, "BourneNative.BnTakedownSequencePlayer", 0);
+    p.branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
+    REXLOG_INFO("qte_probe: classes: sequence player {:08X}, branch {:08X}", p.player_class, p.branch_class);
+  }
+  if (!p.objects && p.player_class && p.branch_class) {
+    // GObjObjects: the global TArray whose Data[Index] is each object (index at +0x04).
+    const uint32_t a = p.player_class, b = p.branch_class;
+    const uint32_t ia = Load32(base, a + 4), ib = Load32(base, b + 4);
+    for (uint32_t g = 0x82000000; g < 0x83740000; g += 4) {
+      const uint32_t data = Load32(base, g);
+      if (!Heap(data)) continue;
+      if (Load32(base, data + 4 * ia) == a && Load32(base, data + 4 * ib) == b) {
+        p.objects = g;
+        REXLOG_INFO("qte_probe: GObjObjects at {:08X}: data {:08X}, {} objects", g, data, Load32(base, g + 4));
+        break;
       }
     }
-    if (!found) {
-      const uint32_t obj = FindObject(ctx, base, prop, 0xFFFFFFFF);  // ANY_PACKAGE
-      REXLOG_INFO("qte_probe: {} not in the listed classes; any package: {:08X} {}", prop, obj,
-                  obj ? tbc::prompts::ObjectPathName(ctx, base, obj) : std::string("-"));
-      if (obj) REXLOG_INFO("qte_probe: {}{}", prop, Words(base, obj, 0x80));
+    if (!p.objects) REXLOG_INFO("qte_probe: GObjObjects not found");
+  }
+  if (!p.objects) return;
+  const uint32_t data = Load32(base, p.objects), count = std::min<uint32_t>(Load32(base, p.objects + 4), 2000000);
+  p.players.clear();
+  p.branches.clear();
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t obj = Load32(base, data + 4 * i);
+    if (!Heap(obj)) continue;
+    const uint32_t cls = Load32(base, obj + 0x30);
+    if (cls == p.player_class) p.players.push_back(obj);
+    else if (cls == p.branch_class) p.branches.push_back(obj);
+  }
+  REXLOG_INFO("qte_probe: {} sequence players, {} branches", p.players.size(), p.branches.size());
+  for (const uint32_t obj : p.players) {
+    REXLOG_INFO("qte_probe: player {:08X} {}{}", obj, tbc::prompts::ObjectPathName(ctx, base, obj),
+                Words(base, obj, kPlayerBytes));
+  }
+  p.player_last.assign(p.players.size(), {});
+  p.branch_last.assign(p.branches.size(), {});
+  for (size_t k = 0; k < p.players.size(); ++k)
+    p.player_last[k].assign(base + p.players[k], base + p.players[k] + kPlayerBytes);
+  for (size_t k = 0; k < p.branches.size(); ++k)
+    p.branch_last[k].assign(base + p.branches[k] + kBranchFrom, base + p.branches[k] + kBranchFrom + kBranchBytes);
+}
+
+void Diff(uint8_t* base, const char* what, uint32_t obj, uint32_t from, std::vector<uint8_t>& last) {
+  Probe& p = g_probe;
+  for (uint32_t i = 0; i < last.size(); i += 4) {
+    if (std::memcmp(&last[i], base + obj + from + i, 4) == 0) continue;
+    if (p.lines < 6000) {
+      const uint32_t was = uint32_t(last[i]) << 24 | uint32_t(last[i + 1]) << 16 | uint32_t(last[i + 2]) << 8 | last[i + 3];
+      REXLOG_INFO("qte_probe: {} {:08X} +{:03X} {:08X} -> {:08X}", what, obj, from + i, was, Load32(base, obj + from + i));
+      ++p.lines;
     }
+    std::memcpy(&last[i], base + obj + from + i, 4);
   }
 }
 
-// From the input thread: what changed in the probed object since the last poll.
+// From the input thread: what changed in the watched objects since the last poll.
 void ProbeDiff(uint8_t* base) {
-  const int64_t until = g_probe_until.load();
-  const uint32_t object = g_probe_object.load();
-  if (!until || !object) return;
-  constexpr uint32_t kSize = 0x1000;
   std::lock_guard<std::mutex> lock(g_mutex);
-  if (Clock::now().time_since_epoch().count() >= until) {
-    g_probe_until.store(0);
-    g_probe_last.clear();
+  Probe& p = g_probe;
+  if (!p.until) return;
+  if (Clock::now().time_since_epoch().count() >= p.until) {
+    p.until = 0;
     REXLOG_INFO("qte_probe: end");
     return;
   }
-  if (g_probe_last.size() != kSize) {
-    g_probe_last.assign(base + object, base + object + kSize);
-    return;
-  }
-  for (uint32_t i = 0; i < kSize && g_probe_lines < 4000; i += 4) {
-    if (std::memcmp(&g_probe_last[i], base + object + i, 4) != 0) {
-      const uint32_t was = uint32_t(g_probe_last[i]) << 24 | uint32_t(g_probe_last[i + 1]) << 16 |
-                           uint32_t(g_probe_last[i + 2]) << 8 | g_probe_last[i + 3];
-      REXLOG_INFO("qte_probe: +{:03X} {:08X} -> {:08X}", i, was, Load32(base, object + i));
-      ++g_probe_lines;
-    }
-  }
-  std::memcpy(g_probe_last.data(), base + object, kSize);
+  for (size_t k = 0; k < p.players.size(); ++k) Diff(base, "player", p.players[k], 0, p.player_last[k]);
+  for (size_t k = 0; k < p.branches.size(); ++k) Diff(base, "branch", p.branches[k], kBranchFrom, p.branch_last[k]);
 }
 }  // namespace
 
@@ -202,13 +231,10 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
       kind = it->second;
     }
     if (kind) {
-      ProbeProperties(ctx, base);
-      const uint32_t object = ctx.r3.u32;
-      REXLOG_INFO("qte_probe: {} on {:08X}: watching it for 4 s", kind == 1 ? "QTE" : "takedown", object);
+      REXLOG_INFO("qte_probe: {} on {:08X}: watching for 4 s", kind == 1 ? "QTE" : "takedown", ctx.r3.u32);
       std::lock_guard<std::mutex> lock(g_mutex);
-      g_probe_object.store(object);
-      g_probe_last.clear();
-      g_probe_until.store((Clock::now() + std::chrono::seconds(4)).time_since_epoch().count());
+      ProbeSetup(ctx, base);
+      g_probe.until = (Clock::now() + std::chrono::seconds(4)).time_since_epoch().count();
     }
   }
   if (!REXCVAR_GET(qte_wasd) || !function || !KeyboardOn()) return;

@@ -3,9 +3,9 @@
 // The keyboard-and-mouse driver normally hands each poll's mouse movement to the game as
 // right-stick deflection. But a stick sets a turn *rate*: the further it's pushed, the faster
 // the camera turns. So a mouse moved the camera by its movement times the frame time (at 30
-// fps twice as far as at 60), and Bourne's camera (found with --camera_probe: the orbit
-// behaviours of each camera strategy, [*OrbitYawCameraBehavior] in BourneCamera.ini) adds a
-// ramp that speeds the turn up after the stick has been held for half a second.
+// fps twice as far as at 60), and Bourne's camera (the orbit behaviours of each camera
+// strategy, [*OrbitYawCameraBehavior] in BourneCamera.ini) adds a ramp that speeds the turn
+// up after the stick has been held for half a second.
 //
 // With mouse look on, the driver keeps the mouse's movement aside (SDK patch 0009,
 // SetMouseDirect / ConsumeMouseDelta), and on each poll it is turned into the stick deflection

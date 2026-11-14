@@ -34,9 +34,7 @@ set(TBC_SOURCES
     src/ultrawide.cpp
     src/qte.cpp
     src/glyph_probe.cpp
-    src/camera_probe.cpp
     src/mouse_look.cpp
-    src/ui_probe.cpp
     src/key_glyphs.cpp
 )
 

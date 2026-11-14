@@ -1,0 +1,18 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 81b9b72..f27ba2e 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1550,6 +1550,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     if (!attachments.color[i]) continue;
+     key.write_mask[i] = (color_mask >> (4 * i)) & 0xF;
+     key.blend[i] = regs.values[reg::RB_BLENDCONTROL::rt_register_indices[i]] & 0x1FFF1FFF;
++    // BOTS_GFX_NO_BLEND=1 (tbc, debugging 007's menu): blending off (source one, destination zero), so every draw
++    // covers its triangles whatever alpha it outputs.
++    static const bool no_blend = [] {
++      const char* v = std::getenv("BOTS_GFX_NO_BLEND");
++      return v && *v == '1';
++    }();
++    if (no_blend) key.blend[i] = 0x00010001;
+   }
+ 
+   bool pending = false;

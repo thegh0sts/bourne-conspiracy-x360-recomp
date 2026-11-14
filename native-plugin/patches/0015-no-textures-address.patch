@@ -1,5 +1,5 @@
 diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
-index 98b9782..1d96bab 100644
+index 25372ea..1d96bab 100644
 --- a/src/gfx/vk/draw.cpp
 +++ b/src/gfx/vk/draw.cpp
 @@ -1038,13 +1038,15 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
@@ -23,17 +23,3 @@ index 98b9782..1d96bab 100644
          if (view) {
            texture_swizzles[binding.fetch_constant] = swizzle;
            texture_signs[binding.fetch_constant] = rg::texture_util::SwizzleSigns(fetch);
-@@ -1063,6 +1065,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
-                         rg::texture_util::SwizzleSigns(fetch), int(fetch.exp_adjust));
-         }
-         trace_textures += t;
-+        // tbc (007's menu): the raw fetch constant, as the shader reads it from the fetch constant buffer.
-+        if (trace_signs) {
-+          char raw[96];
-+          std::snprintf(raw, sizeof(raw), "{%08X %08X %08X %08X %08X %08X}", fetch.dword_0, fetch.dword_1,
-+                        fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
-+          trace_textures += raw;
-+        }
-       }
-     }
-     return std::span<const VkImageView>(views.data(), n);

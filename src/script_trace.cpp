@@ -33,6 +33,7 @@
 #include <rex/logging.h>
 
 #include "prompts.h"
+#include "qte.h"
 
 REXCVAR_DEFINE_BOOL(script_trace, false, "Debug",
                     "Log each UnrealScript event the first time it runs (ProcessEvent); "
@@ -117,6 +118,7 @@ extern "C" REX_FUNC(sub_828B8750) {
   const std::string& filter_text = REXCVAR_GET(script_trace_filter);
   const uint32_t object = ctx.r3.u32;
   const uint32_t function = ctx.r4.u32;
+  tbc::qte::OnProcessEvent(ctx, base, ctx.r4.u32);
   const std::string& dump_text = REXCVAR_GET(script_trace_dump);
   if ((!trace && filter_text.empty() && dump_text.empty()) || !object || !function) {
     __imp__sub_828B8750(ctx, base);

@@ -17,6 +17,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "qte.h"
+
 REXCVAR_DEFINE_BOOL(input_trace, false, "Debug",
                     "Log each change of the controller state the game reads; development only");
 
@@ -60,6 +62,7 @@ extern "C" REX_FUNC(sub_823213D8) {
   if (!state || user >= 4 || ctx.r3.u32 != 0) {
     return;
   }
+  tbc::qte::OnControllerState(base, state);
   if (REXCVAR_GET(trigger_ramp)) {
     std::lock_guard<std::mutex> lock(g_mutex);
     base[state + 6] = Ramp(g_ramp[user][0], base[state + 6]);

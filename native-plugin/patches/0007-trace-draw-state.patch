@@ -1,0 +1,19 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 169a064..5b3616b 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1897,6 +1897,14 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         }
+       }
+     }
++    // The rest of the state that decides whether a draw lands (tbc: 007's unmasked menu draws).
++    std::fprintf(stderr,
++                 "  state: colorcontrol %08X alpha_ref %g clip %08X vte %08X z %g-%g vs_mod %016llX ps_mod %016llX "
++                 "pipeline %p\n",
++                 regs.values[rg::XE_GPU_REG_RB_COLORCONTROL], double(regs.Get<float>(rg::XE_GPU_REG_RB_ALPHA_REF)),
++                 regs.values[rg::XE_GPU_REG_PA_CL_CLIP_CNTL], regs.values[rg::XE_GPU_REG_PA_CL_VTE_CNTL],
++                 double(viewport.z_min), double(viewport.z_max), (unsigned long long)vmod.value,
++                 (unsigned long long)pmod.value, (void*)pipeline);
+     std::fprintf(stderr, "  area: scissor %d,%d %ux%u bound %u,%u%s samples %ux%u viewport %g,%g %gx%g verts%s\n",
+                  scissor_rect.offset.x, scissor_rect.offset.y, scissor_rect.extent.width, scissor_rect.extent.height,
+                  scissor_x1, scissor_y1, bounded ? "" : " (open)", samples_x, samples_y,

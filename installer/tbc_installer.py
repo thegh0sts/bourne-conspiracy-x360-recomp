@@ -489,7 +489,20 @@ class Installer:
 
     def build(self, vcvars: Path, sdk: Path):
         prefix = str(sdk).replace("\\", "/")
-        base = f'call "{vcvars}" >nul && cd /d "{self.project}" && '
+        # Visual Studio's own Clang (the "C++ Clang tools" component the installer requires),
+        # named explicitly: the preset says just "clang", and another Clang earlier on PATH (one
+        # seen: a clang 22 from another recompilation tool) fails on the SDK's headers with VS's
+        # library ("explicit specialization of undeclared template struct
+        # 'clock_time_conversion'"). Its folder goes first on PATH for the linker too.
+        llvm = vcvars.parents[2] / "Tools" / "Llvm" / "x64" / "bin"
+        compilers = ""
+        path_first = ""
+        if (llvm / "clang++.exe").exists():
+            fwd = str(llvm).replace("\\", "/")
+            compilers = f'-DCMAKE_C_COMPILER="{fwd}/clang.exe" -DCMAKE_CXX_COMPILER="{fwd}/clang++.exe" '
+            path_first = f'set "PATH={llvm};%PATH%" && '
+            self.log(f"Using Clang: {llvm}")
+        base = f'call "{vcvars}" >nul && {path_first}cd /d "{self.project}" && '
         # Code generation must run before CMake configures: the project only adds the
         # generated sources to the build if generated/default/sources.cmake already exists.
         rexglue = sdk / "bin" / "rexglue.exe"
@@ -505,7 +518,8 @@ class Installer:
         self.status("Configuring the build...")
         # rexglue_DIR too: a build folder configured earlier keeps its SDK location in its cache,
         # which wins over CMAKE_PREFIX_PATH, so a changed SDK would otherwise be ignored.
-        self.run_logged(base + f'cmake --preset {PRESET} -DCMAKE_PREFIX_PATH="{prefix}" '
+        # --fresh: a build folder first configured with another compiler keeps it in its cache.
+        self.run_logged(base + f'cmake --fresh --preset {PRESET} {compilers}-DCMAKE_PREFIX_PATH="{prefix}" '
                                f'-Drexglue_DIR="{prefix}/lib/cmake/rexglue"')
         self.status("Building the game (compiling: this takes a while)...")
         prog = self.stage(0.56, 0.98)

@@ -19,8 +19,7 @@ button prompts, the key images in the HUD and the quick-time-event prompts are d
 | Q | Bourne Instinct (shows objectives and enemies) |
 | G | Draw / holster the gun |
 | Middle mouse | Recentre the camera; switch shoulder when aiming |
-| Arrow keys | Turn the camera (like a controller's right stick); move through menus |
-| 1 / 2 / 3 / 4 | D-pad up / down / left / right (also on the arrow keys) |
+| 1 / 2 / 3 / 4 | D-pad up / down / left / right |
 | Esc | Pause |
 | Tab | Back |
 

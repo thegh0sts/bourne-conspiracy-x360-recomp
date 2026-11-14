@@ -1,0 +1,21 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 5b3616b..81b9b72 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1089,7 +1089,15 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   for (uint32_t i = 0; i < 4; ++i) {
+     if ((color_mask >> (4 * i)) & 0xF) attachments.color[i] = Surface(regs, false, i);
+   }
+-  if (depth_control.z_enable || depth_control.stencil_enable) attachments.depth = Surface(regs, true, 0);
++  // BOTS_GFX_ALWAYS_DEPTH=1 (tbc, debugging 007's menu): draws with depth and stencil off still get the guest's depth
++  // surface, tested with "always" and never written - drawn exactly like the draws around them that have them on.
++  static const bool always_depth = [] {
++    const char* v = std::getenv("BOTS_GFX_ALWAYS_DEPTH");
++    return v && *v == '1';
++  }();
++  if (depth_control.z_enable || depth_control.stencil_enable || (always_depth && mode == xe::EdramMode::kColorDepth)) {
++    attachments.depth = Surface(regs, true, 0);
++  }
+   uint32_t width = UINT32_MAX, height = UINT32_MAX;
+   for (Image* image : attachments.color) {
+     if (image) width = std::min(width, image->width), height = std::min(height, image->height);

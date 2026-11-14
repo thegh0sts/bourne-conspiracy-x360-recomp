@@ -26,16 +26,12 @@ button prompts, the key images in the HUD and the quick-time-event prompts are d
 
 ## Fights
 
-With **Fights: left / right mouse = light / heavy attack** on (the default):
-
 | Key | Action |
 |---|---|
 | Left mouse | Light attack |
 | Right mouse | Heavy attack |
 | Space | Block |
 | F | Takedown (when the adrenaline meter has a tier filled) |
-
-With it off, E is the light attack and Q the heavy attack, as X and Y on a controller.
 
 ## Quick-time events
 

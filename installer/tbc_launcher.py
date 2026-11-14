@@ -222,7 +222,7 @@ CONTROLS = [
         ("Esc", "Pause"),
         ("Tab", "Back"),
     ]),
-    ("Fights (with \"Fights: left / right mouse\" on)", [
+    ("Fights", [
         ("Left mouse", "Light attack"),
         ("Right mouse", "Heavy attack"),
         ("Space", "Block"),
@@ -292,7 +292,6 @@ DEFAULTS = {
     "fov": 100,
     "deadzone": 25,
     "kbm": False,
-    "mouse_attacks": True,
     "mouse_sensitivity": 100,
     "mouse_look": True,
     "turn_speed": 100,
@@ -307,6 +306,7 @@ def load_settings():
     except (OSError, ValueError):
         pass
     s["render_scale"] = OLD_SCALE_NAMES.get(s["render_scale"], s["render_scale"])
+    s.pop("mouse_attacks", None)  # was an option; now always on with keyboard and mouse
     s["mouse_sensitivity"] = min(400, max(10, int(s.get("mouse_sensitivity", 100))))  # slider was 10-1000
     s.pop("aspect", None)  # the old separate "picture shape" setting: now set by the resolution
     if s.get("resolution") not in RESOLUTIONS + ULTRAWIDE:
@@ -476,7 +476,7 @@ def apply_game_config(game: Path, s) -> str:
     turn = int(s.get("turn_speed", 100))
     linear_aim = bool(s.get("kbm"))  # the mouse gets the full turn speed while aiming
     look_edit = turn != 100 or linear_aim
-    fight_mouse = bool(s.get("kbm")) and bool(s.get("mouse_attacks", True))
+    fight_mouse = bool(s.get("kbm"))  # with keyboard and mouse, fights are always on the mouse buttons
     mouse_camera = bool(s.get("kbm")) and bool(s.get("mouse_look", True))
 
     if turn != 100:
@@ -628,10 +628,9 @@ def game_args(s, screen=None):
         args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
         if not s.get("mouse_look", True):
             args.append("--mouse_look=false")
-        if s.get("mouse_attacks", True):
-            # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp),
-            # to match the trigger bindings written to Xe-BourneInput.ini above.
-            args.append("--keyboard_mouse_attacks=true")
+        # Fight prompts show light / heavy attack as [LMB] / [RMB] (keyboard_prompts.cpp), to
+        # match the trigger bindings written to Xe-BourneInput.ini above.
+        args.append("--keyboard_mouse_attacks=true")
         for name, keys in kbm_binds(s).items():
             if keys:  # an empty value would leave the SDK's own default for that button
                 args.append(f"--{name}={keys}")
@@ -724,10 +723,6 @@ class SettingsView(tk.Frame):
         tk.Label(box, text="Stick turn speed is for a controller and the arrow keys; with mouse look the "
                            "camera follows the mouse.", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
                  ).grid(row=5, column=0, columnspan=2, sticky="w")
-        self._check(box, 6, "mouse_attacks", "Fights: left / right mouse = light / heavy attack")
-        # Turning keyboard and mouse on turns the fight attacks on the mouse back on too (the
-        # prompts and the key binds page assume them).
-        self.vars["kbm"].trace_add("write", lambda *_: self.vars["kbm"].get() and self.vars["mouse_attacks"].set(True))
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)

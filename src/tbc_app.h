@@ -10,6 +10,7 @@
 
 #include <rex/cvar.h>
 #include <rex/rex_app.h>
+#include <rex/ui/overlay/achievement_notification.h>
 
 #include "crash_win.h"
 #include "debug_tools.h"
@@ -30,6 +31,9 @@ REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in t
 // --show_fps_detail=true (with --show_fps): the native renderer's counter also shows the frame
 // time and slowest frame, GPU time and load, CPU load (machine and game), RAM and VRAM. The
 // renderer reads it through the shared cvar registry (native-plugin/patches/0006-fps-counter.patch).
+// --achievement_popups=false: no pop-up when an achievement unlocks. It's still unlocked and
+// listed in the achievements overlay (F7); only the toast (an ImGui dialog) isn't made.
+REXCVAR_DEFINE_BOOL(achievement_popups, true, "UI", "Show a pop-up when an achievement unlocks");
 REXCVAR_DEFINE_BOOL(show_fps_detail, false, "UI",
                     "With show_fps: also frame time, GPU, CPU and memory (native renderer)");
 
@@ -70,6 +74,11 @@ class TbcApp : public rex::ReXApp {
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
 
+  std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog() override {
+    if (!REXCVAR_GET(achievement_popups)) return nullptr;  // the runtime copes with none
+    return rex::ReXApp::CreateAchievementNotificationDialog();
+  }
+
  private:
   bool native_renderer_ = true;
 
@@ -80,8 +89,6 @@ class TbcApp : public rex::ReXApp {
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
-  // std::unique_ptr<rex::ui::AchievementNotificationDialog>
-  // CreateAchievementNotificationDialog() override;
   // Folders the game lists at startup. Some disc extractors drop empty folders (the disc's Engine
   // folder is empty), and the runtime then throws "Failed to enumerate directory: The system
   // cannot find the path specified" instead of telling the game the folder isn't there: an

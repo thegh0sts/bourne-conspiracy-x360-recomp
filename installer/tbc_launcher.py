@@ -320,6 +320,7 @@ DEFAULTS = {
     "vsync": True,
     "original_pacing": False,
     "fps_counter": "Off",
+    "hide_achievements": False,
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -789,6 +790,8 @@ def game_args(s, screen=None):
         args.append("--show_fps=true")
         if counter.startswith("Detailed"):
             args.append("--show_fps_detail=true")
+    if s.get("hide_achievements"):
+        args.append("--achievement_popups=false")
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
         # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
@@ -915,9 +918,10 @@ class SettingsView(tk.Frame):
         self._combo(box, 9, "fps_counter", "FPS counter", FPS_COUNTER)
         self._checks(box, 10, [("vsync", "VSync (off: may tear, can be faster)"),
                                ("original_pacing", "Original Xbox 360 frame pacing (slower)")])
+        self._check(box, 11, "hide_achievements", "Hide achievement pop-ups")
         tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
                            "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                 ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         box = self._page("Graphics")
         for row, (key, text) in enumerate((("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),

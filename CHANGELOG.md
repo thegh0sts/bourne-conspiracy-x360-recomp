@@ -10,6 +10,8 @@
   - the game's RAM (working set) and video memory.
   Detailed needs the native renderer; with Xenos the counter shows the frame rate only.
 
+- **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).
+
 ### Fixes
 - **The FPS counter shows in fullscreen with the native renderer.** It's now drawn into the picture by the renderer's last pass (text on a dark box at the top-left, the frame rate green / yellow / red as before) instead of a separate window, which the graphics driver hides when a Vulkan game fills the screen. It costs nothing measurable and also shows in screenshots and recordings. Xenos keeps the separate window.
 

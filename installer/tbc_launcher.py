@@ -31,7 +31,7 @@ import tbc_config as cfg
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
@@ -39,6 +39,9 @@ RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/relea
 CONTROLS_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
+# The last launcher version whose changes need the game rebuilt (src/, the SDK, the build). A
+# launcher-only release leaves this alone, so games built with it aren't asked to reinstall.
+GAME_VERSION = "0.2.7"
 # The settings screen's tabs, top to bottom.
 TABS = ("Game files", "Display", "Graphics", "Camera", "Controls")
 
@@ -842,9 +845,9 @@ class SettingsView(tk.Frame):
         # Filled in by the update check, if a newer release is out.
         self.update_line = tk.Frame(self, bg=BG)
         self.update_line.pack(fill="x", padx=28)
-        # This launcher is newer than the build of the game: the new code isn't in the game until
+        # The game was built before the last version with game changes (GAME_VERSION): they aren't in it until
         # it's reinstalled (rebuilt), so say so where it can't be missed.
-        if version_key(built_version(info)) < version_key(VERSION):
+        if version_key(built_version(info)) < version_key(GAME_VERSION):
             box = tk.Frame(self, bg=ACCENT)
             box.pack(fill="x", padx=28, pady=(6, 2))
             tk.Label(box, text=f"Your game was built with {built_version(info)}; this launcher is {VERSION}. "

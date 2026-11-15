@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.8 (2026-11-16)
+
+A launcher-only update: the settings are in tabs.
+
+### Updating from 0.2.7
+Use **Download and update** in the launcher (or run the new exe). No reinstall is needed: the game itself hasn't changed since 0.2.7. Coming from 0.2.6 or earlier, reinstall as the launcher asks, for 0.2.7's changes.
+
+### Changes
+- **The launcher's settings are in tabs** down the left (Game files, Display, Graphics, Camera, Controls), with the chosen tab's settings on the right, in a wider, shorter window (980 x 740, was 780 x 980) instead of one long page. The title, the reinstall notice and Play / Quit / Defaults stay on every tab. It reopens on the last tab used.
+  - **Game files**: where the game is installed, Reinstall from a disc image, Use a different install; under Help, Open logs, Save crash report and Check for updates.
+  - **Display**: renderer, resolutions, upscaling, frame rate and the display checkboxes, as before.
+  - **Graphics**: motion blur, depth of field, bloom, lens flares, heat haze.
+  - **Camera**: field of view, Look further up and down, No camera auto-recentre, Linear stick turning.
+  - **Controls**: Keyboard and mouse and Key binds, the stick dead zone and turn speed; under Mouse, mouse look, Direct, mouse sensitivity, aiming sensitivity and camera smoothing.
+
 ## 0.2.7 (2026-11-15)
 
 ### Changes
@@ -8,11 +23,10 @@
   - **Direct mouse look, now the default** (launcher checkbox **Direct (1:1)** beside mouse look; `--mouse_look_direct=false` turns it off): the mouse's movement is added straight to the camera's angles instead of being turned into a right-stick push, so it's exactly 1:1, with no stick dead zone, turn-speed cap or the game's look acceleration. It works in every camera mode (standing, crouching, aiming, sprinting, cover). The camera smoothing setting still applies. Where the player's camera isn't found (menus, loading) the mouse uses the stick method.
   - New launcher setting **Aiming sensitivity** (% of the mouse sensitivity, default 100%): the mouse turns slower (or faster) while aiming over the shoulder and shooting from cover (`--mouse_look_aim_sensitivity`).
   - With the stick method (Direct unticked), fast flicks no longer lose movement: the camera's full-stick turn rate is now 6x the game's (was 4x), and any movement still past it is carried into the next frames instead of dropped (`--mouse_look_max_carry`, 180 degrees; 0 drops it as before).
-- **Camera options** (launcher, Camera tab):
+- **Camera options** (launcher, Graphics and camera):
   - **Look further up and down** (on by default): on foot, on stairs and in cover the camera can look about 45 degrees down and 35 up, as far as when aiming, instead of stopping at about 20 (and not at all upwards while jogging). Fights, boss fights and the sprint camera keep the game's limits.
   - **No camera auto-recentre** (off by default): the camera stays where you point it instead of swinging back behind Bourne after 15 seconds idle or while walking, jogging and sprinting. Middle mouse / right stick press still recentres it.
   - **Linear stick turning** (off by default): a controller's camera turns at a steady speed for the stick's push, without speeding up while the stick is held, and without the slow zone while aiming.
-- **The launcher's settings are in tabs** (Game files, Display, Graphics, Camera, Controls) down the left of a wider, shorter window, instead of one long page. It reopens on the last tab used.
 - **Arrow keys move through menus instead of turning the camera.** They now press the d-pad (like 1-4), which the menus use and gameplay doesn't; the camera is the mouse's alone.
 
 ## 0.2.6 (2026-11-15)

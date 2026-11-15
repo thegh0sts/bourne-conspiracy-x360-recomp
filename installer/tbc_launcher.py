@@ -965,10 +965,9 @@ class SettingsView(tk.Frame):
 
     # widgets ------------------------------------------------------------
     def _page(self, title):
-        """A tab's page: its heading, then a grid (label | control) for its settings."""
-        page = tk.Frame(self.pages_frame, bg=PANEL, padx=22, pady=16)
+        """A tab's page: a grid (label | control) for its settings (the highlighted tab names it)."""
+        page = tk.Frame(self.pages_frame, bg=PANEL, padx=22, pady=18)
         page.place(relx=0, rely=0, relwidth=1, relheight=1)
-        tk.Label(page, text=title, font=("Segoe UI", 13, "bold"), fg=FG, bg=PANEL).pack(anchor="w", pady=(0, 10))
         box = tk.Frame(page, bg=PANEL)
         box.pack(fill="x")
         box.columnconfigure(1, weight=1)

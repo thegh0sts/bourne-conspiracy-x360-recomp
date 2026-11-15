@@ -27,6 +27,11 @@ void LogVersion();
 // an ImGui overlay: the SDK's ImGui overlays cost about 20% of the frame rate. F3 still opens
 // the SDK's full debug overlay.
 REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in the corner");
+// --show_fps_detail=true (with --show_fps): the native renderer's counter also shows the frame
+// time and slowest frame, GPU time and load, CPU load (machine and game), RAM and VRAM. The
+// renderer reads it through the shared cvar registry (native-plugin/patches/0006-fps-counter.patch).
+REXCVAR_DEFINE_BOOL(show_fps_detail, false, "UI",
+                    "With show_fps: also frame time, GPU, CPU and memory (native renderer)");
 
 class TbcApp : public rex::ReXApp {
  public:

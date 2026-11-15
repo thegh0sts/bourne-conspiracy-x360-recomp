@@ -5,6 +5,7 @@
 ### New
 - **Direct mouse look (on by default).** The mouse's movement goes straight into the camera's angles instead of being turned into a right-stick push, so the camera turns exactly as far as the mouse moves: no stick dead zone, turn-speed cap or the game's look acceleration. It works in every camera mode (on foot, crouching, aiming, sprinting, in cover) and after checkpoint reloads and failed QTEs. Untick **Direct (1:1)** in the launcher to go back to the previous method.
 - **Mouse camera smoothing** setting in the launcher (default 10%): how much of the game's camera easing stays with mouse look. 0.2.5-0.2.6 kept 25%; lower is snappier.
+- **Aiming sensitivity** setting in the launcher: the mouse can turn slower (or faster) while aiming over the shoulder and shooting from cover.
 - **Look further up and down** (on by default): about 45 degrees down and 35 up on foot, on stairs and in cover, instead of about 20.
 - **No camera auto-recentre** option: the camera stays where you point it instead of swinging back behind Bourne.
 - **Linear stick turning** option for controllers: no turn acceleration while the stick is held.

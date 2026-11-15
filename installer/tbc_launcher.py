@@ -325,6 +325,7 @@ DEFAULTS = {
     "deadzone": 25,
     "kbm": False,
     "mouse_sensitivity": 100,
+    "aim_sensitivity": 100,
     "mouse_look": True,
     "mouse_smoothing": 10,
     "mouse_look_direct": True,
@@ -787,6 +788,8 @@ def game_args(s, screen=None):
                  "--mnk_mouse_deadzone", f"{int(s['deadzone']) / 100:.2f}"]
         # Mouse look: the sensitivity slider's 100% is 2.0 (0.022 degrees a count x 2).
         args.append(f"--mouse_look_sensitivity={2 * int(s.get('mouse_sensitivity', 100)) / 100:.2f}")
+        # Aiming (over the shoulder, shooting from cover): a percentage of the mouse sensitivity.
+        args.append(f"--mouse_look_aim_sensitivity={int(s.get('aim_sensitivity', 100)) / 100:.2f}")
         # The full-stick turn rate the camera edit gives the game (65 degrees a second x the factor).
         args.append(f"--mouse_look_full_rate={65 * MOUSE_RATE_FACTOR}")
         # Direct (the default): the mouse's movement goes straight into the camera's angles;
@@ -911,12 +914,14 @@ class SettingsView(tk.Frame):
             tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
         self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 4, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
-        self._slider(box, 5, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
+        self._slider(box, 4, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
+        self._slider(box, 5, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 6, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
         tk.Label(box, text="Mouse camera smoothing: how much of the game's camera easing stays with mouse look "
-                           "(lower is more responsive). Stick turn speed is for a controller.",
+                           "(lower is more responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
+                           "Stick turn speed is for a controller.",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
-                 ).grid(row=6, column=0, columnspan=2, sticky="w")
+                 ).grid(row=7, column=0, columnspan=2, sticky="w")
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)

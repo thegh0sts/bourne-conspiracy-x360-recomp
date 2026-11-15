@@ -23,6 +23,7 @@
 //   --mouse_look_sensitivity=2.0       0.022 degrees per mouse count times this (as in Source
 //                                      games)
 //   --mouse_look_invert_y=true         mouse up looks down
+//   --mouse_look_aim_sensitivity=0.6   sensitivity while aiming, times the above (1 = the same)
 //   --mouse_look_direct=false          fake a right-stick push instead of adding the mouse's
 //                                      movement straight to the camera's angles (the default)
 //
@@ -79,6 +80,10 @@ REXCVAR_DEFINE_DOUBLE(mouse_look_max_carry, 180.0, "Input",
                       "Mouse look: most turn (degrees) carried into later polls when the mouse moves "
                       "faster than full stick; 0 drops it, as before 0.2.7")
     .range(0.0, 720.0);
+REXCVAR_DEFINE_DOUBLE(mouse_look_aim_sensitivity, 1.0, "Input",
+                      "Mouse look: sensitivity while aiming (over the shoulder, shooting from cover), "
+                      "times mouse_look_sensitivity")
+    .range(0.1, 4.0);
 REXCVAR_DEFINE_DOUBLE(mouse_look_full_rate, 390.0, "Input",
                       "Mouse look: the camera's turn rate at full stick, degrees a second (the "
                       "launcher sets the game's YawSpeed / PitchSpeed to match)")
@@ -295,6 +300,17 @@ void Probe(const PPCContext& ctx, uint8_t* base, int16_t rx, int16_t ry) {
               words(g_player.camera + 0x2A0, 8));
 }
 
+// Whether the camera's strategy (BnCamera +0x350) is an aiming one: over the shoulder
+// (BnOverTheShoulderCameraStrategy, ...FramingCameraStrategy) or shooting from cover
+// (BnWallworkShootingCameraStrategy).
+bool Aiming(const PPCContext& ctx, uint8_t* base) {
+  if (!FindPlayer(ctx, base)) return false;
+  const uint32_t strategy = Load32(base, g_player.camera + 0x350);
+  if (!IsObject(strategy) || !IsObject(Load32(base, strategy + 0x30))) return false;
+  const std::string& name = ClassName(ctx, base, Load32(base, strategy + 0x30));
+  return name.find("OverTheShoulder") != std::string::npos || name.find("WallworkShooting") != std::string::npos;
+}
+
 void AddRotator(uint8_t* base, uint32_t rot, int32_t pitch, int32_t yaw) {
   Store32(base, rot + 0, uint32_t(int32_t(Load32(base, rot + 0)) + pitch));
   Store32(base, rot + 4, uint32_t(int32_t(Load32(base, rot + 4)) + yaw));
@@ -346,7 +362,10 @@ void MouseLook(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   if (!moved && g_carry_yaw == 0.0 && g_carry_pitch == 0.0) return;
   if (dt > 0.1) g_carry_yaw = g_carry_pitch = 0.0;  // a long gap (loading): drop what was left
   dt = std::clamp(dt, 0.004, 0.1);  // one poll's time; a long gap (loading) isn't a slow move
-  const double degrees = 0.022 * REXCVAR_GET(mouse_look_sensitivity);
+  double degrees = 0.022 * REXCVAR_GET(mouse_look_sensitivity);
+  if (REXCVAR_GET(mouse_look_aim_sensitivity) != 1.0 && Aiming(ctx, base)) {
+    degrees *= REXCVAR_GET(mouse_look_aim_sensitivity);
+  }
   // Direct when the player's controller and camera are there; otherwise (menus, loading, a
   // level without them) the stick method below.
   const uint32_t input = REXCVAR_GET(mouse_look_direct) && FindPlayer(ctx, base)

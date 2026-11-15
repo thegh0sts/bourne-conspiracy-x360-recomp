@@ -319,6 +319,9 @@ DEFAULTS = {
     "lens_flares": True,
     "distortion": True,
     "fov": 100,
+    "wide_pitch": True,
+    "no_auto_recenter": False,
+    "linear_stick": False,
     "deadzone": 25,
     "kbm": False,
     "mouse_sensitivity": 100,
@@ -481,6 +484,53 @@ def _edit_fight_mouse(body):
     return body
 
 
+# Camera freedom (Xe-BourneCamera.ini / BourneCamera.ini, every camera mode's behaviours):
+# - wide_pitch: on foot (chase, crouching, sprinting strategies' BnOrbitPitchSpeedDependentLimits
+#   Idle / CreepWalk / Walk / Jog limits, about +-20 degrees; +20 / 0 while jogging) and on
+#   stairs and in cover (HmOrbitPitchCameraBehavior PitchRange), the camera may look as far up
+#   and down as when aiming over the shoulder (PitchRange -45..34 there): -45..35. The sprint
+#   camera's fixed pitch and the fights' limits are left alone.
+# - no_auto_recenter: no swing back behind Bourne: the idle recentre after 15 s
+#   (HmOrbitIdleAutoRecenterCameraBehavior) and the yaw limits that pull the camera behind him
+#   while walking, jogging and sprinting (BnOrbitYawSpeedDependentLimitsCameraBehavior: limit
+#   angle, stick resistance, return speed). The manual recentre (middle mouse / right stick
+#   press) still works.
+# - linear_stick: no turn ramp (HmOrbitYawCameraBehavior speeds up after the stick is held for
+#   YawRampTime); with BelowStepMultiplier in the look scales (_edit_look_scales) also no slow
+#   zone while aiming.
+WIDE_PITCH = (-45.0, 35.0)
+
+
+def _edit_camera_freedom(body, wide_pitch, no_auto_recenter, linear_stick):
+    lines = body.split("\r\n")
+    section = ""
+    for i, line in enumerate(lines):
+        if line.startswith("["):
+            section = line
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        pitch = "OrbitPitch" in section and "Fighting" not in section
+        if (wide_pitch and pitch and value.startswith("(Min=") and
+                key in ("IdleLimits", "CreepWalkLimits", "WalkLimits", "JogLimits", "PitchRange")):
+            m = re.match(r"\(Min=(-?[0-9.]+),Max=(-?[0-9.]+)\)(.*)$", value)
+            if m:
+                lo, hi = min(float(m.group(1)), WIDE_PITCH[0]), max(float(m.group(2)), WIDE_PITCH[1])
+                lines[i] = f"{key}=(Min={lo:g},Max={hi:g}){m.group(3)}"
+        elif no_auto_recenter and "IdleAutoRecenter" in section and key in ("DegreesPerSecond", "RecenterDelay"):
+            lines[i] = f"{key}={'0' if key == 'DegreesPerSecond' else '100000'}"
+        elif (no_auto_recenter and "YawSpeedDependentLimits" in section and "Fighting" not in section and
+              key.endswith("Limits") and value.startswith("(")):
+            value = re.sub(r"LimitAngle=[0-9.]+", "LimitAngle=181", value)
+            value = re.sub(r"(Max|Min)StickResistance=[0-9.]+", r"\1StickResistance=0.0", value)
+            value = re.sub(r"(Max|Min)ReturnSpeed=[0-9.]+", r"\1ReturnSpeed=0.0", value)
+            lines[i] = f"{key}={value}"
+        elif linear_stick and "OrbitYaw" in section and key == "YawRampTime":
+            lines[i] = f"{key}=1000"
+    return "\r\n".join(lines)
+
+
 def apply_game_config(game: Path, s) -> str:
     """Rewrite Coalesced.ini from the original with settings applied. Returns a short summary."""
     conf = game / cfg.CONFIG_REL
@@ -514,13 +564,19 @@ def apply_game_config(game: Path, s) -> str:
     look_edit = turn != 100 or linear_aim
     fight_mouse = bool(s.get("kbm"))  # with keyboard and mouse, fights are always on the mouse buttons
     mouse_camera = bool(s.get("kbm")) and bool(s.get("mouse_look", True))
+    wide_pitch = bool(s.get("wide_pitch", True))
+    no_recenter = bool(s.get("no_auto_recenter"))
+    linear_stick = bool(s.get("linear_stick"))
+    camera_free = wide_pitch or no_recenter or linear_stick
+    linear_aim = linear_aim or linear_stick
+    look_edit = turn != 100 or linear_aim
 
     if turn != 100:
         # The camera's top yaw rate (100 in the original): a cap on how fast it can turn,
         # whatever the mode's turn rate, so it scales with the turn speed too.
         edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
 
-    if not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera:
+    if not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera and not camera_free:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
@@ -555,9 +611,17 @@ def apply_game_config(game: Path, s) -> str:
                 continue
             name, body = files[i]
             files[i] = (name, _edit_camera_for_mouse(body, int(s.get("mouse_smoothing", 10)) / 100))
+    if camera_free:
+        for short in ("Xe-BourneCamera.ini", "BourneCamera.ini"):
+            try:
+                i = cfg.find_file(files, short)
+            except SystemExit:
+                continue
+            name, body = files[i]
+            files[i] = (name, _edit_camera_freedom(body, wide_pitch, no_recenter, linear_stick))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
-    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera} config change(s)"
+    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free} config change(s)"
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -827,6 +891,9 @@ class SettingsView(tk.Frame):
                               ("bloom", "Bloom")])
         self._checks(box, 1, [("lens_flares", "Lens flares"), ("distortion", "Heat haze / distortion")])
         self._slider(box, 2, "fov", "Field of view (%)", 80, 140, 5)
+        self._checks(box, 3, [("wide_pitch", "Look further up and down"),
+                              ("no_auto_recenter", "No camera auto-recentre")])
+        self._check(box, 4, "linear_stick", "Linear stick turning (no turn acceleration, controller)")
 
         box = self._section("Controls")
         self._slider(box, 0, "deadzone", "Stick dead zone (%)", 5, 40, 1)

@@ -7,6 +7,10 @@
   - New launcher setting **Mouse camera smoothing** (default 10%): how much of the game's camera easing stays with mouse look. 0.2.5-0.2.6 kept 25%; lower is snappier. It never goes below 1% of the game's.
   - **Direct mouse look, now the default** (launcher checkbox **Direct (1:1)** beside mouse look; `--mouse_look_direct=false` turns it off): the mouse's movement is added straight to the camera's angles instead of being turned into a right-stick push, so it's exactly 1:1, with no stick dead zone, turn-speed cap or the game's look acceleration. It works in every camera mode (standing, crouching, aiming, sprinting, cover). The camera smoothing setting still applies. Where the player's camera isn't found (menus, loading) the mouse uses the stick method.
   - With the stick method (Direct unticked), fast flicks no longer lose movement: the camera's full-stick turn rate is now 6x the game's (was 4x), and any movement still past it is carried into the next frames instead of dropped (`--mouse_look_max_carry`, 180 degrees; 0 drops it as before).
+- **Camera options** (launcher, Graphics and camera):
+  - **Look further up and down** (on by default): on foot, on stairs and in cover the camera can look about 45 degrees down and 35 up, as far as when aiming, instead of stopping at about 20 (and not at all upwards while jogging). Fights, boss fights and the sprint camera keep the game's limits.
+  - **No camera auto-recentre** (off by default): the camera stays where you point it instead of swinging back behind Bourne after 15 seconds idle or while walking, jogging and sprinting. Middle mouse / right stick press still recentres it.
+  - **Linear stick turning** (off by default): a controller's camera turns at a steady speed for the stick's push, without speeding up while the stick is held, and without the slow zone while aiming.
 - **Arrow keys move through menus instead of turning the camera.** They now press the d-pad (like 1-4), which the menus use and gameplay doesn't; the camera is the mouse's alone.
 
 ## 0.2.6 (2026-11-15)

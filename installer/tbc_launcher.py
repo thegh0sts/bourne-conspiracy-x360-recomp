@@ -39,6 +39,8 @@ RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/relea
 CONTROLS_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/blob/main/docs/keyboard-and-mouse.md"
 SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
+# The settings screen's tabs, top to bottom.
+TABS = ("Game files", "Display", "Graphics", "Camera", "Controls")
 
 # Renderer (--gpu_plugin). "native" is Skullburglar's Vulkan renderer (native-plugin/, from
 # github.com/nlwstein/skullburglar, BSD 3-Clause): it translates the game's GPU commands into
@@ -847,7 +849,7 @@ class SettingsView(tk.Frame):
             box.pack(fill="x", padx=28, pady=(6, 2))
             tk.Label(box, text=f"Your game was built with {built_version(info)}; this launcher is {VERSION}. "
                                "Reinstall to rebuild the game with this version's changes.",
-                     font=("Segoe UI", 10, "bold"), fg="white", bg=ACCENT, wraplength=520, justify="left"
+                     font=("Segoe UI", 10, "bold"), fg="white", bg=ACCENT, wraplength=700, justify="left"
                      ).pack(side="left", padx=10, pady=8)
             tk.Button(box, text="Reinstall now", command=on_reinstall, font=("Segoe UI", 10, "bold"),
                       bd=0, padx=10, pady=4).pack(side="right", padx=10)
@@ -857,18 +859,33 @@ class SettingsView(tk.Frame):
         self._update_shown = False
         self.check_updates(manual=False)
 
-        box = self._section("Game files")
+        # Settings in tabs: a list down the left, the chosen tab's settings on the right.
+        body = tk.Frame(self, bg=BG)
+        nav = tk.Frame(body, bg=BG, width=180)
+        nav.pack(side="left", fill="y", pady=(4, 0))
+        nav.pack_propagate(False)
+        self.pages_frame = tk.Frame(body, bg=PANEL)
+        self.pages_frame.pack(side="left", fill="both", expand=True)
+        self.pages, self.tab_buttons = {}, {}
+        for name in TABS:
+            b = tk.Button(nav, text=name, anchor="w", font=("Segoe UI", 11, "bold"), bd=0, padx=16, pady=9,
+                          cursor="hand2", command=lambda n=name: self.show_tab(n))
+            b.pack(fill="x", pady=(0, 2))
+            self.tab_buttons[name] = b
+
+        box = self._page("Game files")
         tk.Label(box, text=f"Installed in {info['game']}", font=("Segoe UI", 9), fg=DIM, bg=PANEL,
                  anchor="w").grid(row=0, column=0, columnspan=2, sticky="w")
+        self._link(box, "Reinstall from a disc image...", on_reinstall).grid(row=1, column=0, sticky="w", pady=(10, 4))
+        self._link(box, "Use a different install...", on_locate).grid(row=2, column=0, sticky="w")
+        self._subheading(box, 3, "Help")
         links = tk.Frame(box, bg=PANEL)
-        links.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self._link(links, "Reinstall from a disc image...", on_reinstall).pack(side="left")
-        self._link(links, "Use a different install...", on_locate).pack(side="left", padx=14)
+        links.grid(row=4, column=0, columnspan=2, sticky="w")
         self._link(links, "Open logs", self.open_logs).pack(side="left")
         self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=14)
         self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
 
-        box = self._section("Display")
+        box = self._page("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
         self._check(box, 1, "fullscreen", "Fullscreen")
         self._combo(box, 2, "resolution", "Output resolution", self._resolutions())
@@ -887,41 +904,45 @@ class SettingsView(tk.Frame):
         self._check(box, 10, "original_pacing", "Original Xbox 360 frame pacing (slower)")
         tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
                            "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                 ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        box = self._section("Graphics and camera")
-        self._checks(box, 0, [("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
-                              ("bloom", "Bloom")])
-        self._checks(box, 1, [("lens_flares", "Lens flares"), ("distortion", "Heat haze / distortion")])
-        self._slider(box, 2, "fov", "Field of view (%)", 80, 140, 5)
-        self._checks(box, 3, [("wide_pitch", "Look further up and down"),
-                              ("no_auto_recenter", "No camera auto-recentre")])
-        self._check(box, 4, "linear_stick", "Linear stick turning (no turn acceleration, controller)")
+        box = self._page("Graphics")
+        for row, (key, text) in enumerate((("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),
+                                           ("bloom", "Bloom"), ("lens_flares", "Lens flares"),
+                                           ("distortion", "Heat haze / distortion"))):
+            self._check(box, row, key, text)
 
-        box = self._section("Controls")
-        self._slider(box, 0, "deadzone", "Stick dead zone (%)", 5, 40, 1)
+        box = self._page("Camera")
+        self._slider(box, 0, "fov", "Field of view (%)", 80, 140, 5)
+        self._check(box, 1, "wide_pitch", "Look further up and down")
+        self._check(box, 2, "no_auto_recenter", "No camera auto-recentre")
+        self._check(box, 3, "linear_stick", "Linear stick turning (no turn acceleration, controller)")
+
+        box = self._page("Controls")
         line = tk.Frame(box, bg=PANEL)
-        line.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        line.grid(row=0, column=0, columnspan=2, sticky="w")
         v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
         self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
+        self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
+        self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
+        self._subheading(box, 3, "Mouse")
         line2 = tk.Frame(box, bg=PANEL)
-        line2.grid(row=2, column=0, columnspan=2, sticky="w")
+        line2.grid(row=4, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
                           ("mouse_look_direct", "Direct (1:1)")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
-        self._slider(box, 3, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 4, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
-        self._slider(box, 5, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
-        self._slider(box, 6, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
-        tk.Label(box, text="Mouse camera smoothing: how much of the game's camera easing stays with mouse look "
-                           "(lower is more responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
-                           "Stick turn speed is for a controller.",
+        self._slider(box, 5, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
+        self._slider(box, 6, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
+        self._slider(box, 7, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        tk.Label(box, text="Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
+                           "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover.",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
-                 ).grid(row=7, column=0, columnspan=2, sticky="w")
+                 ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.show_tab(self.s.get("tab") if self.s.get("tab") in TABS else "Display")
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)
@@ -940,15 +961,31 @@ class SettingsView(tk.Frame):
                                          "Set them back to default to restore the original game.")
         tk.Label(self, textvariable=self.status, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=700,
                  justify="left").pack(side="bottom", anchor="w", padx=28)
+        body.pack(fill="both", expand=True, padx=28, pady=(14, 4))
 
     # widgets ------------------------------------------------------------
-    def _section(self, title):
-        tk.Label(self, text=title, font=("Segoe UI", 11, "bold"), fg=FG, bg=BG).pack(anchor="w", padx=28,
-                                                                                     pady=(12, 3))
-        box = tk.Frame(self, bg=PANEL, padx=14, pady=10)
-        box.pack(fill="x", padx=28)
+    def _page(self, title):
+        """A tab's page: its heading, then a grid (label | control) for its settings."""
+        page = tk.Frame(self.pages_frame, bg=PANEL, padx=22, pady=16)
+        page.place(relx=0, rely=0, relwidth=1, relheight=1)
+        tk.Label(page, text=title, font=("Segoe UI", 13, "bold"), fg=FG, bg=PANEL).pack(anchor="w", pady=(0, 10))
+        box = tk.Frame(page, bg=PANEL)
+        box.pack(fill="x")
         box.columnconfigure(1, weight=1)
+        self.pages[title] = page
         return box
+
+    def _subheading(self, box, row, text):
+        tk.Label(box, text=text, font=("Segoe UI", 9, "bold"), fg=DIM, bg=PANEL
+                 ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(14, 4))
+
+    def show_tab(self, name):
+        self.pages[name].tkraise()
+        for n, b in self.tab_buttons.items():
+            on = n == name
+            b.configure(bg=PANEL if on else BG, fg=FG if on else DIM, activebackground=PANEL,
+                        activeforeground=FG)
+        self.s["tab"] = name  # reopened on this tab (saved with the settings)
 
     def _link(self, parent, text, cmd):
         return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 9, "underline"), fg=FG, bg=PANEL,
@@ -1207,9 +1244,9 @@ class SettingsView(tk.Frame):
 class Launcher:
     def __init__(self):
         self.root = make_root(APP_NAME)
-        height = min(980, self.root.winfo_screenheight() - 80)
-        self.root.geometry(f"780x{height}")
-        self.root.minsize(700, 760)
+        height = min(740, self.root.winfo_screenheight() - 80)
+        self.root.geometry(f"980x{height}")
+        self.root.minsize(900, 660)
         self.view = None
         info = load_install()
         if info:

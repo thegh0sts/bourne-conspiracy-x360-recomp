@@ -11,6 +11,7 @@
 - **Linear stick turning** option for controllers: no turn acceleration while the stick is held.
 
 ### Changes
+- **The launcher's settings are in tabs** down the left (Game files, Display, Graphics, Camera, Controls) instead of one long page.
 - **Arrow keys move through menus instead of turning the camera.** The camera is the mouse's alone; W / S and 1-4 still work in menus too.
 - With Direct unticked, fast mouse flicks no longer lose movement.
 

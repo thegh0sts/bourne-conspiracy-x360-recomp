@@ -9,7 +9,8 @@ rem performance patches and Skullburglar's native Vulkan renderer, the default r
 rem ..\tools\build_sdk.bat alone leaves the native renderer out and players get Xenos).
 rem It's zipped into the exe, so the installer needs no SDK download.
 rem Default: C:\rexglue-src\rexglue-sdk\out\install\win-amd64 if it exists. Without one, the
-rem installer downloads the stock SDK from GitHub instead.
+rem installer downloads the stock SDK from GitHub instead. SDK_ZIP (environment) names a
+rem ready-made bundle zip to use instead (GitHub's build, .github\workflows\launcher.yml).
 setlocal
 cd /d "%~dp0"
 
@@ -36,7 +37,17 @@ mkdir payload\licenses
 copy /y ..\licenses\*.txt payload\licenses\ >nul || goto :missing
 copy /y ..\LICENSE payload\licenses\bourne-conspiracy-x360-recomp-LICENSE.txt >nul 2>&1
 
-if "%SDK_FOLDER%"=="" (
+rem A ready-made SDK bundle (SDK_ZIP: the path of a zip named like SDK_BUNDLE, as GitHub's build
+rem downloads from the "sdk" release) is used as it is instead of zipping an SDK folder.
+if defined SDK_ZIP (
+  if not exist "%SDK_ZIP%" (
+    echo SDK_ZIP "%SDK_ZIP%" doesn't exist.
+    exit /b 1
+  )
+  echo Using the SDK bundle %SDK_ZIP%
+  mkdir payload\sdk
+  copy /y "%SDK_ZIP%" "payload\sdk\%SDK_BUNDLE%" >nul || goto :fail
+) else if "%SDK_FOLDER%"=="" (
   echo No SDK folder: the installer will download the stock ReXGlue SDK.
 ) else (
   if not exist "%SDK_FOLDER%\lib\cmake\rexglue" (

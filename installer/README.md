@@ -42,6 +42,20 @@ It gathers the project files into `payload/`, copies in `..\tools\tbc_config.py`
 
 If an SDK built by `..\tools\build_sdk.bat` exists (default `C:\rexglue-src\rexglue-sdk\out\install\win-amd64`, or pass a folder: `build_installer.bat <SDK folder>`), it's zipped into the exe (about 40-50 MB) and the installer unpacks it instead of downloading the stock SDK. That gives players FSR/CAS and the performance patches. Change `SDK_BUNDLE` in the script when the SDK build changes, so existing installs replace their SDK. The launcher and installer are one exe, so it unpacks the bundle on every start; launching takes a moment longer.
 
+### On GitHub
+
+`.github/workflows/launcher.yml` builds the same exe on GitHub's Windows machines. Pushing a version tag (`git tag v0.2.9`, `git push origin v0.2.9`) builds it and makes a **draft** release for the tag, with the exe attached and `docs/release-<version>.md` as the notes; publish the draft on GitHub when it looks right. The tag must match `VERSION` in `tbc_launcher.py`, or the build stops. **Actions > Launcher > Run workflow** builds it from any branch without a release (the exe is a download on the run's page).
+
+GitHub doesn't build the SDK: the bundle named by `SDK_BUNDLE` is downloaded from the **`sdk`** release (a pre-release, so the launcher's update check never offers it). Upload each new bundle there once, from a PC that has built it with `..\tools\build_native.bat`:
+
+```
+cd installer
+build_installer.bat
+gh release upload sdk payload\sdk\<SDK_BUNDLE name>.zip
+```
+
+The first time, make the release: `gh release create sdk payload\sdk\<name>.zip --prerelease --title "SDK bundles" --notes "ReXGlue SDK builds the launcher packs (for GitHub's build). Not a game release."`
+
 To run without packaging: `python tbc_launcher.py` (after running `build_installer.bat` once, so `payload/` and `tbc_config.py` exist).
 
 ## Files

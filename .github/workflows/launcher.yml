@@ -1,0 +1,75 @@
+# Builds the launcher / installer, BourneConspiracy.exe, on GitHub's Windows machines.
+#
+# - Pushing a version tag (v0.2.9, v0.2.9-1, ...) builds it and makes a DRAFT release for that tag
+#   with the exe attached and docs/release-<version>.md as its notes. Check it, then publish it on
+#   GitHub (Releases > the draft > Edit > Publish release).
+# - Actions > Launcher > Run workflow builds it from any branch and keeps the exe as a download on
+#   the run's page (no release).
+#
+# The SDK bundle in the exe (installer\build_installer.bat's SDK_BUNDLE, with the native renderer)
+# isn't built here: it's taken from the "sdk" release, where each bundle is uploaded once when the
+# SDK changes (see installer/README.md). Nothing from the game is used or made here.
+name: Launcher
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check the launcher's version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $version = (Select-String -Path installer/tbc_launcher.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          if ($tag -ne $version) {
+            Write-Error "The tag is v$tag but installer/tbc_launcher.py says VERSION = `"$version`"."
+            exit 1
+          }
+
+      - name: Get the SDK bundle
+        shell: pwsh
+        run: |
+          $name = (Select-String -Path installer/build_installer.bat -Pattern 'set "SDK_BUNDLE=(.+)"').Matches[0].Groups[1].Value
+          gh release download sdk --repo "${{ github.repository }}" --pattern $name --dir sdk-bundle
+          if (-not (Test-Path "sdk-bundle/$name")) {
+            Write-Error "$name isn't on the 'sdk' release. Upload it there first (installer/README.md)."
+            exit 1
+          }
+          "SDK_ZIP=$PWD\sdk-bundle\$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build BourneConspiracy.exe
+        shell: cmd
+        run: installer\build_installer.bat
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BourneConspiracy
+          path: installer/dist/BourneConspiracy.exe
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $notes = "docs/release-$($tag.TrimStart('v')).md"
+          if (Test-Path $notes) {
+            gh release create $tag installer/dist/BourneConspiracy.exe --draft --title $tag --notes-file $notes
+          } else {
+            gh release create $tag installer/dist/BourneConspiracy.exe --draft --title $tag --generate-notes
+          }

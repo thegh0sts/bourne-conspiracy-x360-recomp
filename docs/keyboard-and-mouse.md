@@ -1,6 +1,6 @@
 # Keyboard and mouse controls
 
-Turn on **Keyboard and mouse** in the launcher's Controls section. The layout is fixed: the
+Turn on **Keyboard and mouse** in the launcher's Controls tab. The layout is fixed: the
 button prompts, the key images in the HUD and the quick-time-event prompts are drawn for it.
 
 ## On foot

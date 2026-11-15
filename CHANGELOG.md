@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- **The FPS counter shows in fullscreen with the native renderer.** It's now drawn into the picture by the renderer's last pass (large digits on a dark box at the top-left, green / yellow / red as before) instead of a separate window, which the graphics driver hides when a Vulkan game fills the screen. It costs nothing measurable and also shows in screenshots and recordings. Xenos keeps the separate window.
+
+### Updating
+Reinstall when the launcher asks: the native renderer is in the bundled SDK, now `tbc9`.
+
 ## 0.2.8 (2026-11-16)
 
 A launcher-only update: the settings are in tabs.

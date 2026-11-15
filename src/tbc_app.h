@@ -21,10 +21,11 @@ namespace tbc {
 void LogVersion();
 }  // namespace tbc
 
-// --show_fps=true shows the game's frame rate in a small window at the top-left corner.
-// It's a separate native window, not an ImGui overlay: the SDK's ImGui overlays cost
-// about 20% of the frame rate (see fps_overlay.cpp). F3 still opens the SDK's full
-// debug overlay.
+// --show_fps=true shows the game's frame rate at the top-left corner. The native renderer
+// draws it into the picture itself (native-plugin/patches/0006-fps-counter.patch), so it also
+// shows in fullscreen; with Xenos it's a small separate window (fps_overlay.cpp). Neither is
+// an ImGui overlay: the SDK's ImGui overlays cost about 20% of the frame rate. F3 still opens
+// the SDK's full debug overlay.
 REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in the corner");
 
 class TbcApp : public rex::ReXApp {
@@ -49,12 +50,13 @@ class TbcApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "native";
     }
+    native_renderer_ = config.gpu_plugin == "native";
     // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
     tbc::display::MatchDisplayRefreshRate();
   }
 
   void OnPostSetup() override {
-    if (REXCVAR_GET(show_fps)) {
+    if (REXCVAR_GET(show_fps) && !native_renderer_) {  // the native renderer draws its own
       tbc::overlay::StartFpsOverlay();
     }
     // --dev_debug_runtime: log and stub code addresses with no function (debug_tools.h).
@@ -62,6 +64,11 @@ class TbcApp : public rex::ReXApp {
   }
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
+
+ private:
+  bool native_renderer_ = true;
+
+ public:
 
   // Other hooks available for customization:
   // void OnLoadXexImage(std::string& xex_image) override {}

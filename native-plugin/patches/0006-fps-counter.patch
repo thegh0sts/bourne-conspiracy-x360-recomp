@@ -1,0 +1,125 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index a9a91ff..325e083 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -116,6 +116,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     HoldForWarmup();
+     if (InstrState* is = FindInstrState()) PublishInstr(*is, frontbuffer_width, frontbuffer_height);
+     ++frames_;
++    UpdateFpsOverlay();
+     if (bots::HybridState* hs = bots::FindHybridState(); hs && hs->fps_counter.load(std::memory_order_relaxed))
+       hs->swaps.fetch_add(1, std::memory_order_relaxed);  // the in-game FPS counter (fps_counter.h)
+     // BOTS_GFX_NO_PRESENT=1 (benchmarking): render everything but never hand the frame to the presenter. Under a
+@@ -405,6 +406,24 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     return m;
+   }
+ 
++  // tbc: with --show_fps (the game's setting, read through the shared cvar registry) the present pass draws the
++  // frame rate, counted here over half-second windows, in the top-left corner (Renderer::set_overlay_fps).
++  void UpdateFpsOverlay() {
++    static const bool show = rex::cvar::Query<bool>("show_fps");
++    if (!show) return;
++    const auto now = std::chrono::steady_clock::now();
++    if (fps_frames_ == 0) fps_start_ = now;
++    ++fps_frames_;
++    const double seconds = std::chrono::duration<double>(now - fps_start_).count();
++    if (seconds >= 0.5) {
++      renderer_->set_overlay_fps(float(double(fps_frames_ - 1) / seconds));
++      fps_frames_ = 1;
++      fps_start_ = now;
++    }
++  }
++  uint64_t fps_frames_ = 0;
++  std::chrono::steady_clock::time_point fps_start_{};
++
+   void TrackFrame() {
+     // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
+     static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index c89a326..480e697 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -50,6 +50,45 @@ vec3 CatmullRom(vec2 position, vec2 size) {
+           Tap(vec2(t3.x, t3.y), size) * w3.x) * w3.y;
+ }
+ 
++// tbc FPS counter: render_scale.w (frames per second, 0 = off) as seven-segment digits on a dark box in the
++// top-left corner, drawn here so it costs nothing extra and shows in exclusive / direct-flip fullscreen too (a
++// separate overlay window can't). Digit height h output pixels; a digit is 0.55h wide.
++// Segment bits: 0 top, 1 top right, 2 bottom right, 3 bottom, 4 bottom left, 5 top left, 6 middle.
++const uint kSegments[10] = uint[10](0x3Fu, 0x06u, 0x5Bu, 0x4Fu, 0x66u, 0x6Du, 0x7Du, 0x07u, 0x7Fu, 0x6Fu);
++
++bool InBox(vec2 p, vec2 lo, vec2 hi) { return all(greaterThanEqual(p, lo)) && all(lessThan(p, hi)); }
++
++// p: position in the digit in units of its height (x 0-0.55, y 0-1 downwards).
++bool DigitLit(vec2 p, uint digit) {
++  const float w = 0.55, t = 0.12;
++  uint s = kSegments[min(digit, 9u)];
++  return ((s & 1u) != 0u && InBox(p, vec2(t, 0.0), vec2(w - t, t))) ||
++         ((s & 2u) != 0u && InBox(p, vec2(w - t, 0.0), vec2(w, 0.5 + t * 0.5))) ||
++         ((s & 4u) != 0u && InBox(p, vec2(w - t, 0.5 - t * 0.5), vec2(w, 1.0))) ||
++         ((s & 8u) != 0u && InBox(p, vec2(t, 1.0 - t), vec2(w - t, 1.0))) ||
++         ((s & 16u) != 0u && InBox(p, vec2(0.0, 0.5 - t * 0.5), vec2(t, 1.0))) ||
++         ((s & 32u) != 0u && InBox(p, vec2(0.0, 0.0), vec2(t, 0.5 + t * 0.5))) ||
++         ((s & 64u) != 0u && InBox(p, vec2(t, 0.5 - t * 0.5), vec2(w - t, 0.5 + t * 0.5)));
++}
++
++vec4 FpsOverlay(vec2 pixel, vec4 color, float fps) {
++  float h = max(14.0, floor(float(textureSize(source, 0).y) / render_scale.x / 32.0));
++  uint value = uint(clamp(round(fps), 0.0, 999.0));
++  uint count = value >= 100u ? 3u : (value >= 10u ? 2u : 1u);
++  float advance = 0.8 * h;  // digit width + gap
++  vec2 origin = vec2(0.6 * h);  // the digits' top-left; the box has 0.3h of padding round them
++  vec2 lo = origin - 0.3 * h, hi = origin + vec2(float(count) * advance - 0.25 * h, h) + 0.3 * h;
++  if (!InBox(pixel, lo, hi)) return color;
++  vec4 result = vec4(mix(color.rgb, vec3(0.06, 0.07, 0.09), 0.8), color.a);
++  vec2 p = (pixel - origin) / h;
++  uint k = uint(max(floor(p.x / 0.8), 0.0));
++  if (k >= count || p.y < 0.0 || p.y >= 1.0) return result;
++  uint digit = (value / (k == count - 1u ? 1u : (k == count - 2u ? 10u : 100u))) % 10u;
++  if (!DigitLit(vec2(p.x - float(k) * 0.8, p.y), digit)) return result;
++  vec3 ink = fps >= 55.0 ? vec3(0.47, 0.86, 0.47) : (fps >= 28.0 ? vec3(0.92, 0.78, 0.35) : vec3(0.92, 0.35, 0.35));
++  return vec4(ink, color.a);
++}
++
+ void main() {
+   // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
+   // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
+@@ -60,6 +99,7 @@ void main() {
+                                  : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
+   result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
+                 1023.0) / 1023.0;
++  if (render_scale.w > 0.0) result = FpsOverlay(gl_FragCoord.xy, result, render_scale.w);
+ }
+ )";
+ 
+@@ -180,7 +220,7 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+     return v && std::strcmp(v, "bilinear") == 0;
+   }();
+   const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
+-  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, 0.0f};
++  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
+   std::memcpy(ramp + 256 * 4, params, sizeof(params));
+   const VkDescriptorSet set = AllocateSet(present_set_layout_);
+   if (!set) {
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index bda30a2..3573bc6 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -335,6 +335,7 @@ class Renderer : public Pm4Sink {
+   // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
+   // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
+   float scale_ = 1.0f;
++  float overlay_fps_ = 0.0f;
+   uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
+   int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
+   bool ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
+@@ -375,6 +376,8 @@ class Renderer : public Pm4Sink {
+   // The guest output image's size relative to the frame buffer: above render scale 1 the presenter gets the
+   // rendered size (as the emulated renderer's resolution scale does); below 1 the present pass upscales to 1.
+   float output_scale() const { return std::max(scale_, 1.0f); }
++  // tbc: the FPS counter the present pass draws in the top-left corner (0: none).
++  void set_overlay_fps(float fps) { overlay_fps_ = fps; }
+   enum GpuCat : uint8_t { kGpuDraw, kGpuResolve, kGpuUpload, kGpuTexture, kGpuTransfer, kGpuPresent, kGpuOther };
+   static constexpr const char* kGpuCatNames[] = {"draw", "resolve", "upload", "texture", "transfer", "present",
+                                                  "other"};

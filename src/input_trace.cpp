@@ -24,6 +24,10 @@
 #include "prompts.h"
 #include "qte.h"
 
+namespace tbc::menu_quit {
+void OnControllerState(const PPCContext& ctx, uint8_t* base, uint32_t state);  // menu_quit.cpp
+}
+
 REXCVAR_DEFINE_BOOL(input_trace, false, "Debug",
                     "Log each change of the controller state the game reads; development only");
 
@@ -95,6 +99,7 @@ extern "C" REX_FUNC(sub_823213D8) {
   tbc::qte::OnControllerState(base, state);
   tbc::prompts::PatchHudTextures(ctx, base);
   tbc::camera::MouseLook(ctx, base, state);
+  tbc::menu_quit::OnControllerState(ctx, base, state);  // Quit Game on the main menu
   // Title screen, keyboard and mouse: its prompt shows Enter (A's menu key), but the screen
   // only takes Start. A press of A (Enter, Space) also presses Start there.
   if (tbc::prompts::TitleScreenUp()) {

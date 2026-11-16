@@ -38,6 +38,7 @@ set(TBC_SOURCES
     src/key_glyphs.cpp
     src/achievement_list.cpp
     src/vibration.cpp
+    src/menu_quit.cpp
 )
 
 if(WIN32)

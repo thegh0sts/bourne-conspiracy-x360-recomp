@@ -394,8 +394,13 @@ void PatchHud(const PPCContext& ctx, uint8_t* base,
 void PatchPadPrompts(const PPCContext& ctx, uint8_t* base, bool playstation);  // key_glyphs.cpp
 }
 
+namespace tbc::menu_quit {
+bool OnDrawString(PPCContext& ctx, uint8_t* base);  // menu_quit.cpp: Quit Game on the main menu
+}
+
 extern "C" REX_FUNC(sub_82C49D88) {
   tbc::prompts::TraceText(ctx, base);
+  if (tbc::menu_quit::OnDrawString(ctx, base)) return;
   if (ctx.r7.u32) tbc::glyphs::ProbeFont(ctx, base, ctx.r7.u32);
 
   const uint32_t text = ctx.r6.u32;

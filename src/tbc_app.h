@@ -10,6 +10,7 @@
 
 #include <rex/cvar.h>
 #include <rex/rex_app.h>
+#include <rex/ui/overlay/achievement_notification.h>
 
 #include "crash_win.h"
 #include "debug_tools.h"
@@ -21,11 +22,20 @@ namespace tbc {
 void LogVersion();
 }  // namespace tbc
 
-// --show_fps=true shows the game's frame rate in a small window at the top-left corner.
-// It's a separate native window, not an ImGui overlay: the SDK's ImGui overlays cost
-// about 20% of the frame rate (see fps_overlay.cpp). F3 still opens the SDK's full
-// debug overlay.
+// --show_fps=true shows the game's frame rate at the top-left corner. The native renderer
+// draws it into the picture itself (native-plugin/patches/0006-fps-counter.patch), so it also
+// shows in fullscreen; with Xenos it's a small separate window (fps_overlay.cpp). Neither is
+// an ImGui overlay: the SDK's ImGui overlays cost about 20% of the frame rate. F3 still opens
+// the SDK's full debug overlay.
 REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in the corner");
+// --show_fps_detail=true (with --show_fps): the native renderer's counter also shows the frame
+// time and slowest frame, GPU time and load, CPU load (machine and game), RAM and VRAM. The
+// renderer reads it through the shared cvar registry (native-plugin/patches/0006-fps-counter.patch).
+// --achievement_popups=false: no pop-up when an achievement unlocks. It's still unlocked and
+// listed in the achievements overlay (F7); only the toast (an ImGui dialog) isn't made.
+REXCVAR_DEFINE_BOOL(achievement_popups, true, "UI", "Show a pop-up when an achievement unlocks");
+REXCVAR_DEFINE_BOOL(show_fps_detail, false, "UI",
+                    "With show_fps: also frame time, GPU, CPU and memory (native renderer)");
 
 class TbcApp : public rex::ReXApp {
  public:
@@ -49,12 +59,13 @@ class TbcApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "native";
     }
+    native_renderer_ = config.gpu_plugin == "native";
     // --match_display_refresh: the guest vblank follows the monitor (display_refresh.cpp).
     tbc::display::MatchDisplayRefreshRate();
   }
 
   void OnPostSetup() override {
-    if (REXCVAR_GET(show_fps)) {
+    if (REXCVAR_GET(show_fps) && !native_renderer_) {  // the native renderer draws its own
       tbc::overlay::StartFpsOverlay();
     }
     // --dev_debug_runtime: log and stub code addresses with no function (debug_tools.h).
@@ -63,13 +74,21 @@ class TbcApp : public rex::ReXApp {
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
 
+  std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog() override {
+    if (!REXCVAR_GET(achievement_popups)) return nullptr;  // the runtime copes with none
+    return rex::ReXApp::CreateAchievementNotificationDialog();
+  }
+
+ private:
+  bool native_renderer_ = true;
+
+ public:
+
   // Other hooks available for customization:
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
-  // std::unique_ptr<rex::ui::AchievementNotificationDialog>
-  // CreateAchievementNotificationDialog() override;
   // Folders the game lists at startup. Some disc extractors drop empty folders (the disc's Engine
   // folder is empty), and the runtime then throws "Failed to enumerate directory: The system
   // cannot find the path specified" instead of telling the game the folder isn't there: an

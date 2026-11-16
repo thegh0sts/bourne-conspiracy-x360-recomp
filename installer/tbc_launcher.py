@@ -42,6 +42,9 @@ PANEL = "#1c2029"
 # The last launcher version whose changes need the game rebuilt (src/, the SDK, the build). A
 # launcher-only release leaves this alone, so games built with it aren't asked to reinstall.
 GAME_VERSION = "0.2.7"
+# The FPS counter: off, the frame rate, or the frame rate with frame time, GPU, CPU and memory
+# (--show_fps_detail; the native renderer's counter only, Xenos shows the frame rate).
+FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
 # The settings screen's tabs, top to bottom.
 TABS = ("Game files", "Display", "Graphics", "Camera", "Controls")
 
@@ -316,7 +319,8 @@ DEFAULTS = {
     "render_path": RENDER_PATHS[0],
     "vsync": True,
     "original_pacing": False,
-    "show_fps": False,
+    "fps_counter": "Off",
+    "hide_achievements": False,
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -354,6 +358,9 @@ def load_settings():
     if is_ultrawide(s["resolution"]) and RENDERER_PLUGIN.get(s.get("renderer")) != "native":
         s["resolution"] = DEFAULTS["resolution"]
     s["render_scale"] = matching_scale(s["resolution"], s["render_scale"])
+    if s.get("fps_counter") not in FPS_COUNTER:  # 0.2.8 and earlier: a Show FPS counter checkbox
+        s["fps_counter"] = "FPS" if s.get("show_fps") else "Off"
+    s.pop("show_fps", None)
     if s.get("fps") not in FPS:  # labels from older launcher versions
         s["fps"] = DEFAULTS["fps"]
     return s
@@ -778,8 +785,13 @@ def game_args(s, screen=None):
     args.append("--d3d12_allow_variable_refresh_rate_and_tearing=" + ("false" if s["vsync"] else "true"))
     rate, _ = FPS_MODE[s["fps"]]
     args.append(f"--frame_rate={rate}")
-    if s.get("show_fps"):
+    counter = s.get("fps_counter", "Off")
+    if counter != "Off":
         args.append("--show_fps=true")
+        if counter.startswith("Detailed"):
+            args.append("--show_fps_detail=true")
+    if s.get("hide_achievements"):
+        args.append("--achievement_popups=false")
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
         # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
@@ -903,11 +915,13 @@ class SettingsView(tk.Frame):
         self._combo(box, 7, "aa", "Anti-aliasing (Xenos only)", AA)
         self._display_changed()  # grey out the Xenos-only settings for the native renderer
         self._combo(box, 8, "fps", "Frame rate", FPS)
-        self._checks(box, 9, [("vsync", "VSync (off: may tear, can be faster)"), ("show_fps", "Show FPS counter")])
-        self._check(box, 10, "original_pacing", "Original Xbox 360 frame pacing (slower)")
+        self._combo(box, 9, "fps_counter", "FPS counter", FPS_COUNTER)
+        self._checks(box, 10, [("vsync", "VSync (off: may tear, can be faster)"),
+                               ("original_pacing", "Original Xbox 360 frame pacing (slower)")])
+        self._check(box, 11, "hide_achievements", "Hide achievement pop-ups")
         tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
                            "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                 ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         box = self._page("Graphics")
         for row, (key, text) in enumerate((("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),

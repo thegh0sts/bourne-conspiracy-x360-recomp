@@ -1,0 +1,353 @@
+diff --git a/src/gfx/host_stats.cpp b/src/gfx/host_stats.cpp
+index 8a3052d..bf8863f 100644
+--- a/src/gfx/host_stats.cpp
++++ b/src/gfx/host_stats.cpp
+@@ -6,6 +6,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <set>
++#include <string>
+ #include <vector>
+ 
+ #if defined(_WIN32)
+@@ -79,6 +80,27 @@ CpuTimes ProcessCpuTimes() {
+   return t;
+ }
+ 
++SystemCpu SystemCpuTimes() {
++  SystemCpu t;
++#if defined(_WIN32)
++  FILETIME idle, kernel, user;  // kernel includes idle
++  if (GetSystemTimes(&idle, &kernel, &user)) {
++    auto us = [](const FILETIME& f) { return ((uint64_t(f.dwHighDateTime) << 32) | f.dwLowDateTime) / 10; };
++    t.total_us = us(kernel) + us(user);
++    t.busy_us = t.total_us - std::min(us(idle), t.total_us);
++  }
++#elif defined(__linux__)
++  std::ifstream stat("/proc/stat");
++  std::string cpu;
++  uint64_t v[8] = {};
++  if (stat >> cpu >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5] >> v[6] >> v[7] && cpu == "cpu") {
++    const uint64_t idle = v[3] + v[4], total = v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
++    t.total_us = total * 10000, t.busy_us = (total - idle) * 10000;  // USER_HZ ticks, normally 100 a second
++  }
++#endif
++  return t;
++}
++
+ double ProcessMemoryMB() {
+ #if defined(_WIN32)
+   PROCESS_MEMORY_COUNTERS pmc{};
+diff --git a/src/gfx/host_stats.h b/src/gfx/host_stats.h
+index 51b9922..993327e 100644
+--- a/src/gfx/host_stats.h
++++ b/src/gfx/host_stats.h
+@@ -14,6 +14,13 @@ struct CpuTimes {
+ };
+ CpuTimes ProcessCpuTimes();
+ 
++// tbc: the whole machine's CPU time so far, busy and in total (busy + idle), summed over the logical CPUs: two samples
++// give the system's CPU load. Zero where unknown.
++struct SystemCpu {
++  uint64_t busy_us = 0, total_us = 0;
++};
++SystemCpu SystemCpuTimes();
++
+ // Average clock over the logical CPUs and their maximum, MHz, and the OS's current limit (Windows: MhzLimit, below
+ // the maximum while the CPU is power or thermal limited). 0 where unknown.
+ struct CpuClock {
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index a9a91ff..1819275 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -9,6 +9,7 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <condition_variable>
++#include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
+@@ -116,6 +117,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     HoldForWarmup();
+     if (InstrState* is = FindInstrState()) PublishInstr(*is, frontbuffer_width, frontbuffer_height);
+     ++frames_;
++    UpdateFpsOverlay();
+     if (bots::HybridState* hs = bots::FindHybridState(); hs && hs->fps_counter.load(std::memory_order_relaxed))
+       hs->swaps.fetch_add(1, std::memory_order_relaxed);  // the in-game FPS counter (fps_counter.h)
+     // BOTS_GFX_NO_PRESENT=1 (benchmarking): render everything but never hand the frame to the presenter. Under a
+@@ -405,6 +407,80 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     return m;
+   }
+ 
++  // tbc: with --show_fps (the game's setting, read through the shared cvar registry) the present pass draws the
++  // frame rate, counted here over half-second windows, in the top-left corner (Renderer::SetOverlay). With
++  // --show_fps_detail too: the frame time and the slowest frame, the GPU time per frame and how busy that keeps the
++  // GPU (the renderer's timestamp queries, turned on for it), the CPU load of the whole machine and of the game
++  // (a share of all logical CPUs), and the game's RAM (working set) and VRAM.
++  void UpdateFpsOverlay() {
++    static const bool show = rex::cvar::Query<bool>("show_fps");
++    static const bool detail = show && rex::cvar::Query<bool>("show_fps_detail");
++    if (!show) return;
++    const auto now = std::chrono::steady_clock::now();
++    if (fps_frames_ == 0) {
++      fps_start_ = now;
++      fps_gpu_ns_ = GpuNs();
++      fps_cpu_ = host::ProcessCpuTimes();
++      fps_system_ = host::SystemCpuTimes();
++    } else {
++      fps_worst_ms_ = std::max(fps_worst_ms_, std::chrono::duration<double, std::milli>(now - fps_last_).count());
++    }
++    fps_last_ = now;
++    ++fps_frames_;
++    const double seconds = std::chrono::duration<double>(now - fps_start_).count();
++    if (seconds < 0.5) return;
++    const double frames = double(fps_frames_ - 1);
++    const double fps = frames / seconds;
++    std::vector<std::string> lines;
++    char buf[64];
++    if (!detail) {
++      std::snprintf(buf, sizeof(buf), "%.0f FPS", fps);
++      lines.emplace_back(buf);
++    } else {
++      std::snprintf(buf, sizeof(buf), "%.0f FPS  %.1f MS  MAX %.1f", fps, frames > 0 ? seconds * 1000.0 / frames : 0.0,
++                    fps_worst_ms_);
++      lines.emplace_back(buf);
++      const uint64_t gpu_ns = GpuNs();
++      if (renderer_->gpu_timing() && frames > 0) {
++        const double busy = double(gpu_ns - fps_gpu_ns_) / 1e9;
++        std::snprintf(buf, sizeof(buf), "GPU %.1f MS  %.0f%%", busy * 1000.0 / frames,
++                      std::min(100.0, busy / seconds * 100.0));
++      } else {
++        std::snprintf(buf, sizeof(buf), "GPU --");
++      }
++      lines.emplace_back(buf);
++      const host::CpuTimes cpu = host::ProcessCpuTimes();
++      const host::SystemCpu system = host::SystemCpuTimes();
++      const double cpus = std::max(1u, std::thread::hardware_concurrency());
++      const double game = double((cpu.user_us + cpu.kernel_us) - (fps_cpu_.user_us + fps_cpu_.kernel_us)) /
++                          (seconds * 1e6 * cpus) * 100.0;
++      const uint64_t total = system.total_us - fps_system_.total_us;
++      const double all = total ? double(system.busy_us - fps_system_.busy_us) / double(total) * 100.0 : 0.0;
++      std::snprintf(buf, sizeof(buf), "CPU %.0f%%  GAME %.0f%%", std::min(100.0, all), std::min(100.0, game));
++      lines.emplace_back(buf);
++      std::snprintf(buf, sizeof(buf), "RAM %.1f GB  VRAM %.1f GB", host::ProcessMemoryMB() / 1024.0,
++                    renderer_->VramUsedMB() / 1024.0);
++      lines.emplace_back(buf);
++      fps_gpu_ns_ = gpu_ns;
++      fps_cpu_ = cpu;
++      fps_system_ = system;
++    }
++    renderer_->SetOverlay(float(fps), lines);
++    fps_frames_ = 1;
++    fps_start_ = now;
++    fps_worst_ms_ = 0.0;
++  }
++  uint64_t GpuNs() const {
++    uint64_t ns = 0;
++    for (uint64_t v : renderer_->stats().gpu_ns) ns += v;
++    return ns;
++  }
++  uint64_t fps_frames_ = 0, fps_gpu_ns_ = 0;
++  double fps_worst_ms_ = 0.0;
++  std::chrono::steady_clock::time_point fps_start_{}, fps_last_{};
++  host::CpuTimes fps_cpu_;
++  host::SystemCpu fps_system_;
++
+   void TrackFrame() {
+     // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
+     static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index c89a326..5ecfc7e 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -1,5 +1,7 @@
+ // Renderer: native present. The front buffer goes through the guest's 256-entry gamma ramp into the presenter's
+ // guest output image, as the emulated swap does for 8_8_8_8 front buffers.
++#include <algorithm>
++#include <cctype>
+ #include <chrono>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -22,7 +24,7 @@ namespace {
+ // std140 packs the 256 ramp entries as 64 uvec4s.
+ constexpr const char* kPresentShader = R"(#version 450
+ layout(set = 0, binding = 0) uniform sampler2DArray source;
+-layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; };
++layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; uvec4 text[8]; uvec4 text_layout; };
+ layout(location = 0) out vec4 result;
+ 
+ uint Ramp(float v) {
+@@ -50,6 +52,51 @@ vec3 CatmullRom(vec2 position, vec2 size) {
+           Tap(vec2(t3.x, t3.y), size) * w3.x) * w3.y;
+ }
+ 
++// tbc FPS counter / performance overlay: text_layout.x lines of text (up to 32 characters each, packed 4 to a uint
++// in text[] as indices into kFont) in a 5x7 pixel font on a dark box in the top-left corner, scaled with the output
++// height. Drawn here so it costs nothing extra and shows in exclusive / direct-flip fullscreen too (a separate overlay
++// window can't). The first line is coloured by render_scale.w, the frame rate.
++// kFont: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.%()/:-", bit y * 5 + x of each glyph (x across, y down), bits 32-34
++// in .y.
++const uvec2 kFont[44] = uvec2[44](
++    uvec2(0x00000000u, 0x0u), uvec2(0xA33AE62Eu, 0x3u), uvec2(0x884210C4u, 0x3u), uvec2(0xC444422Eu, 0x7u),
++    uvec2(0xA304111Fu, 0x3u), uvec2(0x11F4A988u, 0x2u), uvec2(0xA3083C3Fu, 0x3u), uvec2(0xA317844Cu, 0x3u),
++    uvec2(0x8422221Fu, 0x0u), uvec2(0xA317462Eu, 0x3u), uvec2(0x910F462Eu, 0x1u), uvec2(0x631FC62Eu, 0x4u),
++    uvec2(0xE317C62Fu, 0x3u), uvec2(0xA210862Eu, 0x3u), uvec2(0xE318C62Fu, 0x3u), uvec2(0xC217843Fu, 0x7u),
++    uvec2(0x4217843Fu, 0x0u), uvec2(0xA31E862Eu, 0x7u), uvec2(0x631FC631u, 0x4u), uvec2(0x8842108Eu, 0x3u),
++    uvec2(0x9284211Cu, 0x1u), uvec2(0x52519531u, 0x4u), uvec2(0xC2108421u, 0x7u), uvec2(0x631AD771u, 0x4u),
++    uvec2(0x639ACE31u, 0x4u), uvec2(0xA318C62Eu, 0x3u), uvec2(0x4217C62Fu, 0x0u), uvec2(0x9358C62Eu, 0x5u),
++    uvec2(0x5257C62Fu, 0x4u), uvec2(0xE107043Eu, 0x3u), uvec2(0x0842109Fu, 0x1u), uvec2(0xA318C631u, 0x3u),
++    uvec2(0x1518C631u, 0x1u), uvec2(0xAB5AC631u, 0x2u), uvec2(0x62A22A31u, 0x4u), uvec2(0x08422A31u, 0x1u),
++    uvec2(0xC222221Fu, 0x7u), uvec2(0x8C000000u, 0x1u), uvec2(0x32222263u, 0x6u), uvec2(0x08210888u, 0x2u),
++    uvec2(0x88842082u, 0x0u), uvec2(0x02222200u, 0x0u), uvec2(0x0C6018C0u, 0x0u), uvec2(0x000F8000u, 0x0u));
++
++bool InBox(vec2 p, vec2 lo, vec2 hi) { return all(greaterThanEqual(p, lo)) && all(lessThan(p, hi)); }
++
++vec4 TextOverlay(vec2 pixel, vec4 color) {
++  uint lines = text_layout.x, cols = text_layout.y;
++  float s = max(1.0, round(float(textureSize(source, 0).y) / render_scale.x / 400.0));  // output pixels per font pixel
++  vec2 origin = vec2(8.0 * s);
++  vec2 lo = origin - 3.0 * s, hi = origin + vec2(float(cols) * 6.0 - 1.0, float(lines) * 10.0 - 3.0) * s + 3.0 * s;
++  if (!InBox(pixel, lo, hi)) return color;
++  vec4 result = vec4(mix(color.rgb, vec3(0.06, 0.07, 0.09), 0.8), color.a);
++  vec2 p = floor((pixel - origin) / s);
++  if (p.x < 0.0 || p.y < 0.0) return result;
++  uint x = uint(p.x), y = uint(p.y);
++  uint col = x / 6u, line = y / 10u, gx = x % 6u, gy = y % 10u;
++  if (line >= lines || col >= cols || gx >= 5u || gy >= 7u) return result;
++  uint i = line * 32u + col;
++  uint code = (text[i >> 4u][(i >> 2u) & 3u] >> ((i & 3u) * 8u)) & 0xFFu;
++  if (code == 0u || code >= uint(kFont.length())) return result;
++  uvec2 g = kFont[code];
++  uint bit = gy * 5u + gx;
++  if (((bit < 32u ? g.x >> bit : g.y >> (bit - 32u)) & 1u) == 0u) return result;
++  float fps = render_scale.w;
++  vec3 ink = line != 0u ? vec3(0.86, 0.88, 0.9)
++             : (fps >= 55.0 ? vec3(0.47, 0.86, 0.47) : (fps >= 28.0 ? vec3(0.92, 0.78, 0.35) : vec3(0.92, 0.35, 0.35)));
++  return vec4(ink, color.a);
++}
++
+ void main() {
+   // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
+   // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
+@@ -60,6 +107,7 @@ void main() {
+                                  : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
+   result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
+                 1023.0) / 1023.0;
++  if (text_layout.x != 0u) result = TextOverlay(gl_FragCoord.xy, result);
+ }
+ )";
+ 
+@@ -109,10 +157,43 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+ }
+ 
+ constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+-constexpr VkDeviceSize kRampBytes = 256 * 4 + 16;  // + render_scale
++constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + 8 * 16 + 16;  // + render_scale, tbc overlay text and layout
+ 
+ }  // namespace
+ 
++void Renderer::SetOverlay(float fps, const std::vector<std::string>& lines) {
++  static constexpr char kChars[] = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.%()/:-";
++  overlay_fps_ = fps;
++  std::memset(overlay_text_, 0, sizeof(overlay_text_));
++  overlay_lines_ = uint32_t(std::min<size_t>(lines.size(), kOverlayLines));
++  overlay_cols_ = 0;
++  for (uint32_t l = 0; l < overlay_lines_; ++l) {
++    const std::string& line = lines[l];
++    const uint32_t n = uint32_t(std::min<size_t>(line.size(), kOverlayColumns));
++    overlay_cols_ = std::max(overlay_cols_, n);
++    for (uint32_t c = 0; c < n; ++c) {
++      const char ch = char(std::toupper(static_cast<unsigned char>(line[c])));
++      const char* at = std::strchr(kChars, ch);
++      const uint32_t code = at && ch ? uint32_t(at - kChars) : 0;
++      const uint32_t i = l * kOverlayColumns + c;
++      overlay_text_[i / 4] |= code << (8 * (i % 4));
++    }
++  }
++}
++
++double Renderer::VramUsedMB() const {
++  if (!allocator_) return 0.0;
++  VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
++  vmaGetHeapBudgets(allocator_, budgets);
++  const VkPhysicalDeviceMemoryProperties* memory = nullptr;
++  vmaGetMemoryProperties(allocator_, &memory);
++  uint64_t used = 0;
++  for (uint32_t i = 0; memory && i < memory->memoryHeapCount; ++i) {
++    if (memory->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) used += budgets[i].usage;
++  }
++  return double(used) / 1048576.0;
++}
++
+ bool Renderer::InitPresent() {
+   if (present_pipeline_) return true;
+   const VkDevice dev = device_->device();
+@@ -180,8 +261,11 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+     return v && std::strcmp(v, "bilinear") == 0;
+   }();
+   const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
+-  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, 0.0f};
++  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
+   std::memcpy(ramp + 256 * 4, params, sizeof(params));
++  std::memcpy(ramp + 256 * 4 + 16, overlay_text_, sizeof(overlay_text_));
++  const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, 0, 0};
++  std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_), text_layout, sizeof(text_layout));
+   const VkDescriptorSet set = AllocateSet(present_set_layout_);
+   if (!set) {
+     static bool warned = false;
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 1155319..f7541b1 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -13,6 +13,7 @@
+ #endif
+ #include <iterator>
+ 
++#include <rex/cvar.h>
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+@@ -249,8 +250,11 @@ Renderer::Renderer(const rex::ui::vulkan::VulkanDevice* device, PhysicalMemory m
+   vk_.vkGetPhysicalDeviceFormatProperties(device_->physical_device(), VK_FORMAT_A1R5G5B5_UNORM_PACK16, &packed);
+   pack_bc1_ = tight_memory_ && (packed.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+   InitTextureBudget();
+-  if (const char* v = std::getenv("BOTS_GPU_TIMING"); v && (*v == '1' || *v == '2')) {
+-    gpu_draw_labels_ = *v == '2';
++  // tbc: the detailed performance overlay (--show_fps_detail) shows the GPU time per frame, so it turns the timing on.
++  const char* gpu_timing_env = std::getenv("BOTS_GPU_TIMING");
++  if ((gpu_timing_env && (*gpu_timing_env == '1' || *gpu_timing_env == '2')) ||
++      (rex::cvar::Query<bool>("show_fps") && rex::cvar::Query<bool>("show_fps_detail"))) {
++    gpu_draw_labels_ = gpu_timing_env && *gpu_timing_env == '2';
+     VkPhysicalDeviceProperties props;
+     device_->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(device_->physical_device(), &props);
+     timestamp_ns_ = props.limits.timestampPeriod;
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index bda30a2..16a66e8 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -335,6 +335,10 @@ class Renderer : public Pm4Sink {
+   // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
+   // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
+   float scale_ = 1.0f;
++  static constexpr uint32_t kOverlayLines = 4, kOverlayColumns = 32;  // SetOverlay
++  float overlay_fps_ = 0.0f;
++  uint32_t overlay_text_[kOverlayLines * kOverlayColumns / 4] = {};
++  uint32_t overlay_lines_ = 0, overlay_cols_ = 0;
+   uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
+   int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
+   bool ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
+@@ -375,6 +379,13 @@ class Renderer : public Pm4Sink {
+   // The guest output image's size relative to the frame buffer: above render scale 1 the presenter gets the
+   // rendered size (as the emulated renderer's resolution scale does); below 1 the present pass upscales to 1.
+   float output_scale() const { return std::max(scale_, 1.0f); }
++  // tbc: the FPS counter / performance overlay the present pass draws in the top-left corner: up to 4 lines of
++  // 32 characters (digits, letters and " .%()/:-"; others show as spaces), the first coloured
++  // by fps. No lines: none.
++  void SetOverlay(float fps, const std::vector<std::string>& lines);
++  // Device-local memory in use (VK_EXT_memory_budget's figure where the driver has it, else this process's
++  // allocations), MB.
++  double VramUsedMB() const;
+   enum GpuCat : uint8_t { kGpuDraw, kGpuResolve, kGpuUpload, kGpuTexture, kGpuTransfer, kGpuPresent, kGpuOther };
+   static constexpr const char* kGpuCatNames[] = {"draw", "resolve", "upload", "texture", "transfer", "present",
+                                                  "other"};

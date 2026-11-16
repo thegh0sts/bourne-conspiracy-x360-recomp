@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Detailed performance overlay.** The launcher's Show FPS counter checkbox is now an **FPS counter** setting on the Display tab: **Off**, **FPS**, or **Detailed (GPU, CPU, memory)** (`--show_fps_detail`), which adds:
+  - the frame time and the slowest frame in the last half second;
+  - the GPU time per frame and how busy that keeps the GPU (the renderer's GPU timestamps, turned on for it);
+  - the CPU load of the whole PC and of the game (as a share of all CPU cores);
+  - the game's RAM (working set) and video memory.
+  Detailed needs the native renderer; with Xenos the counter shows the frame rate only.
+
+- **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).
+
+### Fixes
+- **The FPS counter shows in fullscreen with the native renderer.** It's now drawn into the picture by the renderer's last pass (text on a dark box at the top-left, the frame rate green / yellow / red as before) instead of a separate window, which the graphics driver hides when a Vulkan game fills the screen. It costs nothing measurable and also shows in screenshots and recordings. Xenos keeps the separate window.
+
+### Updating
+Reinstall when the launcher asks: the native renderer is in the bundled SDK, now `tbc9`. A ticked Show FPS counter carries over as FPS.
+
 ## 0.2.8 (2026-11-16)
 
 A launcher-only update: the settings are in tabs.

@@ -125,6 +125,9 @@ struct Scene {
   Rect first, last;
   Role focused = kOther;
   bool live = false;  // has focus and both ends: it could be on screen
+  // The lowest entry without focus: Quit Game is drawn along with it, outside the focused
+  // entry's draw, which the pause menu does zoomed (the canvas is scaled around it).
+  int ref = -1;
   // What its first and last labels say, learnt from the first draws at their places in the
   // second after it first has focus (other menus reuse the same places for their own entries,
   // and a menu's scene stays around underneath them), then compared on every draw.
@@ -299,6 +302,14 @@ void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
     sc.first = first->rect;
     sc.last = last->rect;
     sc.focused = first->focused ? kFirst : last->focused ? kLast : kOther;
+    sc.ref = -1;
+    for (size_t i = 0; i < sc.buttons.size(); ++i) {
+      const Button& b = sc.buttons[i];
+      if (b.focused || !b.rect.valid()) continue;
+      // Only entries actually drawn (some buttons, cheats and debug ones, stay hidden).
+      if (s.colours_scene != scene || i >= s.looks.size() || !s.looks[i].set) continue;
+      if (sc.ref < 0 || b.rect.t > sc.buttons[sc.ref].rect.t) sc.ref = int(i);
+    }
     if (sc.first_seen == std::chrono::steady_clock::time_point{}) sc.first_seen = now;
   }
   if (s.active && (!s.scenes.count(s.active) || !s.scenes[s.active].live)) s.active = 0;
@@ -434,7 +445,6 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   // Labels at a button's place that aren't the menu's own (another menu over it) are left alone.
   if ((sc.first.at(x, y) || sc.last.at(x, y)) && end == kOther) return false;
-  const bool last = end == kLast;
   const bool hint = s.selected && s.hint_rect.valid() && std::fabs(y - s.hint_rect.t) < 1.5 &&
                     x >= s.hint_rect.l - 1 && x < s.hint_rect.r;
   if (index < 0 && !hint) return false;
@@ -527,11 +537,14 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   __imp__sub_82C49D88(ctx, base);
   const uint64_t result = ctx.r3.u64;
-  if (last) {
-    // Quit Game, one row under the last entry.
+  if (index >= 0 && index == sc.ref) {
+    // Quit Game, one row under the last entry, drawn with the lowest unfocused one (moved down
+    // from there), so it's never inside the focused entry's zoom.
+    const Rect& r = sc.buttons[index].rect;
     ctx = call;
     ctx.r6.u64 = s.armed ? ConfirmAddr(s) : LabelAddr(s);
-    ctx.f2.f64 = y + double(sc.last.b - sc.last.t);
+    ctx.f1.f64 = x + double(sc.last.l - r.l);
+    ctx.f2.f64 = y + double(sc.last.t - r.t) + double(sc.last.b - sc.last.t);
     // Sized and placed as an unfocused entry, or as the focused one while it's selected.
     restyle(main_look, s.selected ? s.focus_look : s.other_look);
     const bool last_main = visible && (focus_drawn || (s.have_other_colour &&

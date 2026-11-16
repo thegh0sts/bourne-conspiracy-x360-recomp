@@ -36,6 +36,7 @@ set(TBC_SOURCES
     src/glyph_probe.cpp
     src/mouse_look.cpp
     src/key_glyphs.cpp
+    src/achievement_list.cpp
 )
 
 if(WIN32)

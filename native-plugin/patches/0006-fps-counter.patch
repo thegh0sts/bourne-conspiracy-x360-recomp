@@ -57,7 +57,7 @@ index 51b9922..993327e 100644
  // the maximum while the CPU is power or thermal limited). 0 where unknown.
  struct CpuClock {
 diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
-index a9a91ff..d7369aa 100644
+index a9a91ff..38e64b0 100644
 --- a/src/gfx/native.cpp
 +++ b/src/gfx/native.cpp
 @@ -8,7 +8,12 @@
@@ -109,16 +109,19 @@ index a9a91ff..d7369aa 100644
  
    void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width, uint32_t frontbuffer_height) override {
      if (!renderer_) return;
-@@ -116,6 +133,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+@@ -116,6 +133,11 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
      HoldForWarmup();
      if (InstrState* is = FindInstrState()) PublishInstr(*is, frontbuffer_width, frontbuffer_height);
      ++frames_;
 +    UpdateFpsOverlay();
 +    UpdateToast();
++    // tbc: --brightness (the game's setting, through the shared cvar registry; 0 if the game doesn't have it).
++    static const float brightness = float(rex::cvar::Query<double>("brightness"));
++    if (brightness > 0.0f) renderer_->set_brightness(brightness);
      if (bots::HybridState* hs = bots::FindHybridState(); hs && hs->fps_counter.load(std::memory_order_relaxed))
        hs->swaps.fetch_add(1, std::memory_order_relaxed);  // the in-game FPS counter (fps_counter.h)
      // BOTS_GFX_NO_PRESENT=1 (benchmarking): render everything but never hand the frame to the presenter. Under a
-@@ -405,6 +424,186 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+@@ -405,6 +427,186 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
      return m;
    }
  
@@ -306,7 +309,7 @@ index a9a91ff..d7369aa 100644
      // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
      static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
 diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
-index c89a326..dcfbbaa 100644
+index c89a326..ca73530 100644
 --- a/src/gfx/vk/present.cpp
 +++ b/src/gfx/vk/present.cpp
 @@ -1,5 +1,8 @@
@@ -480,16 +483,19 @@ index c89a326..dcfbbaa 100644
  void main() {
    // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
    // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
-@@ -60,6 +209,8 @@ void main() {
+@@ -60,6 +209,11 @@ void main() {
                                   : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
    result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
                  1023.0) / 1023.0;
++  // tbc brightness (text_layout.w, float bits; 0 or 1: none): a gamma curve, so black and white stay put.
++  float brightness = uintBitsToFloat(text_layout.w);
++  if (brightness > 0.0 && brightness != 1.0) result.rgb = pow(result.rgb, vec3(1.0 / brightness));
 +  if (text_layout.x != 0u) result = TextOverlay(gl_FragCoord.xy, result);
 +  if (uintBitsToFloat(toast.x) > 0.0) result = Toast(gl_FragCoord.xy, result);
  }
  )";
  
-@@ -109,10 +260,107 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+@@ -109,10 +263,107 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
  }
  
  constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
@@ -598,7 +604,7 @@ index c89a326..dcfbbaa 100644
  bool Renderer::InitPresent() {
    if (present_pipeline_) return true;
    const VkDevice dev = device_->device();
-@@ -180,8 +428,21 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+@@ -180,8 +431,22 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
      return v && std::strcmp(v, "bilinear") == 0;
    }();
    const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
@@ -606,7 +612,8 @@ index c89a326..dcfbbaa 100644
 +  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
    std::memcpy(ramp + 256 * 4, params, sizeof(params));
 +  std::memcpy(ramp + 256 * 4 + 16, overlay_text_, sizeof(overlay_text_));
-+  const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, overlay_graph_ ? 1u : 0u, 0};
++  const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, overlay_graph_ ? 1u : 0u,
++                                   std::bit_cast<uint32_t>(brightness_)};
 +  std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_), text_layout, sizeof(text_layout));
 +  uint8_t graph[kGraphFrames];  // oldest first
 +  for (uint32_t k = 0; k < kGraphFrames; ++k) graph[k] = frame_times_[(frame_time_head_ + k) % kGraphFrames];
@@ -648,10 +655,10 @@ index 1155319..f7541b1 100644
      device_->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(device_->physical_device(), &props);
      timestamp_ns_ = props.limits.timestampPeriod;
 diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
-index bda30a2..5451251 100644
+index bda30a2..8b0d0b6 100644
 --- a/src/gfx/vk/renderer.h
 +++ b/src/gfx/vk/renderer.h
-@@ -335,6 +335,20 @@ class Renderer : public Pm4Sink {
+@@ -335,6 +335,21 @@ class Renderer : public Pm4Sink {
    // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
    // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
    float scale_ = 1.0f;
@@ -663,6 +670,7 @@ index bda30a2..5451251 100644
 +  uint8_t frame_times_[kGraphFrames] = {};
 +  uint32_t frame_time_head_ = 0;
 +  bool overlay_graph_ = false;
++  float brightness_ = 1.0f;
 +  static const uint32_t kToastFont[192];  // SetToast
 +  float toast_alpha_ = 0.0f;
 +  uint32_t toast_text_[20] = {};
@@ -672,7 +680,7 @@ index bda30a2..5451251 100644
    uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
    int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
    bool ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
-@@ -375,6 +389,19 @@ class Renderer : public Pm4Sink {
+@@ -375,6 +390,21 @@ class Renderer : public Pm4Sink {
    // The guest output image's size relative to the frame buffer: above render scale 1 the presenter gets the
    // rendered size (as the emulated renderer's resolution scale does); below 1 the present pass upscales to 1.
    float output_scale() const { return std::max(scale_, 1.0f); }
@@ -686,6 +694,8 @@ index bda30a2..5451251 100644
 +  // tbc: one frame's time for the overlay's frame time graph (the last 128, drawn under the text); the first call
 +  // turns the graph on.
 +  void AddFrameTime(double ms);
++  // tbc: picture brightness for the present pass, a gamma curve (1: the game's).
++  void set_brightness(float brightness) { brightness_ = brightness; }
 +  // tbc: the achievement pop-up the present pass draws in the bottom-right corner, at opacity alpha (0: none): its name, the
 +  // grey text after it (" (20G)") and its icon (44x44 RGBA8, or null).
 +  void SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon);

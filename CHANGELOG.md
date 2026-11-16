@@ -15,6 +15,9 @@
 - Removed the shelved ReGPU renderer experiment (`regpu-plugin/`, `tools/build_regpu.bat`); added in 0.2.1, it never shipped in the installer.
 - The launcher's links (Key binds, Reinstall, Open logs, Check for updates and the rest) are small red buttons now.
 - The launcher's Graphics path and Anti-aliasing settings only appear when the renderer is Xenos (they were greyed out otherwise).
+- **Game language** (launcher, Game files tab): English, German, French, Spanish or Italian, the languages on the disc (`--user_language`).
+- **Saves and achievements** (launcher, Game files tab): **Open saves folder**; **Back up saves**, which zips the game's saves, achievements and settings (not the shader caches) into `backups\saves-<date>-<time>.zip` in the same folder; and **Achievements**, a list of the game's achievements with their icons, which are unlocked and when, and the gamerscore so far. The game writes the list for the launcher when it starts (`src/achievement_list.cpp`), so it appears after the first start.
+- **Brightness** slider (launcher, Graphics tab; native renderer): brightens or darkens the picture with a gamma curve on the renderer's last pass, so black and white stay as they are (`--brightness`).
 - **Controller vibration** checkbox (launcher, Controls tab; on by default): untick it to turn rumble off (`--vibration=false`, the runtime's own switch for every rumble the game asks for).
 - **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).
 

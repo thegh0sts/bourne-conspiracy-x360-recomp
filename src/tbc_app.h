@@ -31,9 +31,6 @@ void LogVersion();
 // an ImGui overlay: the SDK's ImGui overlays cost about 20% of the frame rate. F3 still opens
 // the SDK's full debug overlay.
 REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in the corner");
-// --show_fps_detail=true (with --show_fps): the native renderer's counter also shows the frame
-// time and slowest frame, GPU time and load, CPU load (machine and game), RAM and VRAM. The
-// renderer reads it through the shared cvar registry (native-plugin/patches/0006-fps-counter.patch).
 // --achievement_popups=false: no pop-up when an achievement unlocks. It's still unlocked and
 // listed in the achievements overlay (F7); only the toast (an ImGui dialog) isn't made.
 REXCVAR_DEFINE_BOOL(achievement_popups, true, "UI", "Show a pop-up when an achievement unlocks");
@@ -42,8 +39,22 @@ REXCVAR_DEFINE_BOOL(achievement_popups, true, "UI", "Show a pop-up when an achie
 // check the pop-up without playing for one.
 REXCVAR_DEFINE_BOOL(test_achievement_popups, false, "UI",
                     "Show two achievement pop-ups 10 s after start (nothing is unlocked)");
+// --show_fps_detail=true (with --show_fps): the native renderer's counter also shows the frame
+// time and slowest frame, GPU time and load, CPU load (machine and game), RAM and VRAM. The
+// renderer reads it through the shared cvar registry (native-plugin/patches/0006-fps-counter.patch).
 REXCVAR_DEFINE_BOOL(show_fps_detail, false, "UI",
                     "With show_fps: also frame time, GPU, CPU and memory (native renderer)");
+
+// --brightness=1.2: the native renderer brightens (above 1) or darkens the picture as a gamma
+// curve on its last pass, black and white staying put (native-plugin/patches/0006). Xenos
+// ignores it.
+REXCVAR_DEFINE_DOUBLE(brightness, 1.0, "GPU", "Picture brightness, native renderer (1 = the game's)")
+    .range(0.5, 2.0);
+
+namespace tbc::achievements {
+// <user data>/achievements/<title id>-list.json and the icons, for the launcher (achievement_list.cpp).
+void ExportList(rex::Runtime* runtime);
+}  // namespace tbc::achievements
 
 class TbcApp : public rex::ReXApp {
  public:
@@ -78,6 +89,7 @@ class TbcApp : public rex::ReXApp {
     }
     // --dev_debug_runtime: log and stub code addresses with no function (debug_tools.h).
     tbc::debug::RunIfEnabled(PPCImageConfig.code_base, PPCImageConfig.code_size);
+    tbc::achievements::ExportList(runtime());
     if (REXCVAR_GET(test_achievement_popups)) {
       std::thread([this] {
         // The game's achievements are known once its module has loaded: wait for them.

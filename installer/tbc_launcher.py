@@ -45,6 +45,8 @@ GAME_VERSION = "0.2.7"
 # The FPS counter: off, the frame rate, or the frame rate with frame time, GPU, CPU and memory
 # (--show_fps_detail; the native renderer's counter only, Xenos shows the frame rate).
 FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
+# The game's languages (the disc has these five): the runtime's user_language, an XLanguage id.
+LANGUAGES = {"English": 1, "German": 3, "French": 4, "Spanish": 5, "Italian": 6}
 # The settings screen's tabs, top to bottom.
 TABS = ("Game files", "Display", "Graphics", "Camera", "Controls")
 
@@ -322,6 +324,8 @@ DEFAULTS = {
     "fps_counter": "Off",
     "hide_achievements": False,
     "vibration": True,
+    "language": "English",
+    "brightness": 100,
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -710,6 +714,64 @@ def logs_dir(info) -> Path:
     return Path(info.get("root") or Path(info["exe"]).parent)
 
 
+def user_data_dir(info) -> Path:
+    """Where the game keeps its saves, achievements and caches: <install>\\userdata when user_data_args
+    moves it there, a user_data_root set in tbc.toml, else the runtime's default, Documents\\tbc."""
+    exe = Path(info["exe"])
+    args = user_data_args(info, exe)
+    if args:
+        return Path(args[1])
+    try:
+        m = re.search(r'^\s*user_data_root\s*=\s*["\']([^"\']+)["\']', (exe.parent / "tbc.toml").read_text(
+            encoding="utf-8", errors="replace"), re.M)
+        if m:
+            return Path(m.group(1))
+    except OSError:
+        pass
+    docs = documents_dir() or Path.home() / "Documents"
+    return docs / "tbc"
+
+
+def backup_saves(info) -> Path:
+    """Zips the game's user data (saves, achievements, settings), leaving out the shader caches and older
+    backups, to <user data>\\backups\\saves-<date>-<time>.zip."""
+    root = user_data_dir(info)
+    if not root.is_dir():
+        raise OSError(f"{root} doesn't exist yet: start the game once first")
+    out = root / "backups" / time.strftime("saves-%Y%m%d-%H%M%S.zip")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for path in root.rglob("*"):
+            rel = path.relative_to(root)
+            if rel.parts and rel.parts[0] in ("cache", "backups"):
+                continue
+            if path.is_file():
+                z.write(path, rel)
+    return out
+
+
+def load_achievements(info):
+    """The game's achievements (achievement_list.cpp writes the list on every start) with their unlock times
+    (the runtime's <title id>.toml: [unlocked.<id>] filetime = <FILETIME>), or None before the first start."""
+    folder = user_data_dir(info) / "achievements"
+    lists = sorted(folder.glob("*-list.json")) if folder.is_dir() else []
+    if not lists:
+        return None
+    data = json.loads(lists[0].read_text(encoding="utf-8"))
+    unlocked = {}
+    try:
+        text = (folder / f"{data.get('title_id', '')}.toml").read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(r"\[unlocked\.(\d+)\]\s*filetime\s*=\s*(\d+)", text):
+            unlocked[int(m.group(1))] = int(m.group(2))
+    except OSError:
+        pass
+    for a in data.get("achievements", []):
+        ft = unlocked.get(int(a["id"]))
+        a["unlocked"] = None if ft is None else time.localtime(max(0, (ft - 116444736000000000) // 10_000_000))
+        a["icon_path"] = folder / a["icon"] if a.get("icon") else None
+    return data["achievements"]
+
+
 def save_crash_report(info) -> Path:
     """Zip the game log, the newest crash files and the launcher settings onto the desktop."""
     root = logs_dir(info)
@@ -797,6 +859,9 @@ def game_args(s, screen=None):
     # XamInputSetState, is zeroed when off).
     if not s.get("vibration", True):
         args.append("--vibration=false")
+    args.append(f"--user_language={LANGUAGES.get(s.get('language'), 1)}")
+    if int(s.get("brightness", 100)) != 100:
+        args.append(f"--brightness={int(s['brightness']) / 100:.2f}")  # the native renderer's last pass
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
         # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
@@ -910,6 +975,14 @@ class SettingsView(tk.Frame):
         self._link(links, "Open logs", self.open_logs).pack(side="left")
         self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=8)
         self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
+        self._subheading(box, 5, "Saves and achievements")
+        saves = tk.Frame(box, bg=PANEL)
+        saves.grid(row=6, column=0, columnspan=2, sticky="w")
+        self._link(saves, "Open saves folder", self.open_saves).pack(side="left")
+        self._link(saves, "Back up saves", self.backup_saves).pack(side="left", padx=8)
+        self._link(saves, "Achievements", self.show_achievements).pack(side="left")
+        self._subheading(box, 7, "Game")
+        self._combo(box, 8, "language", "Language", list(LANGUAGES))
 
         box = self._page("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
@@ -939,6 +1012,9 @@ class SettingsView(tk.Frame):
                                            ("bloom", "Bloom"), ("lens_flares", "Lens flares"),
                                            ("distortion", "Heat haze / distortion"))):
             self._check(box, row, key, text)
+        self._slider(box, 5, "brightness", "Brightness (%)", 50, 200, 5)
+        tk.Label(box, text="Brightness is for the native renderer (Xenos ignores it); black and white stay as they are.",
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=6, column=0, columnspan=2, sticky="w")
 
         box = self._page("Camera")
         self._slider(box, 0, "fov", "Field of view (%)", 80, 140, 5)
@@ -1219,6 +1295,96 @@ class SettingsView(tk.Frame):
             os.startfile(str(folder))
         except OSError as e:
             messagebox.showerror("Open logs", f"Couldn't open {folder}: {e}")
+
+    def open_saves(self):
+        folder = user_data_dir(self.info)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(folder))
+        except OSError as e:
+            messagebox.showerror("Saves", f"Couldn't open {folder}: {e}")
+
+    def backup_saves(self):
+        try:
+            out = backup_saves(self.info)
+        except (OSError, zipfile.BadZipFile) as e:
+            messagebox.showerror("Back up saves", f"Couldn't back up the saves: {e}")
+            return
+        messagebox.showinfo("Back up saves", f"Saved {out.name} to {out.parent}.\n\n"
+                                             "To restore it, close the game and unzip it into "
+                                             f"{out.parent.parent}, replacing the files there.")
+        try:
+            os.startfile(str(out.parent))
+        except OSError:
+            pass
+
+    def show_achievements(self):
+        try:
+            items = load_achievements(self.info)
+        except (OSError, ValueError, KeyError) as e:
+            messagebox.showerror("Achievements", f"Couldn't read the achievements: {e}")
+            return
+        if not items:
+            messagebox.showinfo("Achievements", "Start the game once (to the title screen) and the list appears here.")
+            return
+        win = tk.Toplevel(self)
+        win.title("Achievements")
+        win.configure(bg=BG)
+        win.transient(self.winfo_toplevel())
+        win.geometry("640x620")
+        got = [a for a in items if a["unlocked"]]
+        score = sum(int(a["gamerscore"]) for a in got)
+        total = sum(int(a["gamerscore"]) for a in items)
+        tk.Label(win, text=f"{len(got)} of {len(items)} unlocked    {score} of {total} G", font=("Segoe UI", 11, "bold"),
+                 fg=FG, bg=BG, anchor="w").pack(fill="x", padx=18, pady=(14, 8))
+        outer = tk.Frame(win, bg=BG)
+        outer.pack(fill="both", expand=True, padx=(18, 4))
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        rows = tk.Frame(canvas, bg=BG)
+        rows.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=rows, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget is win else None)
+        win.images = []  # keep the icons alive
+        # Unlocked first (newest first), then the locked ones in the game's order.
+        items = sorted(got, key=lambda a: time.mktime(a["unlocked"]), reverse=True) + [a for a in items if not a["unlocked"]]
+        for i, a in enumerate(items):
+            row = tk.Frame(rows, bg=PANEL if a["unlocked"] else BG, padx=8, pady=6)
+            row.grid(row=i, column=0, sticky="we", pady=2)
+            icon = None
+            if a.get("icon_path") and a["icon_path"].is_file():
+                try:
+                    icon = tk.PhotoImage(file=str(a["icon_path"]))
+                    if icon.width() >= 64:
+                        icon = icon.subsample(max(1, icon.width() // 48))
+                    win.images.append(icon)
+                except tk.TclError:
+                    icon = None
+            tk.Label(row, image=icon, bg=row["bg"], width=48, height=48).grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            dim = not a["unlocked"]
+            tk.Label(row, text=a["name"], font=("Segoe UI", 10, "bold"), fg=DIM if dim else FG, bg=row["bg"],
+                     anchor="w").grid(row=0, column=1, sticky="w")
+            desc = a["description"] if a["unlocked"] or not a.get("locked_description") else a["locked_description"]
+            tk.Label(row, text=desc, font=("Segoe UI", 9), fg=DIM, bg=row["bg"], anchor="w", justify="left",
+                     wraplength=380).grid(row=1, column=1, sticky="w")
+            when = time.strftime("Unlocked %d %b %Y", a["unlocked"]) if a["unlocked"] else "Locked"
+            tk.Label(row, text=f"{a['gamerscore']} G", font=("Segoe UI", 10, "bold"), fg=ACCENT if a["unlocked"] else DIM,
+                     bg=row["bg"]).grid(row=0, column=2, sticky="e", padx=(10, 0))
+            tk.Label(row, text=when, font=("Segoe UI", 8), fg=DIM, bg=row["bg"]).grid(row=1, column=2, sticky="e",
+                                                                                     padx=(10, 0))
+            row.columnconfigure(1, weight=1)
+            row.configure(width=590)
+        rows.columnconfigure(0, minsize=590)
+        foot = tk.Frame(win, bg=BG)
+        foot.pack(fill="x", padx=18, pady=(6, 14))
+        tk.Button(foot, text="Close", width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
+                  ).pack(side="right")
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.focus_set()
 
     def crash_report(self):
         try:

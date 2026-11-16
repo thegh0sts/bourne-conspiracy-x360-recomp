@@ -13,6 +13,7 @@
 
 - **Achievement pop-ups drawn by the native renderer**, in the same look as before (the box, icon, yellow title, name and gamerscore, the ImGui font, the fade), so showing one no longer makes the runtime repaint every display refresh, and it shows in screenshots and recordings. Xenos keeps the runtime's pop-up.
 - Removed the shelved ReGPU renderer experiment (`regpu-plugin/`, `tools/build_regpu.bat`); added in 0.2.1, it never shipped in the installer.
+- The launcher's links (Key binds, Reinstall, Open logs, Check for updates and the rest) are small red buttons now.
 - The launcher's Graphics path and Anti-aliasing settings only appear when the renderer is Xenos (they were greyed out otherwise).
 - **Controller vibration** checkbox (launcher, Controls tab; on by default): untick it to turn rumble off (`--vibration=false`, the runtime's own switch for every rumble the game asks for).
 - **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).

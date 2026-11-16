@@ -846,6 +846,12 @@ def game_env(s):
 # UI
 # --------------------------------------------------------------------------
 
+def link_button(parent, text, cmd):
+    """A small red button with white text: the launcher's secondary actions (Key binds, Open logs, ...)."""
+    return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 9), fg="white", bg=ACCENT,
+                     activebackground="#e0203f", activeforeground="white", bd=0, padx=10, pady=3, cursor="hand2")
+
+
 class SettingsView(tk.Frame):
     def __init__(self, master, info, on_reinstall, on_locate):
         super().__init__(master, bg=BG)
@@ -902,7 +908,7 @@ class SettingsView(tk.Frame):
         links = tk.Frame(box, bg=PANEL)
         links.grid(row=4, column=0, columnspan=2, sticky="w")
         self._link(links, "Open logs", self.open_logs).pack(side="left")
-        self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=14)
+        self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=8)
         self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
 
         box = self._page("Display")
@@ -946,7 +952,7 @@ class SettingsView(tk.Frame):
         v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
         tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
-        self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
+        self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14, pady=4)
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
         self._check(box, 3, "vibration", "Controller vibration")
@@ -1010,8 +1016,7 @@ class SettingsView(tk.Frame):
         self.s["tab"] = name  # reopened on this tab (saved with the settings)
 
     def _link(self, parent, text, cmd):
-        return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 9, "underline"), fg=FG, bg=PANEL,
-                         activebackground=PANEL, activeforeground=ACCENT, bd=0, cursor="hand2")
+        return link_button(parent, text, cmd)
 
     def _check(self, box, row, key, text):
         v = self.vars[key] = tk.BooleanVar(value=self.s[key])
@@ -1132,8 +1137,7 @@ class SettingsView(tk.Frame):
         self._link_bg(self.update_line, "What's new", lambda: webbrowser.open(url)).pack(side="left")
 
     def _link_bg(self, parent, text, cmd):
-        return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 9, "underline"), fg=FG, bg=BG,
-                         activebackground=BG, activeforeground=ACCENT, bd=0, cursor="hand2")
+        return self._link(parent, text, cmd)
 
     def download_update(self, version, exe_url):
         """Downloads the new release's exe beside the launcher's settings, then offers to start it.
@@ -1204,9 +1208,7 @@ class SettingsView(tk.Frame):
         foot.pack(fill="x", padx=22, pady=(4, 16))
         tk.Button(foot, text="Close", width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
                   ).pack(side="right")
-        tk.Button(foot, text="Full page with notes", command=lambda: webbrowser.open(CONTROLS_URL),
-                  font=("Segoe UI", 9, "underline"), fg=DIM, bg=BG, activebackground=BG, activeforeground=ACCENT,
-                  bd=0, cursor="hand2").pack(side="left")
+        link_button(foot, "Full page with notes", lambda: webbrowser.open(CONTROLS_URL)).pack(side="left")
         win.bind("<Escape>", lambda e: win.destroy())
         win.grab_set()
         win.focus_set()
@@ -1300,9 +1302,7 @@ class Launcher:
         self._swap(view)
 
     def _link_locate(self, view):
-        tk.Button(view, text="Already installed? Locate tbc.exe...", command=self.locate,
-                  font=("Segoe UI", 9, "underline"), fg=DIM, bg=BG, bd=0, activebackground=BG,
-                  activeforeground=ACCENT, cursor="hand2").pack(anchor="w", padx=28, pady=(8, 0))
+        link_button(view, "Already installed? Locate tbc.exe...", self.locate).pack(anchor="w", padx=28, pady=(8, 0))
 
     def installed(self, exe, game, root):
         self.show_settings(save_install(exe, game, root))

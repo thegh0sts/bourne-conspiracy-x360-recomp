@@ -779,9 +779,11 @@ def list_saves(root: Path):
     return sorted(saves, key=lambda s: s["modified"], reverse=True)
 
 
-def load_achievements(info):
+def load_achievements(info, language=1):
     """The game's achievements (achievement_list.cpp writes the list on every start) with their unlock times
-    (the runtime's <title id>.toml: [unlocked.<id>] filetime = <FILETIME>), or None before the first start."""
+    (the runtime's <title id>.toml: [unlocked.<id>] filetime = <FILETIME>), or None before the first start.
+    Text is in the launcher's language (an XLanguage id) when the list has it, else English, else whatever
+    language the game last ran in (lists from before 0.2.9 only have that)."""
     folder = user_data_dir(info) / "achievements"
     lists = sorted(folder.glob("*-list.json")) if folder.is_dir() else []
     if not lists:
@@ -798,6 +800,10 @@ def load_achievements(info):
         ft = unlocked.get(int(a["id"]))
         a["unlocked"] = None if ft is None else time.localtime(max(0, (ft - 116444736000000000) // 10_000_000))
         a["icon_path"] = folder / a["icon"] if a.get("icon") else None
+        for key, plural in (("name", "names"), ("description", "descriptions"),
+                            ("locked_description", "locked_descriptions")):
+            texts = a.get(plural) or {}
+            a[key] = texts.get(str(language)) or texts.get("1") or a.get(key, "")
     return data["achievements"]
 
 
@@ -1017,6 +1023,9 @@ class SettingsView(tk.Frame):
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=3, column=0, columnspan=2, sticky="w")
         self.vars["renderer"].trace_add("write", lambda *_: self._display_changed())
         self.vars["resolution"].trace_add("write", lambda *_: self._display_changed())
+        # The Achievements tab follows the launcher's language: rebuilt when it changes.
+        self.vars["language"].trace_add(
+            "write", lambda *_: hasattr(self, "achievements_box") and self.refresh_achievements())
         self._combo(box, 5, "render_path", "Graphics path", RENDER_PATHS)
         self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
         self._combo(box, 7, "aa", "Anti-aliasing", AA)
@@ -1409,7 +1418,7 @@ class SettingsView(tk.Frame):
         for child in box.winfo_children():
             child.destroy()
         try:
-            items = load_achievements(self.info)
+            items = load_achievements(self.info, LANGUAGES.get(self.vars["language"].get(), 1))
         except (OSError, ValueError, KeyError) as e:
             tk.Label(box, text=f"Couldn't read the achievements: {e}", font=("Segoe UI", 10), fg=FG, bg=PANEL
                      ).pack(anchor="w")

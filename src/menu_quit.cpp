@@ -160,6 +160,12 @@ struct State {
   };
   std::vector<Look> looks;
   Look focus_look, other_look;
+  // The focused entry is drawn in more than one visible pass (its text, and a glow in white
+  // at half opacity): every visible pass not in the unfocused colour, in drawing order, as
+  // last seen in a whole frame. Copied into guest memory (passes) after a clear colour.
+  std::vector<std::array<uint8_t, 16>> focus_passes, building;
+  int building_index = -1;
+  uint32_t passes = 0;  // guest memory: clear colour, then up to 4 pass colours
   uint32_t colours_scene = 0;
   uint8_t focus_colour[16] = {};
   uint8_t other_colour[16] = {};
@@ -176,6 +182,7 @@ struct State {
   std::chrono::steady_clock::time_point armed_at{};
   // Input.
   bool selected = false;  // Quit Game is selected
+  bool was_selected = false;
   uint16_t prev = 0;
   int prev_dir = 0;  // -1 up, 1 down, from the stick
   bool swallow_up = false, swallow_down = false, swallow_a = false;
@@ -507,8 +514,29 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
                   s.other_look.dy);
     }
   }
-  // The button with the game's focus while Quit Game is selected: drawn as the others are.
-  const bool focus_drawn = s.have_focus_colour && std::memcmp(colour, s.focus_colour, 16) == 0;
+  // The focused entry's passes (anything visible not in the unfocused colour).
+  const bool other_drawn = s.have_other_colour && std::memcmp(colour, s.other_colour, 16) == 0;
+  const bool focus_pass = index >= 0 && visible && s.have_other_colour && !other_drawn;
+  if (focus_pass) {
+    std::array<uint8_t, 16> c;
+    std::memcpy(c.data(), colour, 16);
+    if (index != s.building_index || (!s.building.empty() && s.building[0] == c) || s.building.size() >= 4) {
+      if (index == s.building_index && !s.building.empty()) s.focus_passes = s.building;
+      s.building.clear();
+      s.building_index = index;
+    }
+    s.building.push_back(c);
+    if (!s.passes) {
+      auto* runtime = rex::Runtime::instance();
+      if (runtime && runtime->memory()) s.passes = runtime->memory()->SystemHeapAlloc(16 * 5);
+      if (s.passes) std::memset(base + s.passes, 0, 16 * 5);
+    }
+    if (s.passes) {
+      for (size_t k = 0; k < s.focus_passes.size() && k < 4; ++k) {
+        std::memcpy(base + s.passes + 16 * (k + 1), s.focus_passes[k].data(), 16);
+      }
+    }
+  }
   // A pass of this label drawn as `to` instead of as it's drawn now (its main pass: `from`),
   // keeping the pass's own offset from the main one (a shadow stays a shadow).
   auto restyle = [&](const State::Look& from, const State::Look& to) {
@@ -523,9 +551,13 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   const bool same_look = main_look.set && s.focus_look.set && main_look.font == s.focus_look.font &&
                          std::fabs(main_look.sx - s.focus_look.sx) < 1e-6 &&
                          std::fabs(main_look.dx - s.focus_look.dx) < 1e-6;
-  if (index >= 0 && s.selected && same_look && s.have_other_colour && (focus_drawn || !visible)) {
-    // The entry the game still has focus on, while Quit Game is selected: as an unfocused one.
-    if (focus_drawn) ctx.r8.u64 = s.guest + 16;
+  if (index >= 0 && s.selected && focus_pass && s.passes) {
+    // The entry the game still has focus on, while Quit Game is selected: as an unfocused one
+    // (its first pass in the unfocused colour, the others clear).
+    const bool first_pass = !s.focus_passes.empty() && std::memcmp(colour, s.focus_passes[0].data(), 16) == 0;
+    ctx.r8.u64 = first_pass ? s.guest + 16 : s.passes;
+    restyle(main_look, s.other_look);
+  } else if (index >= 0 && s.selected && same_look && s.have_other_colour && !visible) {
     restyle(main_look, s.other_look);
   }
   if (hint) {
@@ -547,13 +579,18 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     ctx.f2.f64 = y + double(sc.last.t - r.t) + double(sc.last.b - sc.last.t);
     // Sized and placed as an unfocused entry, or as the focused one while it's selected.
     restyle(main_look, s.selected ? s.focus_look : s.other_look);
-    const bool last_main = visible && (focus_drawn || (s.have_other_colour &&
-                                                         std::memcmp(colour, s.other_colour, 16) == 0));
-    if (last_main) {
-      if (s.selected && s.have_focus_colour) ctx.r8.u64 = s.guest;
-      else if (s.have_other_colour) ctx.r8.u64 = s.guest + 16;
+    if (visible && other_drawn && s.selected && s.passes && !s.focus_passes.empty()) {
+      // Selected: in each of the focused entry's passes.
+      const PPCContext quit = ctx;
+      for (size_t k = 0; k < s.focus_passes.size() && k < 4; ++k) {
+        ctx = quit;
+        ctx.r8.u64 = s.passes + 16 * uint32_t(k + 1);
+        __imp__sub_82C49D88(ctx, base);
+      }
+    } else {
+      if (visible && other_drawn) ctx.r8.u64 = s.guest + 16;
+      __imp__sub_82C49D88(ctx, base);
     }
-    __imp__sub_82C49D88(ctx, base);
   }
   ctx = call;
   ctx.r3.u64 = result;
@@ -617,6 +654,11 @@ void OnControllerState(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   }
   if (s.selected && a) s.swallow_a = true;
 
+  if (s.selected != s.was_selected) {
+    REXLOG_INFO("menu_quit: Quit Game {} (focus on the menu's {} entry)", s.selected ? "selected" : "left",
+                focused == kFirst ? "first" : focused == kLast ? "last" : "another");
+    s.was_selected = s.selected;
+  }
   uint16_t out = buttons;
   int16_t out_ly = ly;
   if (s.swallow_down) {

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-17)
+
+Installer fixes. No reinstall needed: a game built with 0.3.0 stays as it is.
 
 ### Changed
 - **No "Allow required components to be downloaded and installed" checkbox** on the install screen. A PC without Microsoft's C++ build tools gets them downloaded and installed as part of the install (Windows still asks for administrator permission); the install screen says so before Install is clicked. Before, an unticked box stopped the install with an error.

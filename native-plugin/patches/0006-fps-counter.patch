@@ -158,7 +158,7 @@ index a9a91ff..1819275 100644
      // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
      static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
 diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
-index c89a326..78c0455 100644
+index c89a326..4ba73e3 100644
 --- a/src/gfx/vk/present.cpp
 +++ b/src/gfx/vk/present.cpp
 @@ -1,5 +1,7 @@
@@ -210,7 +210,7 @@ index c89a326..78c0455 100644
 +
 +vec4 TextOverlay(vec2 pixel, vec4 color) {
 +  uint lines = text_layout.x, cols = text_layout.y;
-+  float s = max(1.0, round(float(textureSize(source, 0).y) / render_scale.x / 400.0));  // output pixels per font pixel
++  float s = max(1.0, round(float(textureSize(source, 0).y) / render_scale.x / 800.0));  // output pixels per font pixel: 1 up to 1200 lines, 2 at 1440p, 3 at 4K
 +  vec2 origin = vec2(8.0 * s);
 +  vec2 lo = origin - 3.0 * s, hi = origin + vec2(float(cols) * 6.0 - 1.0, float(lines) * 10.0 - 3.0) * s + 3.0 * s;
 +  if (!InBox(pixel, lo, hi)) return color;

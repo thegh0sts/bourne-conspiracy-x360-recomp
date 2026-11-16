@@ -37,6 +37,7 @@ set(TBC_SOURCES
     src/mouse_look.cpp
     src/key_glyphs.cpp
     src/achievement_list.cpp
+    src/vibration.cpp
 )
 
 if(WIN32)

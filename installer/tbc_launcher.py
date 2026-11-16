@@ -28,6 +28,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import tbc_config as cfg
+import xex_achievements
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
@@ -343,7 +344,7 @@ DEFAULTS = {
     "original_pacing": False,
     "fps_counter": "Off",
     "hide_achievements": False,
-    "vibration": True,
+    "vibration_strength": 100,
     "language": "English",
     "brightness": 100,
     "fps": "30 (original)",
@@ -388,6 +389,9 @@ def load_settings():
     s.pop("show_fps", None)
     if s.get("fps") not in FPS:  # labels from older launcher versions
         s["fps"] = DEFAULTS["fps"]
+    if s.pop("vibration", True) is False:  # earlier test builds: an on/off checkbox
+        s["vibration_strength"] = 0
+    s["vibration_strength"] = min(100, max(0, int(s.get("vibration_strength", 100))))
     return s
 
 
@@ -910,9 +914,12 @@ def game_args(s, screen=None):
             args.append("--show_fps_detail=true")
     if s.get("hide_achievements"):
         args.append("--achievement_popups=false")
-    # Controller vibration: the runtime's own switch (rexglue InputSystem: every rumble the game asks for, at
-    # XamInputSetState, is zeroed when off).
-    if not s.get("vibration", True):
+    # Controller vibration: src/vibration.cpp scales the game's rumble; at 0 the runtime's own switch turns it
+    # off as well (rexglue InputSystem zeroes every rumble at XamInputSetState).
+    strength = int(s.get("vibration_strength", 100))
+    if strength < 100:
+        args.append(f"--vibration_strength={strength}")
+    if strength <= 0:
         args.append("--vibration=false")
     args.append(f"--user_language={LANGUAGES.get(s.get('language'), 1)}")
     if int(s.get("brightness", 100)) != 100:
@@ -1004,6 +1011,7 @@ class SettingsView(tk.Frame):
             self.needs_rebuild = False
         self._update_shown = False
         self.check_updates(manual=False)
+        self.check_achievements()
 
         # Settings in tabs: a list down the left, the chosen tab's settings on the right.
         body = tk.Frame(self, bg=BG)
@@ -1083,7 +1091,7 @@ class SettingsView(tk.Frame):
         self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14, pady=4)
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
-        self._check(box, 3, "vibration", "Controller vibration")
+        self._slider(box, 3, "vibration_strength", "Controller vibration (%, 0 = off)", 0, 100, 5)
         self._subheading(box, 4, "Mouse")
         line2 = tk.Frame(box, bg=PANEL)
         line2.grid(row=5, column=0, columnspan=2, sticky="w")
@@ -1256,6 +1264,45 @@ class SettingsView(tk.Frame):
             if k != "render_scale":
                 v.set(DEFAULTS[k])
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
+
+    def check_achievements(self):
+        """On opening: when there's no achievement list yet, or one from before every language was in it, read
+        it from the game's default.xex (xex_achievements.py) in a background thread, so the Achievements tab
+        doesn't wait for the game's first start. The game rewrites the same list whenever it starts."""
+        folder = user_data_dir(self.info) / "achievements"
+        try:
+            lists = sorted(folder.glob("*-list.json")) if folder.is_dir() else []
+            current = bool(lists) and all("names" in a for a in
+                                          json.loads(lists[0].read_text(encoding="utf-8")).get("achievements", []))
+        except (OSError, ValueError, AttributeError):
+            current = False
+        xex = Path(self.info["game"]) / "default.xex"
+        if current or not xex.is_file():
+            return
+        result = {}
+
+        def work():
+            try:
+                result["path"] = xex_achievements.export(xex, user_data_dir(self.info))
+            except Exception as e:  # a launcher that can't read it just waits for the game, as before
+                result["error"] = e
+            result["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(300, self._poll_achievements, result, 100)
+
+    def _poll_achievements(self, result, tries):
+        try:
+            if not self.winfo_exists():
+                return
+            if not result.get("done"):
+                if tries > 0:
+                    self.after(300, self._poll_achievements, result, tries - 1)
+                return
+            if result.get("path"):
+                self.refresh_achievements()
+        except tk.TclError:
+            pass
 
     def check_updates(self, manual):
         """Asks GitHub for the newest release in a background thread. On opening (manual=False)

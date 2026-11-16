@@ -8,3 +8,10 @@
 address = 0x827BFC84
 name = "TbcRenderWidth"
 registers = ["r31"]
+
+# Vibration strength (src/vibration.cpp). The game's only XamInputSetState call (bl at this
+# address); r5 points at the X_INPUT_VIBRATION it built (left, right: big-endian u16).
+[[midasm_hook]]
+address = 0x82321494
+name = "TbcVibration"
+registers = ["r5"]

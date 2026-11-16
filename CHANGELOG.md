@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-16)
 
-### New
+A Quit Game entry on the main menu, a detailed performance overlay, achievement pop-ups and the FPS counter drawn by the native renderer (so they show in fullscreen), brightness and vibration strength, and the launcher's new Saves and Achievements tabs and game language.
+
+### Updating from 0.2.8
+Run the new exe (or **Download and update** in the launcher), then click **Reinstall now** on the red notice. The game is rebuilt (new hooks for Quit Game and vibration) and the bundled SDK is replaced with `tbc10`, which has the native renderer's overlay, pop-ups and brightness. Your settings and saves are kept; a ticked Show FPS counter carries over as **FPS**.
+
+### New in the game
+- **Quit Game** on the main menu, under Cheats (in the game's language): select it and press A / Enter to close the game. The game's menu has no such entry, so it's drawn and selected by the PC version (`src/menu_quit.cpp`; `--menu_quit=false` turns it off).
 - **Detailed performance overlay.** The launcher's Show FPS counter checkbox is now an **FPS counter** setting on the Display tab: **Off**, **FPS**, or **Detailed (GPU, CPU, memory)** (`--show_fps_detail`), which adds:
   - the frame time and the slowest frame in the last half second;
   - the GPU time per frame and how busy that keeps the GPU (the renderer's GPU timestamps, turned on for it);
@@ -10,26 +16,25 @@
   - the game's RAM (working set) and video memory;
   - a graph of the last 128 frame times (0-50 ms, with lines at 16.7 and 33.3 ms), green / yellow / red per frame.
   Detailed needs the native renderer; with Xenos the counter shows the frame rate only.
-
 - **Achievement pop-ups drawn by the native renderer**, in the same look as before (the box, icon, yellow title, name and gamerscore, the ImGui font, the fade), so showing one no longer makes the runtime repaint every display refresh, and it shows in screenshots and recordings. Xenos keeps the runtime's pop-up.
-- Removed the shelved ReGPU renderer experiment (`regpu-plugin/`, `tools/build_regpu.bat`); added in 0.2.1, it never shipped in the installer.
-- The launcher's links (Key binds, Reinstall, Open logs, Check for updates and the rest) are small red buttons now.
-- **Save** button in the launcher, between Play and Quit: saves the settings without starting the game. Quitting (or closing the window) with unsaved changes asks whether to save them; before, settings were only saved by Play.
-- The launcher's Graphics path and Anti-aliasing settings only appear when the renderer is Xenos (they were greyed out otherwise).
-- **Game language** (launcher, Game files tab): English, German, French, Spanish or Italian, the languages on the disc (`--user_language`).
-- **Saves tab** in the launcher: every saved game in the saves folder, with its name, when it was last saved and its size (double-click one to open its folder), plus **Open saves folder** and **Back up saves**, which zips the game's saves, achievements and settings (not the shader caches) into `backups\saves-<date>-<time>.zip` in the same folder.
-- **Quit Game** on the main menu, under Cheats (in the game's language): select it and press A / Enter to close the game. The game's menu has no such entry, so it's drawn and selected by the PC version (`src/menu_quit.cpp`; `--menu_quit=false` turns it off).
-- **Achievements tab** in the launcher: the game's achievements with their icons, which are unlocked and when, and the gamerscore so far. The launcher reads the list from the game's `default.xex` when it opens (`installer/xex_achievements.py`), so it's there straight after installing, and the game rewrites the same list when it starts (`src/achievement_list.cpp`). Its text is in the language picked in the launcher (English, German, French, Spanish or Italian) and changes as soon as you pick another one, including the tab's own words (Locked, Unlocked and the date, the totals).
-- Keyboard prompts work in every language: the menu, title-screen and fight-tutorial text they look for is now matched in German, French, Spanish and Italian too, not only English (from the game's own Localization files).
 - **Brightness** slider (launcher, Graphics tab; native renderer): brightens or darkens the picture with a gamma curve on the renderer's last pass, so black and white stay as they are (`--brightness`).
 - **Controller vibration** slider (launcher, Controls tab; 0-100%, 100 by default): scales the game's rumble (`--vibration_strength`, a hook before the game's only `XamInputSetState` call, `src/vibration.cpp`); 0 also turns it off with the runtime's own switch (`--vibration=false`). Needs a reinstall (new hook).
+- Keyboard prompts work in every language: the menu, title-screen and fight-tutorial text they look for is now matched in German, French, Spanish and Italian too, not only English (from the game's own Localization files).
+
+### New in the launcher
+- **Achievements tab** in the launcher: the game's achievements with their icons, which are unlocked and when, and the gamerscore so far. The launcher reads the list from the game's `default.xex` when it opens (`installer/xex_achievements.py`), so it's there straight after installing, and the game rewrites the same list when it starts (`src/achievement_list.cpp`). Its text is in the language picked in the launcher (English, German, French, Spanish or Italian) and changes as soon as you pick another one, including the tab's own words (Locked, Unlocked and the date, the totals).
+- **Saves tab** in the launcher: every saved game in the saves folder, with its name, when it was last saved and its size (double-click one to open its folder), plus **Open saves folder** and **Back up saves**, which zips the game's saves, achievements and settings (not the shader caches) into `backups\saves-<date>-<time>.zip` in the same folder.
+- **Game language** (launcher, Game files tab): English, German, French, Spanish or Italian, the languages on the disc (`--user_language`).
 - **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).
+- **Save** button in the launcher, between Play and Quit: saves the settings without starting the game. Quitting (or closing the window) with unsaved changes asks whether to save them; before, settings were only saved by Play.
+- The launcher's Graphics path and Anti-aliasing settings only appear when the renderer is Xenos (they were greyed out otherwise).
+- The launcher's links (Key binds, Reinstall, Open logs, Check for updates and the rest) are small red buttons now.
 
 ### Fixes
 - **The FPS counter shows in fullscreen with the native renderer.** It's now drawn into the picture by the renderer's last pass (text on a dark box at the top-left, the frame rate green / yellow / red as before) instead of a separate window, which the graphics driver hides when a Vulkan game fills the screen. It costs nothing measurable and also shows in screenshots and recordings. Xenos keeps the separate window.
 
-### Updating
-Reinstall when the launcher asks: the native renderer is in the bundled SDK, now `tbc9`. A ticked Show FPS counter carries over as FPS.
+### Removed
+- Removed the shelved ReGPU renderer experiment (`regpu-plugin/`, `tools/build_regpu.bat`); added in 0.2.1, it never shipped in the installer.
 
 ## 0.2.8 (2026-11-16)
 

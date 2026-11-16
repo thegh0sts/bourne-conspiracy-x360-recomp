@@ -915,10 +915,10 @@ class SettingsView(tk.Frame):
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=3, column=0, columnspan=2, sticky="w")
         self.vars["renderer"].trace_add("write", lambda *_: self._display_changed())
         self.vars["resolution"].trace_add("write", lambda *_: self._display_changed())
-        self._combo(box, 5, "render_path", "Graphics path (Xenos only)", RENDER_PATHS)
+        self._combo(box, 5, "render_path", "Graphics path", RENDER_PATHS)
         self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
-        self._combo(box, 7, "aa", "Anti-aliasing (Xenos only)", AA)
-        self._display_changed()  # grey out the Xenos-only settings for the native renderer
+        self._combo(box, 7, "aa", "Anti-aliasing", AA)
+        self._display_changed()  # hide the Xenos-only settings for the native renderer
         self._combo(box, 8, "fps", "Frame rate", FPS)
         self._combo(box, 9, "fps_counter", "FPS counter", FPS_COUNTER)
         self._checks(box, 10, [("vsync", "VSync (off: may tear, can be faster)"),
@@ -1046,12 +1046,16 @@ class SettingsView(tk.Frame):
         """Keep the output and render resolutions consistent with the renderer and each other."""
         if "render_scale" not in self.combos:
             return  # still building the screen
-        # Graphics path and anti-aliasing are Xenos settings: greyed out with the native renderer.
+        # Graphics path and anti-aliasing are Xenos settings: only shown with Xenos (grid_remove keeps their place
+        # in the grid, so they come back where they were; their empty rows take no space meanwhile).
         xenos = RENDERER_PLUGIN.get(self.vars["renderer"].get()) == "xenos"
         for key in ("render_path", "aa"):
             if key in self.combos:
-                self.combos[key].configure(state="readonly" if xenos else "disabled")
-                self.combo_labels[key].configure(fg=FG if xenos else DIM)
+                for widget in (self.combos[key], self.combo_labels[key]):
+                    if xenos:
+                        widget.grid()
+                    else:
+                        widget.grid_remove()
         resolutions = self._resolutions()
         self.combos["resolution"]["values"] = resolutions
         if self.vars["resolution"].get() not in resolutions:

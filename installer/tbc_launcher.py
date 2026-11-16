@@ -47,6 +47,26 @@ GAME_VERSION = "0.2.7"
 FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
 # The game's languages (the disc has these five): the runtime's user_language, an XLanguage id.
 LANGUAGES = {"English": 1, "German": 3, "French": 4, "Spanish": 5, "Italian": 6}
+
+# The Achievements tab's own words in each language (the achievements themselves come from the game).
+# A first piece of the launcher translation on the roadmap.
+ACHIEVEMENT_TEXT = {
+    "English": {"summary": "{got} of {total} unlocked    {score} of {max} G", "unlocked": "Unlocked {date}",
+                "locked": "Locked", "first_start": "Start the game once (to the title screen) and its achievements appear here.",
+                "months": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec"},
+    "German": {"summary": "{got} von {total} freigeschaltet    {score} von {max} G", "unlocked": "Freigeschaltet am {date}",
+               "locked": "Gesperrt", "first_start": "Starte das Spiel einmal (bis zum Titelbildschirm), dann erscheinen hier seine Erfolge.",
+               "months": "Jan. Feb. März Apr. Mai Juni Juli Aug. Sep. Okt. Nov. Dez."},
+    "French": {"summary": "{got} sur {total} débloqués    {score} sur {max} G", "unlocked": "Débloqué le {date}",
+               "locked": "Verrouillé", "first_start": "Lancez le jeu une fois (jusqu'à l'écran titre) et ses succès apparaîtront ici.",
+               "months": "janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc."},
+    "Spanish": {"summary": "{got} de {total} desbloqueados    {score} de {max} G", "unlocked": "Desbloqueado el {date}",
+                "locked": "Bloqueado", "first_start": "Inicia el juego una vez (hasta la pantalla de título) y sus logros aparecerán aquí.",
+                "months": "ene. feb. mar. abr. may. jun. jul. ago. sept. oct. nov. dic."},
+    "Italian": {"summary": "{got} di {total} sbloccati    {score} di {max} G", "unlocked": "Sbloccato il {date}",
+                "locked": "Bloccato", "first_start": "Avvia il gioco una volta (fino alla schermata del titolo) e i suoi obiettivi appariranno qui.",
+                "months": "gen feb mar apr mag giu lug ago set ott nov dic"},
+}
 # The settings screen's tabs, top to bottom.
 TABS = ("Game files", "Display", "Graphics", "Camera", "Controls", "Saves", "Achievements")
 
@@ -1418,19 +1438,21 @@ class SettingsView(tk.Frame):
         for child in box.winfo_children():
             child.destroy()
         try:
-            items = load_achievements(self.info, LANGUAGES.get(self.vars["language"].get(), 1))
+            language = self.vars["language"].get()
+            text = ACHIEVEMENT_TEXT.get(language, ACHIEVEMENT_TEXT["English"])
+            items = load_achievements(self.info, LANGUAGES.get(language, 1))
         except (OSError, ValueError, KeyError) as e:
             tk.Label(box, text=f"Couldn't read the achievements: {e}", font=("Segoe UI", 10), fg=FG, bg=PANEL
                      ).pack(anchor="w")
             return
         if not items:
-            tk.Label(box, text="Start the game once (to the title screen) and its achievements appear here.",
+            tk.Label(box, text=text["first_start"],
                      font=("Segoe UI", 10), fg=FG, bg=PANEL).pack(anchor="w")
             return
         got = [a for a in items if a["unlocked"]]
         score = sum(int(a["gamerscore"]) for a in got)
         total = sum(int(a["gamerscore"]) for a in items)
-        tk.Label(box, text=f"{len(got)} of {len(items)} unlocked    {score} of {total} G", font=("Segoe UI", 11, "bold"),
+        tk.Label(box, text=text["summary"].format(got=len(got), total=len(items), score=score, max=total), font=("Segoe UI", 11, "bold"),
                  fg=FG, bg=PANEL, anchor="w").pack(fill="x", pady=(0, 8))
         outer = tk.Frame(box, bg=PANEL)
         outer.pack(fill="both", expand=True)
@@ -1472,7 +1494,12 @@ class SettingsView(tk.Frame):
             desc = a["description"] if a["unlocked"] or not a.get("locked_description") else a["locked_description"]
             tk.Label(row, text=desc, font=("Segoe UI", 9), fg=DIM, bg=bg, anchor="w", justify="left",
                      wraplength=420).grid(row=1, column=1, sticky="w")
-            when = time.strftime("Unlocked %d %b %Y", a["unlocked"]) if a["unlocked"] else "Locked"
+            if a["unlocked"]:
+                u = a["unlocked"]
+                month = text["months"].split()[u.tm_mon - 1]
+                when = text["unlocked"].format(date=f"{u.tm_mday} {month} {u.tm_year}")
+            else:
+                when = text["locked"]
             tk.Label(row, text=f"{a['gamerscore']} G", font=("Segoe UI", 10, "bold"), fg=ACCENT if a["unlocked"] else DIM,
                      bg=bg).grid(row=0, column=2, sticky="e", padx=(10, 0))
             tk.Label(row, text=when, font=("Segoe UI", 8), fg=DIM, bg=bg).grid(row=1, column=2, sticky="e", padx=(10, 0))

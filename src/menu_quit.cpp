@@ -126,6 +126,14 @@ struct State {
   uint8_t other_colour[16] = {};
   bool have_focus_colour = false, have_other_colour = false;
   int logged = 0;
+  // What the live menu's Campaign and Cheats labels say, learnt from the first draws at their
+  // places once the menu's scene appears (other menus reuse the same places for their own
+  // entries, and the main menu's scene stays around underneath them).
+  struct Texts {
+    std::chrono::steady_clock::time_point first_seen;
+    std::u16string cheats, campaign;
+  };
+  std::map<uint32_t, Texts> texts;
   uint8_t logged_colours[32] = {};
   uint32_t guest = 0;  // guest memory: two colours (32 bytes) then the strings
   std::u16string label_text, hint_text;
@@ -227,6 +235,10 @@ void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
     }
     if (sc.any_focused && cheats.valid() && campaign.valid()) {
       s.found = true;
+      if (!s.texts.count(scene)) {
+        if (s.texts.size() > 16) s.texts.clear();
+        s.texts[scene].first_seen = std::chrono::steady_clock::now();
+      }
       if (s.live_scene != scene || s.rects.size() != sc.buttons.size()) {
         s.live_scene = scene;
         s.colours.assign(sc.buttons.size(), {});
@@ -327,7 +339,23 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   const bool cheats = s.cheats.at(x, y);
   const auto now = std::chrono::steady_clock::now();
+  if (cheats || s.campaign.at(x, y)) {
+    // Only the main menu's own labels count: learnt in the scene's first second, compared after.
+    std::u16string text;
+    for (uint32_t p = ctx.r6.u32; p && text.size() < 64; p += 2) {
+      const char16_t c = char16_t(base[p] << 8 | base[p + 1]);
+      if (!c) break;
+      text.push_back(c);
+    }
+    auto it = s.texts.find(s.live_scene);
+    if (it == s.texts.end()) return false;
+    std::u16string& known = cheats ? it->second.cheats : it->second.campaign;
+    if (known.empty() && now - it->second.first_seen < std::chrono::seconds(1)) known = text;
+    if (known.empty() || text != known) return false;
+    s.drawn = now;
+  }
   const bool showing = now - s.drawn < kRecent;
+  if (index >= 0 && !showing) return false;
   const bool hint = showing && s.selected && s.hint_rect.valid() && std::fabs(y - s.hint_rect.t) < 1.5 &&
                     x >= s.hint_rect.l - 1 && x < s.hint_rect.r;
   if (index < 0 && !hint) return false;
@@ -336,7 +364,6 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   const uint8_t* colour = base + call.r8.u32;
   // A colour that shows (an outline or shadow pass, or a fade, can draw the same text clear).
   const bool visible = LoadF(colour, 12) > 0.05f;
-  if (index >= 0) s.drawn = now;
   if (index >= 0 && size_t(index) < s.colours.size() && visible) {
     std::memcpy(s.colours[index].data(), colour, 16);
     // The colour most buttons share (unfocused) and the odd one out (focused); buttons not

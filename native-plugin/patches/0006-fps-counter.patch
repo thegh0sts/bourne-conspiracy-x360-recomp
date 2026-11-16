@@ -57,26 +57,68 @@ index 51b9922..993327e 100644
  // the maximum while the CPU is power or thermal limited). 0 where unknown.
  struct CpuClock {
 diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
-index a9a91ff..31e7873 100644
+index a9a91ff..d7369aa 100644
 --- a/src/gfx/native.cpp
 +++ b/src/gfx/native.cpp
-@@ -9,6 +9,7 @@
+@@ -8,7 +8,12 @@
+ #include "../path_utf8.h"
  #include <algorithm>
  #include <chrono>
++#include <cmath>
  #include <condition_variable>
++#include <deque>
++#include <fstream>
++#include <optional>
 +#include <cstdio>
  #include <cstdlib>
  #include <cstring>
  #include <filesystem>
-@@ -116,6 +117,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+@@ -33,7 +38,9 @@
+ #include <rex/memory/utils.h>
+ #include <rex/runtime.h>
+ #include <rex/system/gpu_plugin.h>
++#include <rex/system/achievement_manager.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/util/xdbf_utils.h>
+ #include <rex/system/user_module.h>
+ #include <rex/system/xex_module.h>
+ #include <rex/system/xmemory.h>
+@@ -47,6 +54,13 @@
+ #include "start_failure.h"
+ #include "pm4.h"
+ #include "upk.h"
++
++// The achievement pop-up's icon (a PNG in the title's XDBF), as prompt_atlas.cpp loads its PNGs.
++#define STB_IMAGE_STATIC
++#define STB_IMAGE_IMPLEMENTATION
++#define STBI_ONLY_PNG
++#define STBI_NO_STDIO
++#include <stb_image.h>
+ #include "vk/memory_sync.h"
+ #include "vk/renderer.h"
+ 
+@@ -106,7 +120,10 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+  public:
+   NativeCommandProcessor(rg::GraphicsSystem* graphics_system, rex::system::KernelState* kernel_state)
+       : CommandProcessor(graphics_system, kernel_state) {}
+-  ~NativeCommandProcessor() override { StopHostReports(); }
++  ~NativeCommandProcessor() override {
++    if (toast_listener_ && kernel_state_) kernel_state_->achievements().UnregisterCallback(toast_listener_);
++    StopHostReports();
++  }
+ 
+   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width, uint32_t frontbuffer_height) override {
+     if (!renderer_) return;
+@@ -116,6 +133,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
      HoldForWarmup();
      if (InstrState* is = FindInstrState()) PublishInstr(*is, frontbuffer_width, frontbuffer_height);
      ++frames_;
 +    UpdateFpsOverlay();
++    UpdateToast();
      if (bots::HybridState* hs = bots::FindHybridState(); hs && hs->fps_counter.load(std::memory_order_relaxed))
        hs->swaps.fetch_add(1, std::memory_order_relaxed);  // the in-game FPS counter (fps_counter.h)
      // BOTS_GFX_NO_PRESENT=1 (benchmarking): render everything but never hand the frame to the presenter. Under a
-@@ -405,6 +407,83 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+@@ -405,6 +424,186 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
      return m;
    }
  
@@ -146,6 +188,109 @@ index a9a91ff..31e7873 100644
 +    fps_start_ = now;
 +    fps_worst_ms_ = 0.0;
 +  }
++  // tbc: achievement pop-ups, drawn by the present pass (Renderer::SetToast) like the runtime's ImGui one, which the
++  // game turns off with this renderer (tbc_app.h). --achievement_popups=false: none. As the runtime's: each shows for
++  // 4.5 s, fading in over 0.3 s and out over the last 0.5, one after another.
++  struct PendingToast {
++    rex::system::AchievementInfo achievement;
++    std::optional<std::chrono::steady_clock::time_point> since;
++  };
++  void UpdateToast() {
++    static const bool on = rex::cvar::Query<bool>("achievement_popups");
++    if (!on || !kernel_state_) return;
++    if (!toast_listener_) {
++      toast_listener_ = kernel_state_->achievements().RegisterNotificationCallback(
++          [this](const rex::system::AchievementEvent& event) {
++            std::lock_guard<std::mutex> lock(toast_mutex_);
++            toasts_.push_back({event.achievement, std::nullopt});
++          });
++    }
++    const auto now = std::chrono::steady_clock::now();
++    rex::system::AchievementInfo shown;
++    float age = 0.0f;
++    bool any = false, fresh = false;
++    {
++      std::lock_guard<std::mutex> lock(toast_mutex_);
++      while (!toasts_.empty()) {
++        if (!toasts_.front().since) {
++          toasts_.front().since = now;
++          fresh = true;
++        }
++        age = std::chrono::duration<float>(now - *toasts_.front().since).count();
++        if (age < 4.5f) break;
++        toasts_.pop_front();
++      }
++      if (!toasts_.empty()) {
++        shown = toasts_.front().achievement;
++        any = true;
++      }
++    }
++    if (!any) {
++      if (toast_showing_) renderer_->SetToast(0.0f, {}, {}, nullptr);
++      toast_showing_ = false;
++      return;
++    }
++    if (fresh || !toast_showing_) {
++      toast_has_icon_ = LoadToastIcon(shown);
++      toast_name_ = shown.label;
++      toast_suffix_ = " (" + std::to_string(shown.gamerscore) + "G)";
++    }
++    toast_showing_ = true;
++    float alpha = age < 0.3f ? age / 0.3f : (age > 4.0f ? (4.5f - age) / 0.5f : 1.0f);
++    alpha = std::clamp(alpha, 0.001f, 1.0f);
++    renderer_->SetToast(alpha, toast_name_, toast_suffix_, toast_has_icon_ ? toast_icon_.data() : nullptr);
++  }
++  // The icon, as the runtime finds it (rex::ui::AchievementIconCache): the achievement's icon file, icons/<image
++  // id>.png beside the game's metadata, or the image in the title's XDBF; scaled to 44x44 as ImGui draws it (linear).
++  bool LoadToastIcon(const rex::system::AchievementInfo& achievement) {
++    std::vector<uint8_t> bytes;
++    auto read_file = [&](const std::filesystem::path& relative) {
++      if (relative.empty() || !kernel_state_->emulator()) return false;
++      const auto path = kernel_state_->emulator()->FindMetadataPath(relative);
++      if (!path) return false;
++      std::ifstream file(*path, std::ios::binary);
++      bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
++      return !bytes.empty();
++    };
++    if (!read_file(achievement.icon_path) &&
++        !(achievement.image_id && read_file(std::filesystem::path("icons") /
++                                            (std::to_string(achievement.image_id) + ".png")))) {
++      if (!achievement.image_id) return false;
++      const auto db = kernel_state_->title_xdbf();
++      if (!db.is_valid()) return false;
++      const auto block = db.GetEntry(rex::system::util::XdbfSection::kImage, achievement.image_id);
++      if (!block) return false;
++      bytes.assign(block.buffer, block.buffer + block.size);
++    }
++    int w = 0, h = 0, n = 0;
++    stbi_uc* rgba = stbi_load_from_memory(bytes.data(), int(bytes.size()), &w, &h, &n, 4);
++    if (!rgba) return false;
++    for (int y = 0; y < 44; ++y) {
++      for (int x = 0; x < 44; ++x) {
++        const float u = (x + 0.5f) * float(w) / 44.0f - 0.5f, v = (y + 0.5f) * float(h) / 44.0f - 0.5f;
++        const int x0 = std::clamp(int(std::floor(u)), 0, w - 1), y0 = std::clamp(int(std::floor(v)), 0, h - 1);
++        const int x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
++        const float fx = std::clamp(u - std::floor(u), 0.0f, 1.0f), fy = std::clamp(v - std::floor(v), 0.0f, 1.0f);
++        uint32_t packed = 0;
++        for (int c = 0; c < 4; ++c) {
++          auto at = [&](int px, int py) { return float(rgba[(py * w + px) * 4 + c]); };
++          const float top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * fx;
++          const float bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx;
++          packed |= uint32_t(std::lround(top + (bottom - top) * fy)) << (8 * c);
++        }
++        toast_icon_[y * 44 + x] = packed;
++      }
++    }
++    stbi_image_free(rgba);
++    return true;
++  }
++  std::mutex toast_mutex_;
++  std::deque<PendingToast> toasts_;
++  rex::system::AchievementListenerHandle toast_listener_ = 0;
++  bool toast_showing_ = false, toast_has_icon_ = false;
++  std::string toast_name_, toast_suffix_;
++  std::vector<uint32_t> toast_icon_ = std::vector<uint32_t>(44 * 44);
++
 +  uint64_t GpuNs() const {
 +    uint64_t ns = 0;
 +    for (uint64_t v : renderer_->stats().gpu_ns) ns += v;
@@ -161,27 +306,38 @@ index a9a91ff..31e7873 100644
      // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
      static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
 diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
-index c89a326..08ebe1c 100644
+index c89a326..dcfbbaa 100644
 --- a/src/gfx/vk/present.cpp
 +++ b/src/gfx/vk/present.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
  // Renderer: native present. The front buffer goes through the guest's 256-entry gamma ramp into the presenter's
  // guest output image, as the emulated swap does for 8_8_8_8 front buffers.
 +#include <algorithm>
++#include <bit>
 +#include <cctype>
  #include <chrono>
  #include <cstdio>
  #include <cstdlib>
-@@ -22,7 +24,7 @@ namespace {
+@@ -22,7 +25,17 @@ namespace {
  // std140 packs the 256 ramp entries as 64 uvec4s.
  constexpr const char* kPresentShader = R"(#version 450
  layout(set = 0, binding = 0) uniform sampler2DArray source;
 -layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; };
-+layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; uvec4 text[8]; uvec4 text_layout; uvec4 graph[8]; };
++layout(set = 0, binding = 1) uniform Gamma {
++  uvec4 ramp[64];
++  vec4 render_scale;
++  uvec4 text[8];
++  uvec4 text_layout;
++  uvec4 graph[8];
++  uvec4 toast;           // x: opacity (float bits, 0 = none), y: name length, z: suffix length, w: has an icon
++  uvec4 toast_text[5];   // "Achievement Unlocked", the name, the suffix: ASCII, a byte each
++  uvec4 toast_font[48];  // ProggyTiny at 10 px, ASCII 32-126: 6x10 bits each (bit y * 6 + x), 2 uints
++  uvec4 toast_icon[484]; // 44x44 RGBA8
++};
  layout(location = 0) out vec4 result;
  
  uint Ramp(float v) {
-@@ -50,6 +52,81 @@ vec3 CatmullRom(vec2 position, vec2 size) {
+@@ -50,6 +63,142 @@ vec3 CatmullRom(vec2 position, vec2 size) {
            Tap(vec2(t3.x, t3.y), size) * w3.x) * w3.y;
  }
  
@@ -260,23 +416,89 @@ index c89a326..08ebe1c 100644
 +  return vec4(ink, color.a);
 +}
 +
++
++// Achievement pop-up (tbc), drawn like the runtime's ImGui one (rex::ui::AchievementToastDialog with the ImGuiDrawer
++// style): a 320x70 window 16 px in from the bottom-right corner (80 + 16 from the bottom), dark green at 88% with a
++// 1 px border and 6 px corners; the 44x44 icon at (8, 8); "Achievement Unlocked" (yellow) at (60, 8); the name (white)
++// at (60, 22) and its gamerscore in grey 8 px after it; ProggyTiny 10 px. Sizes are ImGui pixels at 1080 output lines, scaled
++// by whole steps above. toast.x fades the lot.
++bool ToastGlyph(uint ch, uint gx, uint gy) {
++  uint code = (ch >= 32u && ch < 127u) ? ch - 32u : 31u;  // others: '?'
++  uint bit = gy * 6u + gx;
++  uint w = code * 2u + (bit >> 5u);
++  return ((toast_font[w >> 2u][w & 3u] >> (bit & 31u)) & 1u) != 0u;
++}
++
++uint ToastChar(uint i) { return (toast_text[i >> 4u][(i >> 2u) & 3u] >> ((i & 3u) * 8u)) & 0xFFu; }
++
++vec4 Toast(vec2 pixel, vec4 color) {
++  float a = uintBitsToFloat(toast.x);
++  vec2 out_size = vec2(textureSize(source, 0).xy) / render_scale.xy;
++  float s = max(1.0, round(out_size.y / 1080.0));
++  vec2 p = (pixel - (out_size - vec2(336.0, 96.0) * s)) / s;  // ImGui pixels in the window
++  if (p.x < 0.0 || p.y < 0.0 || p.x >= 320.0 || p.y >= 70.0) return color;
++  vec2 q = min(p, vec2(320.0, 70.0) - p);  // distance to the nearest edges
++  float corner = (q.x < 6.0 && q.y < 6.0) ? length(vec2(6.0) - q) : 0.0;
++  if (corner > 6.0) return color;
++  if (q.x < 1.0 || q.y < 1.0 || corner > 5.0) return vec4(mix(color.rgb, vec3(0.0, 0.35, 0.0), a), color.a);
++  vec3 c = mix(color.rgb, vec3(0.0, 0.06, 0.0), 0.88 * a);
++  if (toast.w != 0u && p.x >= 8.0 && p.y >= 8.0 && p.x < 52.0 && p.y < 52.0) {
++    uvec2 ip = uvec2(p - 8.0);
++    uint i = ip.y * 44u + ip.x;
++    vec4 icon = unpackUnorm4x8(toast_icon[i >> 2u][i & 3u]);
++    return vec4(mix(c, icon.rgb, icon.a * a), color.a);
++  }
++  uvec2 t = uvec2(p);
++  if (t.x < 60u || t.x >= 316u) return vec4(c, color.a);
++  uint x = t.x - 60u;
++  vec3 ink;
++  uint ch;
++  if (t.y >= 8u && t.y < 18u) {
++    if (x >= 20u * 6u) return vec4(c, color.a);
++    ch = ToastChar(x / 6u);
++    ink = vec3(1.0, 0.85, 0.2);
++  } else if (t.y >= 22u && t.y < 32u) {
++    uint name = toast.y * 6u, suffix_at = name + 8u;
++    if (x < name) {
++      ch = ToastChar(20u + x / 6u);
++      ink = vec3(1.0);
++    } else if (x >= suffix_at && x < suffix_at + toast.z * 6u) {
++      x -= suffix_at;
++      ch = ToastChar(20u + toast.y + x / 6u);
++      ink = vec3(0.6);
++    } else {
++      return vec4(c, color.a);
++    }
++  } else {
++    return vec4(c, color.a);
++  }
++  uint gy = (t.y - 8u) % 14u;
++  if (!ToastGlyph(ch, x % 6u, gy)) return vec4(c, color.a);
++  return vec4(mix(c, ink, a), color.a);
++}
++
  void main() {
    // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
    // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
-@@ -60,6 +137,7 @@ void main() {
+@@ -60,6 +209,8 @@ void main() {
                                   : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
    result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
                  1023.0) / 1023.0;
 +  if (text_layout.x != 0u) result = TextOverlay(gl_FragCoord.xy, result);
++  if (uintBitsToFloat(toast.x) > 0.0) result = Toast(gl_FragCoord.xy, result);
  }
  )";
  
-@@ -109,10 +187,49 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+@@ -109,10 +260,107 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
  }
  
  constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 -constexpr VkDeviceSize kRampBytes = 256 * 4 + 16;  // + render_scale
-+constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + 8 * 16 + 16 + 8 * 16;  // + render_scale, tbc overlay text, layout, graph
++// + render_scale, the tbc overlay's text, layout and graph, and the achievement pop-up (its header, text, font and
++// icon)
++constexpr VkDeviceSize kOverlayBytes = 8 * 16 + 16 + 8 * 16;
++constexpr VkDeviceSize kToastBytes = 16 + 5 * 16 + 48 * 16 + 484 * 16;
++constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + kOverlayBytes + kToastBytes;
  
  }  // namespace
  
@@ -298,6 +520,60 @@ index c89a326..08ebe1c 100644
 +      overlay_text_[i / 4] |= code << (8 * (i % 4));
 +    }
 +  }
++}
++
++// ProggyTiny (Tristan Grimmer, free licence; the ImGui runtime's font) at 10 px, as ImGui draws it: ASCII 32-126, 6x10
++// pixels each, bit y * 6 + x, two uints a glyph (made with PIL from the SDK's thirdparty/imgui/misc/fonts/ProggyTiny.ttf
++// at the em size stb_truetype uses for a 10 px height).
++const uint32_t Renderer::kToastFont[192] = {
++    0x00000000u, 0x00000000u, 0x04104100u, 0x00001001u, 0x0000A28Au, 0x00000000u,
++    0x8A7CA000u, 0x000029F2u, 0x0E15E100u, 0x000010F5u, 0x0A562000u, 0x000046A5u,
++    0x46249180u, 0x0000B91Au, 0x00004104u, 0x00000000u, 0x82082108u, 0x00081020u,
++    0x08208102u, 0x00021082u, 0x4E544000u, 0x00000045u, 0x1F104000u, 0x00000041u,
++    0x00000000u, 0x00021000u, 0x1F000000u, 0x00000000u, 0x00000000u, 0x00001000u,
++    0x04208410u, 0x00010821u, 0x55451380u, 0x00003914u, 0x04106100u, 0x00003841u,
++    0x8C411380u, 0x00007C10u, 0x0C411380u, 0x00003914u, 0xC928C200u, 0x00002087u,
++    0x0F0417C0u, 0x00003914u, 0x4F042300u, 0x00003914u, 0x082107C0u, 0x00000841u,
++    0x4E451380u, 0x00003914u, 0x1E451380u, 0x00001884u, 0x00100000u, 0x00000040u,
++    0x00100000u, 0x00000840u, 0x03310000u, 0x00000103u, 0xC07C0000u, 0x00000007u,
++    0x98181000u, 0x00000011u, 0x08411380u, 0x00001001u, 0x6DB61780u, 0x0000F81Fu,
++    0x8A284100u, 0x00004513u, 0x4F4513C0u, 0x00003D14u, 0x41051380u, 0x00003910u,
++    0x514491C0u, 0x00001C94u, 0x4F0417C0u, 0x00007C10u, 0x4F0417C0u, 0x00000410u,
++    0x59051380u, 0x00007914u, 0x5F451440u, 0x00004514u, 0x04104380u, 0x00003841u,
++    0x10410700u, 0x00003D04u, 0x43149440u, 0x00004491u, 0x41041040u, 0x00007C10u,
++    0x5B6D1440u, 0x00004555u, 0x555534C0u, 0x00006595u, 0x51451380u, 0x00003914u,
++    0x4F4513C0u, 0x00000410u, 0x51451380u, 0x00007994u, 0x4F4513C0u, 0x00004514u,
++    0x0E051380u, 0x00003914u, 0x041047C0u, 0x00001041u, 0x51451440u, 0x00003914u,
++    0x8A451440u, 0x00001042u, 0x95555440u, 0x000028A2u, 0x84291440u, 0x00004512u,
++    0x0E451440u, 0x00001041u, 0x842107C0u, 0x00007C10u, 0x8208208Eu, 0x000E0820u,
++    0x04082041u, 0x00102081u, 0x0820820Eu, 0x000E2082u, 0x0044A100u, 0x00000000u,
++    0x00000000u, 0x003F0000u, 0x00008100u, 0x00000000u, 0x90380000u, 0x00007917u,
++    0x513C1041u, 0x00003D14u, 0x41780000u, 0x00007810u, 0x51790410u, 0x00007914u,
++    0xD1380000u, 0x00007817u, 0x823C209Cu, 0x00000820u, 0x51380000u, 0x03907914u,
++    0x513C1041u, 0x00004514u, 0x04180100u, 0x00001041u, 0x08300200u, 0x01C82082u,
++    0x8A482082u, 0x000048A1u, 0x04104106u, 0x00001041u, 0x552C0000u, 0x00005555u,
++    0x513C0000u, 0x00004514u, 0x51380000u, 0x00003914u, 0x513C0000u, 0x00413D14u,
++    0x51780000u, 0x04107914u, 0x53340000u, 0x00000410u, 0x81780000u, 0x00003D03u,
++    0x82382080u, 0x00007020u, 0x51440000u, 0x00007914u, 0x91440000u, 0x000010A2u,
++    0x55440000u, 0x000028A5u, 0x0A440000u, 0x000044A1u, 0x51440000u, 0x03907914u,
++    0x087C0000u, 0x00007C21u, 0x02104108u, 0x00081041u, 0x04104104u, 0x00041041u,
++    0x08104102u, 0x00021041u, 0x66000000u, 0x00000006u,
++    0u, 0u};
++
++void Renderer::SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon) {
++  toast_alpha_ = alpha;
++  std::memset(toast_text_, 0, sizeof(toast_text_));
++  static constexpr char kTitle[] = "Achievement Unlocked";
++  const uint32_t name_length = uint32_t(std::min<size_t>(name.size(), 48));
++  const uint32_t suffix_length = uint32_t(std::min<size_t>(suffix.size(), 12));
++  auto put = [&](uint32_t i, char c) { toast_text_[i / 4] |= uint32_t(uint8_t(c)) << (8 * (i % 4)); };
++  for (uint32_t i = 0; i < 20; ++i) put(i, kTitle[i]);
++  for (uint32_t i = 0; i < name_length; ++i) put(20 + i, name[i]);
++  for (uint32_t i = 0; i < suffix_length; ++i) put(20 + name_length + i, suffix[i]);
++  toast_name_length_ = name_length;
++  toast_suffix_length_ = suffix_length;
++  toast_has_icon_ = icon != nullptr;
++  if (icon) std::memcpy(toast_icon_, icon, sizeof(toast_icon_));
 +}
 +
 +void Renderer::AddFrameTime(double ms) {
@@ -322,7 +598,7 @@ index c89a326..08ebe1c 100644
  bool Renderer::InitPresent() {
    if (present_pipeline_) return true;
    const VkDevice dev = device_->device();
-@@ -180,8 +297,14 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+@@ -180,8 +428,21 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
      return v && std::strcmp(v, "bilinear") == 0;
    }();
    const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
@@ -335,6 +611,13 @@ index c89a326..08ebe1c 100644
 +  uint8_t graph[kGraphFrames];  // oldest first
 +  for (uint32_t k = 0; k < kGraphFrames; ++k) graph[k] = frame_times_[(frame_time_head_ + k) % kGraphFrames];
 +  std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_) + sizeof(text_layout), graph, sizeof(graph));
++  uint8_t* toast = ramp + 256 * 4 + 16 + kOverlayBytes;
++  const uint32_t toast_header[4] = {std::bit_cast<uint32_t>(toast_alpha_), toast_name_length_, toast_suffix_length_,
++                                    toast_has_icon_ ? 1u : 0u};
++  std::memcpy(toast, toast_header, 16);
++  std::memcpy(toast + 16, toast_text_, sizeof(toast_text_));
++  std::memcpy(toast + 16 + sizeof(toast_text_), kToastFont, sizeof(kToastFont));
++  std::memcpy(toast + 16 + sizeof(toast_text_) + sizeof(kToastFont), toast_icon_, sizeof(toast_icon_));
    const VkDescriptorSet set = AllocateSet(present_set_layout_);
    if (!set) {
      static bool warned = false;
@@ -365,10 +648,10 @@ index 1155319..f7541b1 100644
      device_->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(device_->physical_device(), &props);
      timestamp_ns_ = props.limits.timestampPeriod;
 diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
-index bda30a2..01e2f0c 100644
+index bda30a2..5451251 100644
 --- a/src/gfx/vk/renderer.h
 +++ b/src/gfx/vk/renderer.h
-@@ -335,6 +335,14 @@ class Renderer : public Pm4Sink {
+@@ -335,6 +335,20 @@ class Renderer : public Pm4Sink {
    // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
    // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
    float scale_ = 1.0f;
@@ -380,10 +663,16 @@ index bda30a2..01e2f0c 100644
 +  uint8_t frame_times_[kGraphFrames] = {};
 +  uint32_t frame_time_head_ = 0;
 +  bool overlay_graph_ = false;
++  static const uint32_t kToastFont[192];  // SetToast
++  float toast_alpha_ = 0.0f;
++  uint32_t toast_text_[20] = {};
++  uint32_t toast_name_length_ = 0, toast_suffix_length_ = 0;
++  bool toast_has_icon_ = false;
++  uint32_t toast_icon_[44 * 44] = {};
    uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
    int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
    bool ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
-@@ -375,6 +383,16 @@ class Renderer : public Pm4Sink {
+@@ -375,6 +389,19 @@ class Renderer : public Pm4Sink {
    // The guest output image's size relative to the frame buffer: above render scale 1 the presenter gets the
    // rendered size (as the emulated renderer's resolution scale does); below 1 the present pass upscales to 1.
    float output_scale() const { return std::max(scale_, 1.0f); }
@@ -397,6 +686,9 @@ index bda30a2..01e2f0c 100644
 +  // tbc: one frame's time for the overlay's frame time graph (the last 128, drawn under the text); the first call
 +  // turns the graph on.
 +  void AddFrameTime(double ms);
++  // tbc: the achievement pop-up the present pass draws in the bottom-right corner, at opacity alpha (0: none): its name, the
++  // grey text after it (" (20G)") and its icon (44x44 RGBA8, or null).
++  void SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon);
    enum GpuCat : uint8_t { kGpuDraw, kGpuResolve, kGpuUpload, kGpuTexture, kGpuTransfer, kGpuPresent, kGpuOther };
    static constexpr const char* kGpuCatNames[] = {"draw", "resolve", "upload", "texture", "transfer", "present",
                                                   "other"};

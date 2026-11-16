@@ -75,7 +75,10 @@ class TbcApp : public rex::ReXApp {
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
 
   std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog() override {
-    if (!REXCVAR_GET(achievement_popups)) return nullptr;  // the runtime copes with none
+    // None (the runtime copes): with --achievement_popups=false, and with the native renderer,
+    // which draws the pop-up itself in the same look (native-plugin/patches/0006-fps-counter.patch)
+    // so no ImGui window makes the runtime repaint while it shows.
+    if (!REXCVAR_GET(achievement_popups) || native_renderer_) return nullptr;
     return rex::ReXApp::CreateAchievementNotificationDialog();
   }
 

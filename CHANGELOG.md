@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Fixes
-- **Install stopped with "'cmake' is not recognized"** on a Visual Studio 18 install that has CMake: the installer now finds Visual Studio's CMake and Ninja itself (or a CMake on PATH or in Program Files) and puts them on the build's PATH, instead of relying on `vcvars64.bat` to. If there's no CMake at all, it says which Visual Studio component to add.
+- **Install stopped with "'cmake' is not recognized"** on PCs without a CMake on the system PATH, though Visual Studio's own CMake is installed. The build command put Clang first on PATH with `set "PATH=...;%PATH%"`, which cmd expands before `vcvars64.bat` runs, so the PATH Visual Studio's script had set up (with its CMake) was thrown away; it only worked where a separate CMake was on PATH. The installer now finds Visual Studio's CMake and Ninja (or a CMake on PATH or in Program Files) itself and sets PATH before the command starts. If there's no CMake at all, it says which Visual Studio component to add.
 
 ## 0.3.0 (2026-11-16)
 

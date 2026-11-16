@@ -289,6 +289,12 @@ class Installer:
         self.log("> " + cmd)
         env = dict(os.environ)
         env.pop("REXSDK_DIR", None)
+        # Tool folders go first on PATH here, in the environment the command starts with, never as
+        # `set "PATH=...;%PATH%"` in the command: cmd expands %PATH% when it reads the whole line,
+        # before vcvars64.bat has run, so a second such `set` in the line threw the first away
+        # (which is how CMake went missing). vcvars64.bat then adds its own in front.
+        if getattr(self, "path_first", None):
+            env["PATH"] = os.pathsep.join(self.path_first + [env.get("PATH", "")])
         p = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, errors="replace",
                              creationflags=NO_WINDOW)
@@ -496,16 +502,16 @@ class Installer:
         # 'clock_time_conversion'"). Its folder goes first on PATH for the linker too.
         llvm = vcvars.parents[2] / "Tools" / "Llvm" / "x64" / "bin"
         compilers = ""
-        path_first = ""
+        path_first = []
         if (llvm / "clang++.exe").exists():
             fwd = str(llvm).replace("\\", "/")
             compilers = f'-DCMAKE_C_COMPILER="{fwd}/clang.exe" -DCMAKE_CXX_COMPILER="{fwd}/clang++.exe" '
-            path_first = f'set "PATH={llvm};%PATH%" && '
+            path_first = [str(llvm)]
             self.log(f"Using Clang: {llvm}")
-        # CMake and Ninja, found here rather than left to vcvars64.bat: it puts Visual Studio's own
-        # copies on PATH only when it finds them where it expects, and one Visual Studio 18 install
-        # stopped doing that ("'cmake' is not recognized"). Visual Studio's "C++ CMake tools"
-        # first, then a CMake already on PATH or installed on its own.
+        # CMake and Ninja, found here: Visual Studio's "C++ CMake tools" first, then a CMake on PATH
+        # or installed on its own. The build used to find cmake only through a PATH that the
+        # Clang `set "PATH=...;%PATH%"` had reset to the one from before vcvars64.bat ran, so it
+        # worked only while a CMake was on the system PATH anyway (run_logged now sets PATH).
         vs = vcvars.parents[3]
         cmake_dirs = [vs / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "CMake" / "bin"]
         on_path = shutil.which("cmake")
@@ -522,8 +528,8 @@ class Installer:
         if (ninja_dir / "ninja.exe").exists():
             tool_dirs.append(str(ninja_dir))
             self.log(f"Using Ninja: {ninja_dir}")
-        path_first = f'set "PATH={";".join(tool_dirs)};%PATH%" && ' + path_first
-        base = f'call "{vcvars}" >nul && {path_first}cd /d "{self.project}" && '
+        self.path_first = path_first + tool_dirs  # Clang first, then CMake and Ninja (run_logged)
+        base = f'call "{vcvars}" >nul && cd /d "{self.project}" && '
         # Code generation must run before CMake configures: the project only adds the
         # generated sources to the build if generated/default/sources.cmake already exists.
         rexglue = sdk / "bin" / "rexglue.exe"

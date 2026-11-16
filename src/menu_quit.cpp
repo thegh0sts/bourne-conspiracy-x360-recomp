@@ -155,7 +155,12 @@ struct State {
   uint8_t logged_colours[32] = {};
   uint32_t guest = 0;    // guest memory: two colours (32 bytes) then the strings
   uint32_t scratch = 0;  // guest memory: the width and height the engine measures
-  std::u16string label_text, hint_text;
+  std::u16string label_text, hint_text, confirm_text;
+  // The pause menu asks first (progress since the last checkpoint is lost): the first A turns
+  // the entry into "Press again to quit", a second A within a few seconds quits, moving off it
+  // or waiting cancels.
+  bool armed = false;
+  std::chrono::steady_clock::time_point armed_at{};
   // Input.
   bool selected = false;  // Quit Game is selected
   uint16_t prev = 0;
@@ -300,11 +305,16 @@ int Language() {
 
 void Texts(State& s) {
   switch (Language()) {
-    case 3: s.label_text = u"Spiel beenden"; s.hint_text = u"Zum Desktop zurückkehren"; break;
-    case 4: s.label_text = u"Quitter le jeu"; s.hint_text = u"Retourner au bureau"; break;
-    case 5: s.label_text = u"Salir del juego"; s.hint_text = u"Volver al escritorio"; break;
-    case 6: s.label_text = u"Esci dal gioco"; s.hint_text = u"Torna al desktop"; break;
-    default: s.label_text = u"Quit Game"; s.hint_text = u"Exit to the desktop"; break;
+    case 3: s.label_text = u"Spiel beenden"; s.hint_text = u"Zum Desktop zur\u00FCckkehren";
+            s.confirm_text = u"Zum Beenden erneut dr\u00FCcken"; break;
+    case 4: s.label_text = u"Quitter le jeu"; s.hint_text = u"Retourner au bureau";
+            s.confirm_text = u"Appuyez \u00E0 nouveau pour quitter"; break;
+    case 5: s.label_text = u"Salir del juego"; s.hint_text = u"Volver al escritorio";
+            s.confirm_text = u"Pulsa otra vez para salir"; break;
+    case 6: s.label_text = u"Esci dal gioco"; s.hint_text = u"Torna al desktop";
+            s.confirm_text = u"Premi di nuovo per uscire"; break;
+    default: s.label_text = u"Quit Game"; s.hint_text = u"Exit to the desktop";
+             s.confirm_text = u"Press again to quit"; break;
   }
 }
 
@@ -314,10 +324,11 @@ bool Guest(State& s, uint8_t* base) {
   auto* runtime = rex::Runtime::instance();
   if (!runtime || !runtime->memory()) return false;
   Texts(s);
-  s.guest = runtime->memory()->SystemHeapAlloc(32 + 2 * uint32_t(s.label_text.size() + s.hint_text.size() + 2));
+  s.guest = runtime->memory()->SystemHeapAlloc(
+      32 + 2 * uint32_t(s.label_text.size() + s.hint_text.size() + s.confirm_text.size() + 3));
   if (!s.guest) return false;
   uint32_t p = s.guest + 32;
-  for (const auto* t : {&s.label_text, &s.hint_text}) {
+  for (const auto* t : {&s.label_text, &s.hint_text, &s.confirm_text}) {
     for (char16_t c : *t) {
       base[p++] = uint8_t(c >> 8);
       base[p++] = uint8_t(c);
@@ -329,6 +340,7 @@ bool Guest(State& s, uint8_t* base) {
 }
 uint32_t LabelAddr(const State& s) { return s.guest + 32; }
 uint32_t HintAddr(const State& s) { return s.guest + 32 + 2 * uint32_t(s.label_text.size() + 1); }
+uint32_t ConfirmAddr(const State& s) { return HintAddr(s) + 2 * uint32_t(s.hint_text.size() + 1); }
 
 // Width of a UTF-16 string in a font at scale 1, measured by the engine, or -1.
 double TextWidth(const PPCContext& call, uint8_t* base, State& s, uint32_t font, uint32_t text) {
@@ -477,7 +489,7 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   if (last) {
     // Quit Game, one row under the last entry.
     ctx = call;
-    ctx.r6.u64 = LabelAddr(s);
+    ctx.r6.u64 = s.armed ? ConfirmAddr(s) : LabelAddr(s);
     ctx.f2.f64 = y + double(sc.last.b - sc.last.t);
     const bool last_main = visible && (focus_drawn || (s.have_other_colour &&
                                                          std::memcmp(colour, s.other_colour, 16) == 0));
@@ -537,7 +549,13 @@ void OnControllerState(const PPCContext& ctx, uint8_t* base, uint32_t state) {
       if (focused != kFirst) s.swallow_up = true;
     }
   }
-  if (s.selected && a_edge && !s.quit) {
+  const auto now = std::chrono::steady_clock::now();
+  if (!s.selected || now - s.armed_at > std::chrono::seconds(4)) s.armed = false;
+  const bool ask = s.scenes[s.active].kind != 0;  // not the main menu: progress can be lost
+  if (s.selected && a_edge && ask && !s.armed) {
+    s.armed = true;
+    s.armed_at = now;
+  } else if (s.selected && a_edge && !s.quit) {
     s.quit = true;
     RequestQuit();
   }

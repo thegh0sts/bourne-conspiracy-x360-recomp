@@ -264,8 +264,11 @@ def find_sdk_root(folder: Path):
 # --------------------------------------------------------------------------
 
 class Installer:
-    def __init__(self, iso: Path, root: Path, allow_downloads: bool, ui):
-        self.iso, self.root, self.allow, self.ui = iso, root, allow_downloads, ui
+    def __init__(self, iso: Path, root: Path, ui):
+        # Missing components (Visual Studio Build Tools, the SDK when it isn't bundled) are always
+        # downloaded and installed: the install screen says so before Install is clicked, and
+        # Windows asks for administrator permission for the Build Tools itself.
+        self.iso, self.root, self.ui = iso, root, ui
         self.game = root / "game"
         self.project = root / "project"
         self.sdk_dir = root / "rexglue-sdk"
@@ -406,9 +409,6 @@ class Installer:
         if vcvars:
             self.log(f"Using build tools: {vcvars}")
             return vcvars
-        if not self.allow:
-            raise InstallError("The C++ build tools (Visual Studio Build Tools with Clang) aren't installed.\n"
-                               "Tick \"Allow required components to be downloaded and installed\" and try again.")
         self.status("Downloading Visual Studio Build Tools installer...")
         boot = self.root / "vs_buildtools.exe"
         download(VS_BOOTSTRAPPER, boot, self.stage(0.30, 0.31))
@@ -457,9 +457,6 @@ class Installer:
         if root:
             self.log(f"ReXGlue SDK already present: {root}")
             return root
-        if not self.allow:
-            raise InstallError("The ReXGlue SDK needs to be downloaded.\n"
-                               "Tick \"Allow required components to be downloaded and installed\" and try again.")
         self.status(f"Downloading ReXGlue SDK {SDK_VERSION}...")
         url, name = find_sdk_asset()
         self.log(f"SDK download: {url}")
@@ -715,16 +712,11 @@ class InstallView(tk.Frame):
         self._row("1  Choose your game disc image", self.iso_var, "Choose ISO...", self.pick_iso)
         self._row("2  Install location", self.dir_var, "Change...", self.pick_dir)
 
-        tk.Label(self, text=("The installer reads your ISO and builds the game on this PC. First setup may "
-                             "download several GB and take a while. Windows may ask for administrator "
-                             "permission."), font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=690,
+        tk.Label(self, text=("The installer reads your ISO and builds the game on this PC. If this PC doesn't "
+                             "have Microsoft's C++ build tools yet, it downloads and installs them first "
+                             "(Visual Studio Build Tools, several GB; Windows asks for administrator "
+                             "permission), so the first install can take a while."), font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=690,
                  justify="left").pack(anchor="w", pady=(14, 4), **pad)
-        self.allow_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self, text="Allow required components to be downloaded and installed "
-                                  "(Visual Studio Build Tools, ReXGlue SDK)",
-                       variable=self.allow_var, font=("Segoe UI", 10), fg=FG, bg=BG,
-                       selectcolor=BG, activebackground=BG, activeforeground=FG
-                       ).pack(anchor="w", **pad)
 
         self.status_var = tk.StringVar(value="Choose your ISO, then click Install.")
         tk.Label(self, textvariable=self.status_var, font=("Segoe UI", 11, "bold"), fg=FG, bg=BG,
@@ -820,7 +812,7 @@ class InstallView(tk.Frame):
         if self.on_back:
             self.back_btn.config(state="disabled")
         self.bar["value"] = 0
-        self.worker = threading.Thread(target=Installer(iso, root, self.allow_var.get(), self.q).run,
+        self.worker = threading.Thread(target=Installer(iso, root, self.q).run,
                                        daemon=True)
         self.worker.start()
 

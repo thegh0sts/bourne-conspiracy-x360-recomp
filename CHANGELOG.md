@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **No "Allow required components to be downloaded and installed" checkbox** on the install screen. A PC without Microsoft's C++ build tools gets them downloaded and installed as part of the install (Windows still asks for administrator permission); the install screen says so before Install is clicked. Before, an unticked box stopped the install with an error.
+
 ### Fixes
 - **Install stopped with "'cmake' is not recognized"** on PCs without a CMake on the system PATH, though Visual Studio's own CMake is installed. The build command put Clang first on PATH with `set "PATH=...;%PATH%"`, which cmd expands before `vcvars64.bat` runs, so the PATH Visual Studio's script had set up (with its CMake) was thrown away; it only worked where a separate CMake was on PATH. The installer now finds Visual Studio's CMake and Ninja (or a CMake on PATH or in Program Files) itself and sets PATH before the command starts. If there's no CMake at all, it says which Visual Studio component to add.
 

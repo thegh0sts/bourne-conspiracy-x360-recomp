@@ -126,6 +126,7 @@ struct State {
   uint8_t other_colour[16] = {};
   bool have_focus_colour = false, have_other_colour = false;
   int logged = 0;
+  uint8_t logged_colours[32] = {};
   uint32_t guest = 0;  // guest memory: two colours (32 bytes) then the strings
   std::u16string label_text, hint_text;
   // Input.
@@ -330,12 +331,17 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
 
   const PPCContext call = ctx;
   const uint8_t* colour = base + call.r8.u32;
-  if (index >= 0 && size_t(index) < s.colours.size()) {
-    s.drawn = now;
+  // A colour that shows (an outline or shadow pass, or a fade, can draw the same text clear).
+  const bool visible = LoadF(colour, 12) > 0.05f;
+  if (index >= 0) s.drawn = now;
+  if (index >= 0 && size_t(index) < s.colours.size() && visible) {
     std::memcpy(s.colours[index].data(), colour, 16);
-    // The colour most buttons share (unfocused) and the odd one out (focused).
+    // The colour most buttons share (unfocused) and the odd one out (focused); buttons not
+    // drawn visibly yet don't count.
     std::map<std::array<uint8_t, 16>, int> counts;
-    for (const auto& c : s.colours) counts[c]++;
+    for (const auto& c : s.colours) {
+      if (LoadF(c.data(), 12) > 0.05f) counts[c]++;
+    }
     const std::array<uint8_t, 16>* most = nullptr;
     const std::array<uint8_t, 16>* single = nullptr;
     int singles = 0;
@@ -356,8 +362,12 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     }
     std::memcpy(base + s.guest, s.focus_colour, 16);
     std::memcpy(base + s.guest + 16, s.other_colour, 16);
-    if (s.logged < 4 && s.have_focus_colour && s.have_other_colour) {
+    const bool changed = std::memcmp(s.logged_colours, s.focus_colour, 16) != 0 ||
+                         std::memcmp(s.logged_colours + 16, s.other_colour, 16) != 0;
+    if (s.logged < 20 && changed && s.have_focus_colour && s.have_other_colour) {
       ++s.logged;
+      std::memcpy(s.logged_colours, s.focus_colour, 16);
+      std::memcpy(s.logged_colours + 16, s.other_colour, 16);
       float f[8];
       for (int k = 0; k < 4; ++k) {
         f[k] = LoadF(s.focus_colour, 4 * k);
@@ -384,7 +394,8 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     ctx = call;
     ctx.r6.u64 = LabelAddr(s);
     ctx.f2.f64 = y + double(s.cheats.b - s.cheats.t);
-    const bool cheats_main = focus_drawn || (s.have_other_colour && std::memcmp(colour, s.other_colour, 16) == 0);
+    const bool cheats_main = visible && (focus_drawn || (s.have_other_colour &&
+                                                         std::memcmp(colour, s.other_colour, 16) == 0));
     if (cheats_main) {
       if (s.selected && s.have_focus_colour) ctx.r8.u64 = s.guest;
       else if (s.have_other_colour) ctx.r8.u64 = s.guest + 16;

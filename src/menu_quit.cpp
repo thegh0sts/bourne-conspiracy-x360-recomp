@@ -1,23 +1,28 @@
-// tbc - "Quit Game" under "Cheats" on the main menu (--menu_quit, on by default).
+// tbc - "Quit Game" at the bottom of the main menu and the pause menu (--menu_quit, on by
+// default).
 //
-// The main menu is an Unreal Engine 3 UI scene (Transient.MainMenuUI_<n>) of UILabelButtons:
-// Campaign, Options, Achievements, Extras, Cheats, one under the other, the focused one drawn in
-// another colour, and the button bar's hint line (ButtonBarUI_<n>:BlackBar.MenuHintText)
-// describing it. The game knows nothing of a sixth entry, so this fakes one:
+// The menus are Unreal Engine 3 UI scenes of UILabelButtons one under the other: the main menu
+// (Transient.MainMenuUI_<n>: Campaign ... Cheats) and the pause menu (Resume Game ... Exit to
+// Main Menu), the focused entry drawn in another colour; the main menu also has the button bar's
+// hint line (ButtonBarUI_<n>:BlackBar.MenuHintText) describing it. The game knows nothing of
+// one more entry, so this fakes one:
 //
-// - Drawing (DrawString, sub_82C49D88, hooked in keyboard_prompts.cpp): when Cheats' label is
-//   drawn, "Quit Game" is drawn one row lower, same font, size and the colour of an unfocused
-//   entry, or of the focused one while it's selected. Then the button the game still has focus
-//   on is drawn unfocused, and the hint line reads "Exit to the desktop" (right-aligned as the
-//   game's is). The colour is the FLinearColor DrawString takes in r8.
+// - Drawing (DrawString, sub_82C49D88, hooked in keyboard_prompts.cpp): when the last entry's
+//   label is drawn, "Quit Game" is drawn one row lower, same font, size and the colour of an
+//   unfocused entry, or of the focused one while it's selected. Then the entry the game still
+//   has focus on is drawn unfocused, and the hint line reads "Exit to the desktop" (right-aligned
+//   with the engine's own measuring). The colour is the FLinearColor DrawString takes in r8.
 // - Selecting (the controller state the game reads, sub_823213D8, hooked in input_trace.cpp):
-//   Down on Cheats, or Up on Campaign (the menu wraps), selects Quit Game; that press doesn't
-//   reach the game. From there Down goes to Campaign and Up to Cheats, and A (Enter) closes the
-//   game as the window's close button does. B / Esc goes back to the title as usual.
+//   Down on the last entry, or Up on the first (the menus wrap), selects Quit Game; that press
+//   doesn't reach the game. From there Down goes to the first entry and Up to the last, and A
+//   (Enter) closes the game as the window's close button does. B / Esc work as usual.
 //
-// The widgets are found by name, so it works in every language: their rectangles
-// (UIObject.RenderBounds, +0x21C) tell which label is which, their StateStack (+0x9C) which has
-// focus (a UIState_Focused in it). Offsets from the development ui_probe (git history).
+// The scenes are found by name and their entries by place, so it works in every language: the
+// buttons' rectangles (UIObject.RenderBounds, +0x21C) give the first and last, their StateStack
+// (+0x9C) which has focus (a UIState_Focused in it). What a menu's first and last labels say is
+// learnt when it opens, so menus drawn over it in the same places (its submenus) are left alone.
+// Each menu scene's buttons are logged once by name. Offsets from the development ui_probe (git
+// history).
 
 #include "generated/default/tbc_pch.h"
 
@@ -26,6 +31,8 @@
 #include <cstdint>
 #include <cstring>
 #include <array>
+#include <cctype>
+#include <tuple>
 #include <map>
 #include <mutex>
 #include <string>
@@ -41,7 +48,7 @@
 
 #include "prompts.h"
 
-REXCVAR_DEFINE_BOOL(menu_quit, true, "Input", "A Quit Game entry under Cheats on the main menu");
+REXCVAR_DEFINE_BOOL(menu_quit, true, "Input", "A Quit Game entry at the bottom of the main menu and the pause menu");
 
 REX_EXTERN(__imp__sub_82C49D88);  // DrawString
 // The engine's text measuring (what Canvas.TextSize ends in, sub_82C288F0 -> sub_82C1A720):
@@ -93,18 +100,35 @@ struct Rect {
   bool at(double x, double y) const { return std::fabs(x - l) < 1.5 && std::fabs(y - t) < 1.5; }
 };
 
-enum Role { kOther, kCampaign, kCheats };
+enum Role { kOther, kFirst, kLast };
+
+// The menus that get the entry, by their scene's name, and what the log calls them.
+struct Kind {
+  const char* scene;  // part of the scene's object name
+  const char* name;
+};
+constexpr Kind kKinds[] = {{"MainMenuUI_", "main menu"}, {"Pause", "pause menu"}};
 
 struct Button {
   uint32_t object = 0;
-  Role role = kOther;
   Rect rect;
   bool focused = false;
 };
 
+// A menu scene and its buttons, top to bottom: the first and last are the menu's ends.
 struct Scene {
+  int kind = 0;
+  std::string name;
   std::vector<Button> buttons;
   bool any_focused = false;
+  Rect first, last;
+  Role focused = kOther;
+  bool live = false;  // has focus and both ends: it could be on screen
+  // What its first and last labels say, learnt from the first draws at their places in the
+  // second after it first has focus (other menus reuse the same places for their own entries,
+  // and a menu's scene stays around underneath them), then compared on every draw.
+  std::chrono::steady_clock::time_point first_seen{};
+  std::u16string first_text, last_text;
 };
 
 struct State {
@@ -113,34 +137,24 @@ struct State {
   std::unordered_map<uint32_t, std::string> class_names;  // class -> path name
   std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::string> names;  // (object, name, outer)
   std::map<uint32_t, Scene> scenes;  // by scene (the buttons' outer)
+  std::map<std::string, bool> logged_scenes;
   uint32_t hint = 0;                 // MenuHintText label
   Rect hint_rect;
-  // From the last poll: the live main menu.
-  Rect cheats, campaign;
-  std::vector<Rect> rects;  // every button of the live menu
-  uint32_t live_scene = 0;
-  Role focused = kOther;
-  bool found = false;
+  // The menu on screen: the scene whose own first or last label was drawn last.
+  uint32_t active = 0;
+  std::chrono::steady_clock::time_point drawn{};
   // Drawing. Each button's colour as last drawn: the colour most of them share is the
   // unfocused one, the one only one of them has the focused one (whatever the game's focus
   // animation does, the menu's own colours are copied).
-  std::chrono::steady_clock::time_point drawn{};  // a main-menu label was drawn
   std::vector<std::array<uint8_t, 16>> colours;
+  uint32_t colours_scene = 0;
   uint8_t focus_colour[16] = {};
   uint8_t other_colour[16] = {};
   bool have_focus_colour = false, have_other_colour = false;
   int logged = 0;
-  // What the live menu's Campaign and Cheats labels say, learnt from the first draws at their
-  // places once the menu's scene appears (other menus reuse the same places for their own
-  // entries, and the main menu's scene stays around underneath them).
-  struct Texts {
-    std::chrono::steady_clock::time_point first_seen;
-    std::u16string cheats, campaign;
-  };
-  std::map<uint32_t, Texts> texts;
   uint8_t logged_colours[32] = {};
-  uint32_t guest = 0;
-  uint32_t scratch = 0;  // guest memory: the width and height the engine measures  // guest memory: two colours (32 bytes) then the strings
+  uint32_t guest = 0;    // guest memory: two colours (32 bytes) then the strings
+  uint32_t scratch = 0;  // guest memory: the width and height the engine measures
   std::u16string label_text, hint_text;
   // Input.
   bool selected = false;  // Quit Game is selected
@@ -184,11 +198,13 @@ bool Focused(State& s, const PPCContext& ctx, uint8_t* base, uint32_t o) {
   return false;
 }
 
-// Every half second: the main menu's buttons and the hint line, from the object table.
+// Every half second (every 50 ms while a menu is up and none is known): the menus' buttons and
+// the hint line, from the object table. Each menu scene with buttons is logged once by name.
 void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
   const uint32_t data = Load32(base, kObjects), count = Load32(base, kObjects + 4);
   if (!Readable(data) || count > 2000000) return;
-  s.scenes.clear();
+  std::map<uint32_t, Scene> found;
+  std::map<std::string, std::string> seen;  // scene name -> its buttons, for the log
   s.hint = 0;
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t o = Load32(base, data + 4 * i);
@@ -199,64 +215,78 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
     const bool button = cn == "Engine.UILabelButton";
     if (!button && cn != "Engine.UILabel") continue;
     const std::string& name = Name(s, ctx, base, o);
-    if (button && name.find("MainMenuUI_") != std::string::npos) {
-      Button b;
-      b.object = o;
-      b.role = name.ends_with(":Cheats") ? kCheats : name.ends_with(":Campaign") ? kCampaign : kOther;
-      s.scenes[Load32(base, o + 0x28)].buttons.push_back(b);
-    } else if (!button && name.find("ButtonBarUI_") != std::string::npos && name.ends_with(".MenuHintText")) {
+    if (button) {
+      const size_t colon = name.find(':');
+      const std::string scene_name = name.substr(0, colon);
+      if (scene_name.find("Default__") == std::string::npos) {
+        auto& list = seen[scene_name];
+        if (list.size() < 300) list += (list.empty() ? "" : ", ") + name.substr(colon == std::string::npos ? 0 : colon + 1);
+      }
+      for (int k = 0; k < int(std::size(kKinds)); ++k) {
+        if (scene_name.find(kKinds[k].scene) == std::string::npos || scene_name.find("Default__") != std::string::npos)
+          continue;
+        const uint32_t scene = Load32(base, o + 0x28);
+        Scene& sc = found[scene];
+        sc.kind = k;
+        sc.name = scene_name;
+        sc.buttons.push_back({o});
+        break;
+      }
+    } else if (name.find("ButtonBarUI_") != std::string::npos && name.ends_with(".MenuHintText")) {
       s.hint = o;
     }
   }
+  for (const auto& [scene_name, list] : seen) {
+    // Instance numbers aside (MainMenuUI_10130), each kind of menu once.
+    std::string kind = scene_name;
+    while (!kind.empty() && std::isdigit(uint8_t(kind.back()))) kind.pop_back();
+    if (s.logged_scenes.size() < 64 && !s.logged_scenes[kind]) {
+      s.logged_scenes[kind] = true;
+      REXLOG_INFO("menu_quit: menu {}: {}", scene_name, list);
+    }
+  }
+  // Keep what was learnt about the scenes still there.
+  for (auto& [scene, sc] : found) {
+    if (auto it = s.scenes.find(scene); it != s.scenes.end() && it->second.name == sc.name) {
+      sc.first_seen = it->second.first_seen;
+      sc.first_text = it->second.first_text;
+      sc.last_text = it->second.last_text;
+    }
+  }
+  s.scenes = std::move(found);
 }
 
-// Every controller poll: rectangles and focus of the live main menu (the scene with a focused
-// button; an old one lingers until garbage collection).
+// Every controller poll: each menu's rectangles, ends and focus.
 void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
   const auto now = std::chrono::steady_clock::now();
   if (now >= s.next_scan) {
-    // Quickly while a menu is up and the main menu isn't found yet, so Quit Game shows with the
-    // rest of it; otherwise every half second (a full pass over the object table).
-    const bool soon = !s.found && tbc::prompts::MenuUp();
+    const bool soon = now - s.drawn > kRecent && tbc::prompts::MenuUp();
     s.next_scan = now + std::chrono::milliseconds(soon ? 50 : 500);
     Scan(s, ctx, base);
   }
-  s.found = false;
-  s.focused = kOther;
   for (auto& [scene, sc] : s.scenes) {
     sc.any_focused = false;
-    Rect cheats, campaign;
-    Role focused = kOther;
+    sc.live = false;
+    sc.focused = kOther;
+    const Button* first = nullptr;
+    const Button* last = nullptr;
     for (auto& b : sc.buttons) {
       if (!IsObject(b.object)) continue;
       b.rect = Bounds(base, b.object);
       b.focused = Focused(s, ctx, base, b.object);
-      if (b.focused) {
-        sc.any_focused = true;
-        focused = b.role;
-      }
-      if (b.role == kCheats) cheats = b.rect;
-      if (b.role == kCampaign) campaign = b.rect;
+      if (b.focused) sc.any_focused = true;
+      if (!b.rect.valid()) continue;
+      if (!first || b.rect.t < first->rect.t) first = &b;
+      if (!last || b.rect.t > last->rect.t) last = &b;
     }
-    if (sc.any_focused && cheats.valid() && campaign.valid()) {
-      s.found = true;
-      if (!s.texts.count(scene)) {
-        if (s.texts.size() > 16) s.texts.clear();
-        s.texts[scene].first_seen = std::chrono::steady_clock::now();
-      }
-      if (s.live_scene != scene || s.rects.size() != sc.buttons.size()) {
-        s.live_scene = scene;
-        s.colours.assign(sc.buttons.size(), {});
-        s.have_focus_colour = s.have_other_colour = false;
-      }
-      s.rects.clear();
-      for (const auto& b : sc.buttons) s.rects.push_back(b.rect);
-      s.cheats = cheats;
-      s.campaign = campaign;
-      s.focused = focused;
-      break;
-    }
+    if (!sc.any_focused || !first || !last || first == last) continue;
+    sc.live = true;
+    sc.first = first->rect;
+    sc.last = last->rect;
+    sc.focused = first->focused ? kFirst : last->focused ? kLast : kOther;
+    if (sc.first_seen == std::chrono::steady_clock::time_point{}) sc.first_seen = now;
   }
+  if (s.active && (!s.scenes.count(s.active) || !s.scenes[s.active].live)) s.active = 0;
   s.hint_rect = s.hint && IsObject(s.hint) ? Bounds(base, s.hint) : Rect{};
 }
 
@@ -320,7 +350,7 @@ double TextWidth(const PPCContext& call, uint8_t* base, State& s, uint32_t font,
 }
 
 void RequestQuit() {
-  REXLOG_INFO("menu_quit: Quit Game selected on the main menu");
+  REXLOG_INFO("menu_quit: Quit Game selected");
   auto* runtime = rex::Runtime::instance();
   if (!runtime) return;
   auto* window = runtime->display_window();
@@ -339,32 +369,49 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   if (!REXCVAR_GET(menu_quit)) return false;
   State& s = S();
   std::lock_guard<std::mutex> lock(s.mutex);
-  if (!s.found || !ctx.r8.u32 || !Guest(s, base)) return false;
+  if (s.scenes.empty() || !ctx.r8.u32 || !Guest(s, base)) return false;
   const double x = ctx.f1.f64, y = ctx.f2.f64;
-  int index = -1;
-  for (size_t i = 0; i < s.rects.size(); ++i) {
-    if (s.rects[i].at(x, y)) index = int(i);
-  }
-  const bool cheats = s.cheats.at(x, y);
   const auto now = std::chrono::steady_clock::now();
-  if (cheats || s.campaign.at(x, y)) {
-    // Only the main menu's own labels count: learnt in the scene's first second, compared after.
+  // A menu's own first or last label: that menu is on screen.
+  Role end = kOther;
+  for (auto& [scene, sc] : s.scenes) {
+    if (!sc.live) continue;
+    const bool at_first = sc.first.at(x, y), at_last = sc.last.at(x, y);
+    if (!at_first && !at_last) continue;
     std::u16string text;
     for (uint32_t p = ctx.r6.u32; p && text.size() < 64; p += 2) {
       const char16_t c = char16_t(base[p] << 8 | base[p + 1]);
       if (!c) break;
       text.push_back(c);
     }
-    auto it = s.texts.find(s.live_scene);
-    if (it == s.texts.end()) return false;
-    std::u16string& known = cheats ? it->second.cheats : it->second.campaign;
-    if (known.empty() && now - it->second.first_seen < std::chrono::seconds(1)) known = text;
-    if (known.empty() || text != known) return false;
+    std::u16string& known = at_last ? sc.last_text : sc.first_text;
+    if (known.empty() && now - sc.first_seen < std::chrono::seconds(1)) known = text;
+    if (known.empty() || text != known) continue;
+    if (s.active != scene) {
+      REXLOG_INFO("menu_quit: {} on screen ({})", kKinds[sc.kind].name, sc.name);
+      s.selected = false;
+    }
+    s.active = scene;
     s.drawn = now;
+    end = at_last ? kLast : kFirst;
+    break;
   }
-  const bool showing = now - s.drawn < kRecent;
-  if (index >= 0 && !showing) return false;
-  const bool hint = showing && s.selected && s.hint_rect.valid() && std::fabs(y - s.hint_rect.t) < 1.5 &&
+  const bool showing = s.active && now - s.drawn < kRecent;
+  if (!showing) return false;
+  Scene& sc = s.scenes[s.active];
+  int index = -1;
+  for (size_t i = 0; i < sc.buttons.size(); ++i) {
+    if (sc.buttons[i].rect.at(x, y)) index = int(i);
+  }
+  if (s.colours_scene != s.active || s.colours.size() != sc.buttons.size()) {
+    s.colours_scene = s.active;
+    s.colours.assign(sc.buttons.size(), {});
+    s.have_focus_colour = s.have_other_colour = false;
+  }
+  // Labels at a button's place that aren't the menu's own (another menu over it) are left alone.
+  if ((sc.first.at(x, y) || sc.last.at(x, y)) && end == kOther) return false;
+  const bool last = end == kLast;
+  const bool hint = s.selected && s.hint_rect.valid() && std::fabs(y - s.hint_rect.t) < 1.5 &&
                     x >= s.hint_rect.l - 1 && x < s.hint_rect.r;
   if (index < 0 && !hint) return false;
 
@@ -427,14 +474,14 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   __imp__sub_82C49D88(ctx, base);
   const uint64_t result = ctx.r3.u64;
-  if (cheats) {
-    // Quit Game, one row under Cheats.
+  if (last) {
+    // Quit Game, one row under the last entry.
     ctx = call;
     ctx.r6.u64 = LabelAddr(s);
-    ctx.f2.f64 = y + double(s.cheats.b - s.cheats.t);
-    const bool cheats_main = visible && (focus_drawn || (s.have_other_colour &&
+    ctx.f2.f64 = y + double(sc.last.b - sc.last.t);
+    const bool last_main = visible && (focus_drawn || (s.have_other_colour &&
                                                          std::memcmp(colour, s.other_colour, 16) == 0));
-    if (cheats_main) {
+    if (last_main) {
       if (s.selected && s.have_focus_colour) ctx.r8.u64 = s.guest;
       else if (s.have_other_colour) ctx.r8.u64 = s.guest + 16;
     }
@@ -463,30 +510,31 @@ void OnControllerState(const PPCContext& ctx, uint8_t* base, uint32_t state) {
   if (!down) s.swallow_down = false;
   if (!a) s.swallow_a = false;
 
-  const bool showing = s.found && std::chrono::steady_clock::now() - s.drawn < kRecent;
+  const bool showing = s.active && std::chrono::steady_clock::now() - s.drawn < kRecent;
   if (!showing) {
-    if (s.selected) REXLOG_INFO("menu_quit: main menu closed");
+    if (s.selected) REXLOG_INFO("menu_quit: menu closed");
     s.selected = false;
     return;
   }
+  const Role focused = s.scenes[s.active].focused;
   if (down_edge) {
-    if (!s.selected && s.focused == kCheats) {
+    if (!s.selected && focused == kLast) {
       s.selected = true;
       s.swallow_down = true;
     } else if (s.selected) {
       s.selected = false;
-      // The game still has focus on the button we came from: from Cheats its Down already goes
-      // to Campaign (the menu wraps); from Campaign we're there already.
-      if (s.focused != kCheats) s.swallow_down = true;
+      // The game still has focus on the entry we came from: from the last its Down goes to the
+      // first (the menus wrap); from the first we're there already.
+      if (focused != kLast) s.swallow_down = true;
     }
   }
   if (up_edge) {
-    if (!s.selected && s.focused == kCampaign) {
+    if (!s.selected && focused == kFirst) {
       s.selected = true;
       s.swallow_up = true;
     } else if (s.selected) {
       s.selected = false;
-      if (s.focused != kCampaign) s.swallow_up = true;
+      if (focused != kFirst) s.swallow_up = true;
     }
   }
   if (s.selected && a_edge && !s.quit) {

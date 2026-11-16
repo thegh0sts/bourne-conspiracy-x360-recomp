@@ -502,6 +502,27 @@ class Installer:
             compilers = f'-DCMAKE_C_COMPILER="{fwd}/clang.exe" -DCMAKE_CXX_COMPILER="{fwd}/clang++.exe" '
             path_first = f'set "PATH={llvm};%PATH%" && '
             self.log(f"Using Clang: {llvm}")
+        # CMake and Ninja, found here rather than left to vcvars64.bat: it puts Visual Studio's own
+        # copies on PATH only when it finds them where it expects, and one Visual Studio 18 install
+        # stopped doing that ("'cmake' is not recognized"). Visual Studio's "C++ CMake tools"
+        # first, then a CMake already on PATH or installed on its own.
+        vs = vcvars.parents[3]
+        cmake_dirs = [vs / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "CMake" / "bin"]
+        on_path = shutil.which("cmake")
+        if on_path:
+            cmake_dirs.append(Path(on_path).parent)
+        cmake_dirs.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "CMake" / "bin")
+        cmake_dir = next((d for d in cmake_dirs if (d / "cmake.exe").exists()), None)
+        if not cmake_dir:
+            raise InstallError("CMake wasn't found. Open the Visual Studio Installer, click Modify on your "
+                               "Visual Studio, tick \"C++ CMake tools for Windows\" and install, then try again.")
+        self.log(f"Using CMake: {cmake_dir}")
+        tool_dirs = [str(cmake_dir)]
+        ninja_dir = vs / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "Ninja"
+        if (ninja_dir / "ninja.exe").exists():
+            tool_dirs.append(str(ninja_dir))
+            self.log(f"Using Ninja: {ninja_dir}")
+        path_first = f'set "PATH={";".join(tool_dirs)};%PATH%" && ' + path_first
         base = f'call "{vcvars}" >nul && {path_first}cd /d "{self.project}" && '
         # Code generation must run before CMake configures: the project only adds the
         # generated sources to the build if generated/default/sources.cmake already exists.

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- **Install stopped with "'cmake' is not recognized"** on a Visual Studio 18 install that has CMake: the installer now finds Visual Studio's CMake and Ninja itself (or a CMake on PATH or in Program Files) and puts them on the build's PATH, instead of relying on `vcvars64.bat` to. If there's no CMake at all, it says which Visual Studio component to add.
+
 ## 0.3.0 (2026-11-16)
 
 A Quit Game entry on the main menu, a detailed performance overlay, achievement pop-ups and the FPS counter drawn by the native renderer (so they show in fullscreen), brightness and vibration strength, and the launcher's new Saves and Achievements tabs and game language.

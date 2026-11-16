@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <array>
 #include <map>
 #include <mutex>
 #include <string>
@@ -112,13 +113,19 @@ struct State {
   Rect hint_rect;
   // From the last poll: the live main menu.
   Rect cheats, campaign;
+  std::vector<Rect> rects;  // every button of the live menu
+  uint32_t live_scene = 0;
   Role focused = kOther;
   bool found = false;
-  // Drawing.
+  // Drawing. Each button's colour as last drawn: the colour most of them share is the
+  // unfocused one, the one only one of them has the focused one (whatever the game's focus
+  // animation does, the menu's own colours are copied).
   std::chrono::steady_clock::time_point drawn{};  // a main-menu label was drawn
+  std::vector<std::array<uint8_t, 16>> colours;
   uint8_t focus_colour[16] = {};
   uint8_t other_colour[16] = {};
   bool have_focus_colour = false, have_other_colour = false;
+  int logged = 0;
   uint32_t guest = 0;  // guest memory: two colours (32 bytes) then the strings
   std::u16string label_text, hint_text;
   // Input.
@@ -216,6 +223,13 @@ void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
     }
     if (sc.any_focused && cheats.valid() && campaign.valid()) {
       s.found = true;
+      if (s.live_scene != scene || s.rects.size() != sc.buttons.size()) {
+        s.live_scene = scene;
+        s.colours.assign(sc.buttons.size(), {});
+        s.have_focus_colour = s.have_other_colour = false;
+      }
+      s.rects.clear();
+      for (const auto& b : sc.buttons) s.rects.push_back(b.rect);
       s.cheats = cheats;
       s.campaign = campaign;
       s.focused = focused;
@@ -303,33 +317,59 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   std::lock_guard<std::mutex> lock(s.mutex);
   if (!s.found || !ctx.r8.u32 || !Guest(s, base)) return false;
   const double x = ctx.f1.f64, y = ctx.f2.f64;
-  const bool cheats = s.cheats.at(x, y), campaign = s.campaign.at(x, y);
+  int index = -1;
+  for (size_t i = 0; i < s.rects.size(); ++i) {
+    if (s.rects[i].at(x, y)) index = int(i);
+  }
+  const bool cheats = s.cheats.at(x, y);
   const auto now = std::chrono::steady_clock::now();
   const bool showing = now - s.drawn < kRecent;
   const bool hint = showing && s.selected && s.hint_rect.valid() && std::fabs(y - s.hint_rect.t) < 1.5 &&
                     x >= s.hint_rect.l - 1 && x < s.hint_rect.r;
-  if (!cheats && !campaign && !hint) return false;
+  if (index < 0 && !hint) return false;
 
   const PPCContext call = ctx;
   const uint8_t* colour = base + call.r8.u32;
-  const bool game_focus = (cheats && s.focused == kCheats) || (campaign && s.focused == kCampaign);
-  if (cheats || campaign) {
+  if (index >= 0 && size_t(index) < s.colours.size()) {
     s.drawn = now;
-    // The two colours, learnt from the game's own draws.
-    if (game_focus && !s.selected) {
-      std::memcpy(s.focus_colour, colour, 16);
-      s.have_focus_colour = true;
-    } else if (!game_focus) {
-      std::memcpy(s.other_colour, colour, 16);
+    std::memcpy(s.colours[index].data(), colour, 16);
+    // The colour most buttons share (unfocused) and the odd one out (focused).
+    std::map<std::array<uint8_t, 16>, int> counts;
+    for (const auto& c : s.colours) counts[c]++;
+    const std::array<uint8_t, 16>* most = nullptr;
+    const std::array<uint8_t, 16>* single = nullptr;
+    int singles = 0;
+    for (const auto& [c, n] : counts) {
+      if (!most || n > counts[*most]) most = &c;
+      if (n == 1) {
+        single = &c;
+        ++singles;
+      }
+    }
+    if (most && counts[*most] >= 2) {
+      std::memcpy(s.other_colour, most->data(), 16);
       s.have_other_colour = true;
+    }
+    if (single && singles == 1 && counts.size() == 2) {
+      std::memcpy(s.focus_colour, single->data(), 16);
+      s.have_focus_colour = true;
     }
     std::memcpy(base + s.guest, s.focus_colour, 16);
     std::memcpy(base + s.guest + 16, s.other_colour, 16);
+    if (s.logged < 4 && s.have_focus_colour && s.have_other_colour) {
+      ++s.logged;
+      float f[8];
+      for (int k = 0; k < 4; ++k) {
+        f[k] = LoadF(s.focus_colour, 4 * k);
+        f[4 + k] = LoadF(s.other_colour, 4 * k);
+      }
+      REXLOG_INFO("menu_quit: focused colour ({:.2f} {:.2f} {:.2f} {:.2f}), others ({:.2f} {:.2f} {:.2f} {:.2f})",
+                  f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+    }
   }
-  // The focused button while Quit Game is selected: drawn unfocused (only its main colour; a
-  // shadow keeps its own).
-  const bool main_colour = s.have_focus_colour && std::memcmp(colour, s.focus_colour, 16) == 0;
-  if (game_focus && s.selected && main_colour && s.have_other_colour) ctx.r8.u64 = s.guest + 16;
+  // The button with the game's focus while Quit Game is selected: drawn as the others are.
+  const bool focus_drawn = s.have_focus_colour && std::memcmp(colour, s.focus_colour, 16) == 0;
+  if (index >= 0 && s.selected && focus_drawn && s.have_other_colour) ctx.r8.u64 = s.guest + 16;
   if (hint) {
     // The hint line, right-aligned as the game lays it out.
     const double before = TextWidth(base, call.r7.u32, call.r6.u32);
@@ -344,7 +384,7 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     ctx = call;
     ctx.r6.u64 = LabelAddr(s);
     ctx.f2.f64 = y + double(s.cheats.b - s.cheats.t);
-    const bool cheats_main = main_colour || (s.have_other_colour && std::memcmp(colour, s.other_colour, 16) == 0);
+    const bool cheats_main = focus_drawn || (s.have_other_colour && std::memcmp(colour, s.other_colour, 16) == 0);
     if (cheats_main) {
       if (s.selected && s.have_focus_colour) ctx.r8.u64 = s.guest;
       else if (s.have_other_colour) ctx.r8.u64 = s.guest + 16;

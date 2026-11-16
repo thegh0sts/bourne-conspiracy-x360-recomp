@@ -12,6 +12,7 @@
   Detailed needs the native renderer; with Xenos the counter shows the frame rate only.
 
 - **Achievement pop-ups drawn by the native renderer**, in the same look as before (the box, icon, yellow title, name and gamerscore, the ImGui font, the fade), so showing one no longer makes the runtime repaint every display refresh, and it shows in screenshots and recordings. Xenos keeps the runtime's pop-up.
+- **Controller vibration** checkbox (launcher, Controls tab; on by default): untick it to turn rumble off (`--vibration=false`, the runtime's own switch for every rumble the game asks for).
 - **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).
 
 ### Fixes

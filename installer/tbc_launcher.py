@@ -321,6 +321,7 @@ DEFAULTS = {
     "original_pacing": False,
     "fps_counter": "Off",
     "hide_achievements": False,
+    "vibration": True,
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -792,6 +793,10 @@ def game_args(s, screen=None):
             args.append("--show_fps_detail=true")
     if s.get("hide_achievements"):
         args.append("--achievement_popups=false")
+    # Controller vibration: the runtime's own switch (rexglue InputSystem: every rumble the game asks for, at
+    # XamInputSetState, is zeroed when off).
+    if not s.get("vibration", True):
+        args.append("--vibration=false")
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
         # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
@@ -944,21 +949,22 @@ class SettingsView(tk.Frame):
         self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14)
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
-        self._subheading(box, 3, "Mouse")
+        self._check(box, 3, "vibration", "Controller vibration")
+        self._subheading(box, 4, "Mouse")
         line2 = tk.Frame(box, bg=PANEL)
-        line2.grid(row=4, column=0, columnspan=2, sticky="w")
+        line2.grid(row=5, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
                           ("mouse_look_direct", "Direct (1:1)")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
-        self._slider(box, 5, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 6, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
-        self._slider(box, 7, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 6, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
+        self._slider(box, 7, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
+        self._slider(box, 8, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         tk.Label(box, text="Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
                            "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover.",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
-                 ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                 ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.show_tab(self.s.get("tab") if self.s.get("tab") in TABS else "Display")
 
         foot = tk.Frame(self, bg=BG)

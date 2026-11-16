@@ -158,7 +158,7 @@ index a9a91ff..1819275 100644
      // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
      static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
 diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
-index c89a326..5ecfc7e 100644
+index c89a326..78c0455 100644
 --- a/src/gfx/vk/present.cpp
 +++ b/src/gfx/vk/present.cpp
 @@ -1,5 +1,7 @@
@@ -178,7 +178,7 @@ index c89a326..5ecfc7e 100644
  layout(location = 0) out vec4 result;
  
  uint Ramp(float v) {
-@@ -50,6 +52,51 @@ vec3 CatmullRom(vec2 position, vec2 size) {
+@@ -50,6 +52,56 @@ vec3 CatmullRom(vec2 position, vec2 size) {
            Tap(vec2(t3.x, t3.y), size) * w3.x) * w3.y;
  }
  
@@ -186,20 +186,25 @@ index c89a326..5ecfc7e 100644
 +// in text[] as indices into kFont) in a 5x7 pixel font on a dark box in the top-left corner, scaled with the output
 +// height. Drawn here so it costs nothing extra and shows in exclusive / direct-flip fullscreen too (a separate overlay
 +// window can't). The first line is coloured by render_scale.w, the frame rate.
-+// kFont: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.%()/:-", bit y * 5 + x of each glyph (x across, y down), bits 32-34
++// Glyph(): " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.%()/:-", bit y * 5 + x of each glyph (x across, y down), bits 32-34
 +// in .y.
-+const uvec2 kFont[44] = uvec2[44](
-+    uvec2(0x00000000u, 0x0u), uvec2(0xA33AE62Eu, 0x3u), uvec2(0x884210C4u, 0x3u), uvec2(0xC444422Eu, 0x7u),
-+    uvec2(0xA304111Fu, 0x3u), uvec2(0x11F4A988u, 0x2u), uvec2(0xA3083C3Fu, 0x3u), uvec2(0xA317844Cu, 0x3u),
-+    uvec2(0x8422221Fu, 0x0u), uvec2(0xA317462Eu, 0x3u), uvec2(0x910F462Eu, 0x1u), uvec2(0x631FC62Eu, 0x4u),
-+    uvec2(0xE317C62Fu, 0x3u), uvec2(0xA210862Eu, 0x3u), uvec2(0xE318C62Fu, 0x3u), uvec2(0xC217843Fu, 0x7u),
-+    uvec2(0x4217843Fu, 0x0u), uvec2(0xA31E862Eu, 0x7u), uvec2(0x631FC631u, 0x4u), uvec2(0x8842108Eu, 0x3u),
-+    uvec2(0x9284211Cu, 0x1u), uvec2(0x52519531u, 0x4u), uvec2(0xC2108421u, 0x7u), uvec2(0x631AD771u, 0x4u),
-+    uvec2(0x639ACE31u, 0x4u), uvec2(0xA318C62Eu, 0x3u), uvec2(0x4217C62Fu, 0x0u), uvec2(0x9358C62Eu, 0x5u),
-+    uvec2(0x5257C62Fu, 0x4u), uvec2(0xE107043Eu, 0x3u), uvec2(0x0842109Fu, 0x1u), uvec2(0xA318C631u, 0x3u),
-+    uvec2(0x1518C631u, 0x1u), uvec2(0xAB5AC631u, 0x2u), uvec2(0x62A22A31u, 0x4u), uvec2(0x08422A31u, 0x1u),
-+    uvec2(0xC222221Fu, 0x7u), uvec2(0x8C000000u, 0x1u), uvec2(0x32222263u, 0x6u), uvec2(0x08210888u, 0x2u),
-+    uvec2(0x88842082u, 0x0u), uvec2(0x02222200u, 0x0u), uvec2(0x0C6018C0u, 0x0u), uvec2(0x000F8000u, 0x0u));
++uvec2 Glyph(uint code) {
++  // A local (not const) array: the renderer compiles with general constant-array indexing off, which a variable
++  // index into a const array needs.
++  uvec2 font[44] = uvec2[44](
++      uvec2(0x00000000u, 0x0u), uvec2(0xA33AE62Eu, 0x3u), uvec2(0x884210C4u, 0x3u), uvec2(0xC444422Eu, 0x7u),
++      uvec2(0xA304111Fu, 0x3u), uvec2(0x11F4A988u, 0x2u), uvec2(0xA3083C3Fu, 0x3u), uvec2(0xA317844Cu, 0x3u),
++      uvec2(0x8422221Fu, 0x0u), uvec2(0xA317462Eu, 0x3u), uvec2(0x910F462Eu, 0x1u), uvec2(0x631FC62Eu, 0x4u),
++      uvec2(0xE317C62Fu, 0x3u), uvec2(0xA210862Eu, 0x3u), uvec2(0xE318C62Fu, 0x3u), uvec2(0xC217843Fu, 0x7u),
++      uvec2(0x4217843Fu, 0x0u), uvec2(0xA31E862Eu, 0x7u), uvec2(0x631FC631u, 0x4u), uvec2(0x8842108Eu, 0x3u),
++      uvec2(0x9284211Cu, 0x1u), uvec2(0x52519531u, 0x4u), uvec2(0xC2108421u, 0x7u), uvec2(0x631AD771u, 0x4u),
++      uvec2(0x639ACE31u, 0x4u), uvec2(0xA318C62Eu, 0x3u), uvec2(0x4217C62Fu, 0x0u), uvec2(0x9358C62Eu, 0x5u),
++      uvec2(0x5257C62Fu, 0x4u), uvec2(0xE107043Eu, 0x3u), uvec2(0x0842109Fu, 0x1u), uvec2(0xA318C631u, 0x3u),
++      uvec2(0x1518C631u, 0x1u), uvec2(0xAB5AC631u, 0x2u), uvec2(0x62A22A31u, 0x4u), uvec2(0x08422A31u, 0x1u),
++      uvec2(0xC222221Fu, 0x7u), uvec2(0x8C000000u, 0x1u), uvec2(0x32222263u, 0x6u), uvec2(0x08210888u, 0x2u),
++      uvec2(0x88842082u, 0x0u), uvec2(0x02222200u, 0x0u), uvec2(0x0C6018C0u, 0x0u), uvec2(0x000F8000u, 0x0u));
++  return font[code];
++}
 +
 +bool InBox(vec2 p, vec2 lo, vec2 hi) { return all(greaterThanEqual(p, lo)) && all(lessThan(p, hi)); }
 +
@@ -217,8 +222,8 @@ index c89a326..5ecfc7e 100644
 +  if (line >= lines || col >= cols || gx >= 5u || gy >= 7u) return result;
 +  uint i = line * 32u + col;
 +  uint code = (text[i >> 4u][(i >> 2u) & 3u] >> ((i & 3u) * 8u)) & 0xFFu;
-+  if (code == 0u || code >= uint(kFont.length())) return result;
-+  uvec2 g = kFont[code];
++  if (code == 0u || code >= 44u) return result;
++  uvec2 g = Glyph(code);
 +  uint bit = gy * 5u + gx;
 +  if (((bit < 32u ? g.x >> bit : g.y >> (bit - 32u)) & 1u) == 0u) return result;
 +  float fps = render_scale.w;
@@ -230,7 +235,7 @@ index c89a326..5ecfc7e 100644
  void main() {
    // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
    // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
-@@ -60,6 +107,7 @@ void main() {
+@@ -60,6 +112,7 @@ void main() {
                                   : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
    result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
                  1023.0) / 1023.0;
@@ -238,7 +243,7 @@ index c89a326..5ecfc7e 100644
  }
  )";
  
-@@ -109,10 +157,43 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+@@ -109,10 +162,43 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
  }
  
  constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
@@ -283,7 +288,7 @@ index c89a326..5ecfc7e 100644
  bool Renderer::InitPresent() {
    if (present_pipeline_) return true;
    const VkDevice dev = device_->device();
-@@ -180,8 +261,11 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+@@ -180,8 +266,11 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
      return v && std::strcmp(v, "bilinear") == 0;
    }();
    const float ratio = scale_ / output_scale();  // front buffer texels per output pixel

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Aim assist with keyboard and mouse off by default** (launcher, Controls tab, Mouse: **Aim assist**, unticked). The game's sticky aim (the reticle following a target while either of you strafes, `MaxStrafeSticky` in `[Hm_Engine.HmTargetCirclePositionAdjuster]`) is made for a stick and drags the camera against the mouse. Tick it to keep it. It's one setting for the session, so a controller used alongside keyboard and mouse goes without it too; with keyboard and mouse off, the game is unchanged.
+
 ## 0.3.1 (2026-11-17)
 
 Installer fixes. No reinstall needed: a game built with 0.3.0 stays as it is.

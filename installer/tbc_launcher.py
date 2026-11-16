@@ -359,6 +359,7 @@ DEFAULTS = {
     "linear_stick": False,
     "deadzone": 25,
     "kbm": False,
+    "kbm_aim_assist": False,  # the game's sticky aim with keyboard and mouse on (always on without)
     "mouse_sensitivity": 100,
     "aim_sensitivity": 100,
     "mouse_look": True,
@@ -612,6 +613,14 @@ def apply_game_config(game: Path, s) -> str:
     camera_free = wide_pitch or no_recenter or linear_stick
     linear_aim = linear_aim or linear_stick
     look_edit = turn != 100 or linear_aim
+
+    if s.get("kbm") and not s.get("kbm_aim_assist", False):
+        # The game's aim assist, the reticle sticking to a target while either of you strafes
+        # (Hm_Engine.HmTargetCirclePositionAdjuster; its own comment on MaxStrafeSticky: "Between
+        # zero and one, represents the most assist-y number you could want"), off with keyboard and
+        # mouse: made for a stick, it drags the camera against the mouse. One value for the whole
+        # session, so a controller used alongside goes without it too.
+        edits.append(("Xe-BourneGame.ini", "Hm_Engine.HmTargetCirclePositionAdjuster", "MaxStrafeSticky", "0"))
 
     if turn != 100:
         # The camera's top yaw rate (100 in the original): a cap on how fast it can turn,
@@ -1100,7 +1109,8 @@ class SettingsView(tk.Frame):
         line2 = tk.Frame(box, bg=PANEL)
         line2.grid(row=5, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
-                          ("mouse_look_direct", "Direct (1:1)")):
+                          ("mouse_look_direct", "Direct (1:1)"),
+                          ("kbm_aim_assist", "Aim assist")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
@@ -1108,7 +1118,9 @@ class SettingsView(tk.Frame):
         self._slider(box, 7, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
         self._slider(box, 8, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         tk.Label(box, text="Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
-                           "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover.",
+                           "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
+                           "Aim assist: the game's sticky aim, made for a controller; off by default with keyboard "
+                           "and mouse (for a controller used alongside too).",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
                  ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
         box = self._page("Saves")

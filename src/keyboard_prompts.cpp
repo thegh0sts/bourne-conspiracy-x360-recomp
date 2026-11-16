@@ -210,12 +210,23 @@ std::string Ascii(const uint8_t* base, uint32_t text) {
   return out;
 }
 
+// Fight tutorial words in each of the game's languages (BourneTutorials ToH2HAttack,
+// ToChargeAttack, ComboReminder in Localization\Coalesced.<int|deu|fra|esn|ita>): attack, combo,
+// kick ("coup de pied", "patada" in the charge-attack line, which doesn't say attack).
+bool FightWords(const std::string& text) {
+  for (const char* word : {"Attack", "Combo", "combo", "Angriff", "angriff", "attaque", "coup de pied", "ataque",
+                           "patada", "Attacco"}) {
+    if (text.find(word) != std::string::npos) return true;
+  }
+  return false;
+}
+
 // Whether the words drawn on the same line as a button, this frame or the last, are about
 // fight attacks ("X for Light Attack.", "Chain X and Y together to perform Combos").
 bool FightLine(State& s, double y, std::chrono::steady_clock::time_point now) {
   for (const auto& r : s.recent) {
     if (now - r.when < std::chrono::milliseconds(300) && std::abs(r.y - y) <= 14.0 &&
-        (r.text.find("Attack") != std::string::npos || r.text.find("Combo") != std::string::npos)) {
+        FightWords(r.text)) {
       return true;
     }
   }
@@ -233,6 +244,29 @@ bool Is(const uint8_t* base, uint32_t text, const char* ascii) {
       return true;
     }
   }
+}
+
+// Menu text, which only menus draw, in each of the game's languages (Localization\Coalesced.*:
+// BourneUI MenuNavigation Accept / Back after their button, BourneErrMessages Confirm / Cancel,
+// BourneUI PauseMenu_Navigation Paused), Latin-1, as Is compares it with the UTF-16 text.
+constexpr const char* kMenuTexts[] = {
+    " Accept", " Back", "Confirm", "Cancel", "Paused",                                   // English
+    " Annehmen", " Zur\xFC" "ck", "Best\xE4" "tigen", "Abbrechen", "PAUSE",              // German
+    " Accepter", " Retour", "Confirmer", "Annuler", "En pause",                          // French
+    " Aceptar", " Volver", "Confirmar", "Cancelar", "En pausa",                          // Spanish
+    " Accetta", " Indietro", "Conferma", "Annulla", "In pausa",                          // Italian
+};
+// The title screen's press-start line up to its button (BourneFrontEnd PressStart).
+constexpr const char* kTitleTexts[] = {
+    "PRESS START (", "START DR\xDC" "CKEN (", "APP. SUR START (", "PRESIONA START (", "PREMI START (",
+};
+
+template <size_t N>
+bool IsAny(const uint8_t* base, uint32_t text, const char* const (&texts)[N]) {
+  for (const char* t : texts) {
+    if (Is(base, text, t)) return true;
+  }
+  return false;
 }
 
 // A label as a 0-terminated UTF-16 (big-endian) string in guest memory, made once and kept.
@@ -379,8 +413,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
   {
     std::lock_guard<std::mutex> lock(s.mutex);
     const auto now = std::chrono::steady_clock::now();
-    if (Is(base, text, " Accept") || Is(base, text, " Back") || Is(base, text, "Confirm") ||
-        Is(base, text, "Cancel") || Is(base, text, "Paused")) {
+    if (IsAny(base, text, kMenuTexts)) {
       if (now - s.menu_seen >= kRecent) {
         REXLOG_INFO("keyboard_prompts: menu, from the text \"{}\"", Ascii(base, text));
       }
@@ -389,7 +422,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
     menu = now - s.menu_seen < kRecent;
     // The title screen's "PRESS START (Start)": A takes it too, so it shows A's menu key
     // (Enter) rather than Start's (Esc, which reads like "quit").
-    if (Is(base, text, "PRESS START (")) {
+    if (IsAny(base, text, kTitleTexts)) {
       s.title_seen = now;
       g_title_until.store((now + kRecent).time_since_epoch().count());
     }

@@ -48,7 +48,7 @@ FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
 # The game's languages (the disc has these five): the runtime's user_language, an XLanguage id.
 LANGUAGES = {"English": 1, "German": 3, "French": 4, "Spanish": 5, "Italian": 6}
 # The settings screen's tabs, top to bottom.
-TABS = ("Game files", "Display", "Graphics", "Camera", "Controls")
+TABS = ("Game files", "Display", "Graphics", "Camera", "Controls", "Saves", "Achievements")
 
 # Renderer (--gpu_plugin). "native" is Skullburglar's Vulkan renderer (native-plugin/, from
 # github.com/nlwstein/skullburglar, BSD 3-Clause): it translates the game's GPU commands into
@@ -750,6 +750,35 @@ def backup_saves(info) -> Path:
     return out
 
 
+def save_display_name(header: Path):
+    """A save's name as the game gave it: XCONTENT_DATA's display name (UTF-16 big-endian, 128 characters at
+    offset 8) in the runtime's <name>.header, or None."""
+    try:
+        data = header.read_bytes()[8:8 + 256]
+        name = data.decode("utf-16-be", errors="ignore").split("\0", 1)[0].strip()
+        return name or None
+    except OSError:
+        return None
+
+
+def list_saves(root: Path):
+    """The game's saved games under the runtime's content folder: <user data>\\<profile xuid>\\<title id>\\
+    00000001 (saved games)\\<file name>\\, each with its display name from Headers\\00000001\\<file name>.header,
+    the newest file's time and the total size; newest first."""
+    saves = []
+    if not root.is_dir():
+        return saves
+    for folder in root.glob("*/*/00000001/*"):
+        if not folder.is_dir():
+            continue
+        files = [f for f in folder.rglob("*") if f.is_file()]
+        modified = max([f.stat().st_mtime for f in files] or [folder.stat().st_mtime])
+        header = folder.parent.parent / "Headers" / "00000001" / (folder.name + ".header")
+        saves.append({"path": folder, "name": save_display_name(header) or folder.name, "modified": modified,
+                      "size": sum(f.stat().st_size for f in files)})
+    return sorted(saves, key=lambda s: s["modified"], reverse=True)
+
+
 def load_achievements(info):
     """The game's achievements (achievement_list.cpp writes the list on every start) with their unlock times
     (the runtime's <title id>.toml: [unlocked.<id>] filetime = <FILETIME>), or None before the first start."""
@@ -975,14 +1004,8 @@ class SettingsView(tk.Frame):
         self._link(links, "Open logs", self.open_logs).pack(side="left")
         self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=8)
         self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
-        self._subheading(box, 5, "Saves and achievements")
-        saves = tk.Frame(box, bg=PANEL)
-        saves.grid(row=6, column=0, columnspan=2, sticky="w")
-        self._link(saves, "Open saves folder", self.open_saves).pack(side="left")
-        self._link(saves, "Back up saves", self.backup_saves).pack(side="left", padx=8)
-        self._link(saves, "Achievements", self.show_achievements).pack(side="left")
-        self._subheading(box, 7, "Game")
-        self._combo(box, 8, "language", "Language", list(LANGUAGES))
+        self._subheading(box, 5, "Game")
+        self._combo(box, 6, "language", "Language", list(LANGUAGES))
 
         box = self._page("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)
@@ -1047,6 +1070,36 @@ class SettingsView(tk.Frame):
                            "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover.",
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
                  ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        box = self._page("Saves")
+        line = tk.Frame(box, bg=PANEL)
+        line.grid(row=0, column=0, columnspan=2, sticky="w")
+        self._link(line, "Open saves folder", self.open_saves).pack(side="left")
+        self._link(line, "Back up saves", self.backup_saves).pack(side="left", padx=8)
+        self._link(line, "Refresh", self.refresh_saves).pack(side="left")
+        self.saves_label = tk.Label(box, text="", font=("Segoe UI", 9), fg=DIM, bg=PANEL, anchor="w", justify="left",
+                                    wraplength=600)
+        self.saves_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 6))
+        style = ttk.Style(self)
+        style.configure("Saves.Treeview", background=BG, fieldbackground=BG, foreground=FG, rowheight=24,
+                        borderwidth=0)
+        style.configure("Saves.Treeview.Heading", font=("Segoe UI", 9, "bold"))
+        tree_box = tk.Frame(self.pages["Saves"], bg=PANEL)
+        tree_box.pack(fill="both", expand=True, pady=(4, 0))
+        self.saves_tree = ttk.Treeview(tree_box, style="Saves.Treeview", show="headings",
+                                       columns=("name", "modified", "size", "folder"))
+        for col, text, width in (("name", "Save", 220), ("modified", "Last saved", 150), ("size", "Size", 70),
+                                 ("folder", "Folder", 160)):
+            self.saves_tree.heading(col, text=text, anchor="w")
+            self.saves_tree.column(col, width=width, anchor="w", stretch=col == "name")
+        bar = ttk.Scrollbar(tree_box, orient="vertical", command=self.saves_tree.yview)
+        self.saves_tree.configure(yscrollcommand=bar.set)
+        self.saves_tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        self.saves_tree.bind("<Double-1>", lambda e: self.open_save_folder())
+
+        self._page("Achievements")
+        self.achievements_box = tk.Frame(self.pages["Achievements"], bg=PANEL)
+        self.achievements_box.pack(fill="both", expand=True)
         self.show_tab(self.s.get("tab") if self.s.get("tab") in TABS else "Display")
 
         foot = tk.Frame(self, bg=BG)
@@ -1085,6 +1138,10 @@ class SettingsView(tk.Frame):
 
     def show_tab(self, name):
         self.pages[name].tkraise()
+        if name == "Saves":
+            self.refresh_saves()
+        elif name == "Achievements":
+            self.refresh_achievements()
         for n, b in self.tab_buttons.items():
             on = n == name
             b.configure(bg=PANEL if on else BG, fg=FG if on else DIM, activebackground=PANEL,
@@ -1318,73 +1375,96 @@ class SettingsView(tk.Frame):
         except OSError:
             pass
 
-    def show_achievements(self):
+    def refresh_saves(self):
+        """The Saves tab's list: every saved game in the saves folder (list_saves)."""
+        root = user_data_dir(self.info)
+        self.saves_tree.delete(*self.saves_tree.get_children())
+        self.save_paths = {}
+        saves = list_saves(root)
+        for i, save in enumerate(saves):
+            iid = str(i)
+            self.save_paths[iid] = save["path"]
+            self.saves_tree.insert("", "end", iid=iid, values=(
+                save["name"], time.strftime("%d %b %Y  %H:%M", time.localtime(save["modified"])),
+                f"{save['size'] / 1024:.0f} KB", save["path"].name))
+        where = f"Saves folder: {root}"
+        self.saves_label.configure(text=(f"{len(saves)} saved game{'s' if len(saves) != 1 else ''}. " if saves else
+                                         "No saved games yet. ") + where + "\nDouble-click a save to open its folder.")
+
+    def open_save_folder(self):
+        sel = self.saves_tree.selection()
+        if sel and sel[0] in self.save_paths:
+            try:
+                os.startfile(str(self.save_paths[sel[0]]))
+            except OSError as e:
+                messagebox.showerror("Saves", f"Couldn't open the folder: {e}")
+
+    def refresh_achievements(self):
+        """The Achievements tab: every achievement, unlocked first (newest first), with icon, description,
+        gamerscore and when it was unlocked."""
+        box = self.achievements_box
+        for child in box.winfo_children():
+            child.destroy()
         try:
             items = load_achievements(self.info)
         except (OSError, ValueError, KeyError) as e:
-            messagebox.showerror("Achievements", f"Couldn't read the achievements: {e}")
+            tk.Label(box, text=f"Couldn't read the achievements: {e}", font=("Segoe UI", 10), fg=FG, bg=PANEL
+                     ).pack(anchor="w")
             return
         if not items:
-            messagebox.showinfo("Achievements", "Start the game once (to the title screen) and the list appears here.")
+            tk.Label(box, text="Start the game once (to the title screen) and its achievements appear here.",
+                     font=("Segoe UI", 10), fg=FG, bg=PANEL).pack(anchor="w")
             return
-        win = tk.Toplevel(self)
-        win.title("Achievements")
-        win.configure(bg=BG)
-        win.transient(self.winfo_toplevel())
-        win.geometry("640x620")
         got = [a for a in items if a["unlocked"]]
         score = sum(int(a["gamerscore"]) for a in got)
         total = sum(int(a["gamerscore"]) for a in items)
-        tk.Label(win, text=f"{len(got)} of {len(items)} unlocked    {score} of {total} G", font=("Segoe UI", 11, "bold"),
-                 fg=FG, bg=BG, anchor="w").pack(fill="x", padx=18, pady=(14, 8))
-        outer = tk.Frame(win, bg=BG)
-        outer.pack(fill="both", expand=True, padx=(18, 4))
-        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        tk.Label(box, text=f"{len(got)} of {len(items)} unlocked    {score} of {total} G", font=("Segoe UI", 11, "bold"),
+                 fg=FG, bg=PANEL, anchor="w").pack(fill="x", pady=(0, 8))
+        outer = tk.Frame(box, bg=PANEL)
+        outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, bg=PANEL, highlightthickness=0)
         bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        rows = tk.Frame(canvas, bg=BG)
+        rows = tk.Frame(canvas, bg=PANEL)
         rows.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=rows, anchor="nw")
+        window = canvas.create_window((0, 0), window=rows, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         canvas.configure(yscrollcommand=bar.set)
         canvas.pack(side="left", fill="both", expand=True)
         bar.pack(side="right", fill="y")
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
-        win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget is win else None)
-        win.images = []  # keep the icons alive
-        # Unlocked first (newest first), then the locked ones in the game's order.
+        scroll = lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", scroll))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        self.achievement_images = []  # keep the icons alive
         items = sorted(got, key=lambda a: time.mktime(a["unlocked"]), reverse=True) + [a for a in items if not a["unlocked"]]
         for i, a in enumerate(items):
-            row = tk.Frame(rows, bg=PANEL if a["unlocked"] else BG, padx=8, pady=6)
-            row.grid(row=i, column=0, sticky="we", pady=2)
+            bg = BG if a["unlocked"] else PANEL
+            row = tk.Frame(rows, bg=bg, padx=8, pady=6)
+            row.pack(fill="x", pady=2)
             icon = None
             if a.get("icon_path") and a["icon_path"].is_file():
                 try:
                     icon = tk.PhotoImage(file=str(a["icon_path"]))
                     if icon.width() >= 64:
                         icon = icon.subsample(max(1, icon.width() // 48))
-                    win.images.append(icon)
+                    self.achievement_images.append(icon)
                 except tk.TclError:
                     icon = None
-            tk.Label(row, image=icon, bg=row["bg"], width=48, height=48).grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            holder = tk.Frame(row, bg=bg, width=48, height=48)
+            holder.grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            holder.grid_propagate(False)
+            if icon:
+                tk.Label(holder, image=icon, bg=bg).place(relx=0.5, rely=0.5, anchor="center")
             dim = not a["unlocked"]
-            tk.Label(row, text=a["name"], font=("Segoe UI", 10, "bold"), fg=DIM if dim else FG, bg=row["bg"],
+            tk.Label(row, text=a["name"], font=("Segoe UI", 10, "bold"), fg=DIM if dim else FG, bg=bg,
                      anchor="w").grid(row=0, column=1, sticky="w")
             desc = a["description"] if a["unlocked"] or not a.get("locked_description") else a["locked_description"]
-            tk.Label(row, text=desc, font=("Segoe UI", 9), fg=DIM, bg=row["bg"], anchor="w", justify="left",
-                     wraplength=380).grid(row=1, column=1, sticky="w")
+            tk.Label(row, text=desc, font=("Segoe UI", 9), fg=DIM, bg=bg, anchor="w", justify="left",
+                     wraplength=420).grid(row=1, column=1, sticky="w")
             when = time.strftime("Unlocked %d %b %Y", a["unlocked"]) if a["unlocked"] else "Locked"
             tk.Label(row, text=f"{a['gamerscore']} G", font=("Segoe UI", 10, "bold"), fg=ACCENT if a["unlocked"] else DIM,
-                     bg=row["bg"]).grid(row=0, column=2, sticky="e", padx=(10, 0))
-            tk.Label(row, text=when, font=("Segoe UI", 8), fg=DIM, bg=row["bg"]).grid(row=1, column=2, sticky="e",
-                                                                                     padx=(10, 0))
+                     bg=bg).grid(row=0, column=2, sticky="e", padx=(10, 0))
+            tk.Label(row, text=when, font=("Segoe UI", 8), fg=DIM, bg=bg).grid(row=1, column=2, sticky="e", padx=(10, 0))
             row.columnconfigure(1, weight=1)
-            row.configure(width=590)
-        rows.columnconfigure(0, minsize=590)
-        foot = tk.Frame(win, bg=BG)
-        foot.pack(fill="x", padx=18, pady=(6, 14))
-        tk.Button(foot, text="Close", width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
-                  ).pack(side="right")
-        win.bind("<Escape>", lambda e: win.destroy())
-        win.focus_set()
 
     def crash_report(self):
         try:

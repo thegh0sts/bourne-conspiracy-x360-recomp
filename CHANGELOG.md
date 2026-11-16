@@ -7,7 +7,8 @@
   - the frame time and the slowest frame in the last half second;
   - the GPU time per frame and how busy that keeps the GPU (the renderer's GPU timestamps, turned on for it);
   - the CPU load of the whole PC and of the game (as a share of all CPU cores);
-  - the game's RAM (working set) and video memory.
+  - the game's RAM (working set) and video memory;
+  - a graph of the last 128 frame times (0-50 ms, with lines at 16.7 and 33.3 ms), green / yellow / red per frame.
   Detailed needs the native renderer; with Xenos the counter shows the frame rate only.
 
 - **Hide achievement pop-ups** (launcher, Display tab; `--achievement_popups=false`): no pop-up when an achievement unlocks. It still unlocks and shows in the achievements overlay (F7).

@@ -57,7 +57,7 @@ index 51b9922..993327e 100644
  // the maximum while the CPU is power or thermal limited). 0 where unknown.
  struct CpuClock {
 diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
-index a9a91ff..1819275 100644
+index a9a91ff..31e7873 100644
 --- a/src/gfx/native.cpp
 +++ b/src/gfx/native.cpp
 @@ -9,6 +9,7 @@
@@ -76,7 +76,7 @@ index a9a91ff..1819275 100644
      if (bots::HybridState* hs = bots::FindHybridState(); hs && hs->fps_counter.load(std::memory_order_relaxed))
        hs->swaps.fetch_add(1, std::memory_order_relaxed);  // the in-game FPS counter (fps_counter.h)
      // BOTS_GFX_NO_PRESENT=1 (benchmarking): render everything but never hand the frame to the presenter. Under a
-@@ -405,6 +407,80 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+@@ -405,6 +407,83 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
      return m;
    }
  
@@ -84,7 +84,8 @@ index a9a91ff..1819275 100644
 +  // frame rate, counted here over half-second windows, in the top-left corner (Renderer::SetOverlay). With
 +  // --show_fps_detail too: the frame time and the slowest frame, the GPU time per frame and how busy that keeps the
 +  // GPU (the renderer's timestamp queries, turned on for it), the CPU load of the whole machine and of the game
-+  // (a share of all logical CPUs), and the game's RAM (working set) and VRAM.
++  // (a share of all logical CPUs), and the game's RAM (working set) and VRAM, over a graph of the last 128 frame
++  // times.
 +  void UpdateFpsOverlay() {
 +    static const bool show = rex::cvar::Query<bool>("show_fps");
 +    static const bool detail = show && rex::cvar::Query<bool>("show_fps_detail");
@@ -96,7 +97,9 @@ index a9a91ff..1819275 100644
 +      fps_cpu_ = host::ProcessCpuTimes();
 +      fps_system_ = host::SystemCpuTimes();
 +    } else {
-+      fps_worst_ms_ = std::max(fps_worst_ms_, std::chrono::duration<double, std::milli>(now - fps_last_).count());
++      const double ms = std::chrono::duration<double, std::milli>(now - fps_last_).count();
++      fps_worst_ms_ = std::max(fps_worst_ms_, ms);
++      if (detail) renderer_->AddFrameTime(ms);  // the frame time graph
 +    }
 +    fps_last_ = now;
 +    ++fps_frames_;
@@ -158,7 +161,7 @@ index a9a91ff..1819275 100644
      // Off unless diagnostic logging is on (BOTS_DIAG=1); BOTS_HITCH_MS still sets it by itself.
      static const double hitch_ms = bots::DiagThreshold(std::getenv("BOTS_HITCH_MS"), bots::HitchLinesDefault(), 25.0);
 diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
-index c89a326..4ba73e3 100644
+index c89a326..08ebe1c 100644
 --- a/src/gfx/vk/present.cpp
 +++ b/src/gfx/vk/present.cpp
 @@ -1,5 +1,7 @@
@@ -174,11 +177,11 @@ index c89a326..4ba73e3 100644
  constexpr const char* kPresentShader = R"(#version 450
  layout(set = 0, binding = 0) uniform sampler2DArray source;
 -layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; };
-+layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; uvec4 text[8]; uvec4 text_layout; };
++layout(set = 0, binding = 1) uniform Gamma { uvec4 ramp[64]; vec4 render_scale; uvec4 text[8]; uvec4 text_layout; uvec4 graph[8]; };
  layout(location = 0) out vec4 result;
  
  uint Ramp(float v) {
-@@ -50,6 +52,56 @@ vec3 CatmullRom(vec2 position, vec2 size) {
+@@ -50,6 +52,81 @@ vec3 CatmullRom(vec2 position, vec2 size) {
            Tap(vec2(t3.x, t3.y), size) * w3.x) * w3.y;
  }
  
@@ -208,14 +211,39 @@ index c89a326..4ba73e3 100644
 +
 +bool InBox(vec2 p, vec2 lo, vec2 hi) { return all(greaterThanEqual(p, lo)) && all(lessThan(p, hi)); }
 +
++// Frame time graph (text_layout.z != 0): graph[] holds the last 128 frame times, oldest first, a byte each in
++// quarter milliseconds (capped at 63.75), drawn as bars 128 font pixels wide and 24 high (0-50 ms) under the text,
++// green / yellow / red like the frame rate, with faint lines at 16.7 and 33.3 ms.
++const float kGraphWidth = 128.0, kGraphHeight = 24.0, kGraphMs = 50.0;
++
++vec3 FrameColor(float ms) {
++  return ms <= 18.2 ? vec3(0.47, 0.86, 0.47) : (ms <= 35.7 ? vec3(0.92, 0.78, 0.35) : vec3(0.92, 0.35, 0.35));
++}
++
 +vec4 TextOverlay(vec2 pixel, vec4 color) {
 +  uint lines = text_layout.x, cols = text_layout.y;
-+  float s = max(1.0, round(float(textureSize(source, 0).y) / render_scale.x / 800.0));  // output pixels per font pixel: 1 up to 1200 lines, 2 at 1440p, 3 at 4K
++  bool has_graph = text_layout.z != 0u;
++  float s = max(1.0, round(float(textureSize(source, 0).y) / render_scale.x / 800.0));  // output pixels per font pixel: 1 below 1200 lines, 2 at 1440p, 3 at 4K
 +  vec2 origin = vec2(8.0 * s);
-+  vec2 lo = origin - 3.0 * s, hi = origin + vec2(float(cols) * 6.0 - 1.0, float(lines) * 10.0 - 3.0) * s + 3.0 * s;
++  float text_h = float(lines) * 10.0 - 3.0;
++  float graph_y = text_h + 4.0;  // the graph's top, in font pixels below origin
++  vec2 size = vec2(max(float(cols) * 6.0 - 1.0, has_graph ? kGraphWidth : 0.0),
++                   has_graph ? graph_y + kGraphHeight : text_h);
++  vec2 lo = origin - 3.0 * s, hi = origin + size * s + 3.0 * s;
 +  if (!InBox(pixel, lo, hi)) return color;
 +  vec4 result = vec4(mix(color.rgb, vec3(0.06, 0.07, 0.09), 0.8), color.a);
-+  vec2 p = floor((pixel - origin) / s);
++  vec2 f = (pixel - origin) / s;  // font pixels, fractional
++  if (has_graph && f.y >= graph_y && f.y < graph_y + kGraphHeight && f.x >= 0.0 && f.x < kGraphWidth) {
++    uint k = uint(f.x);
++    float ms = float((graph[k >> 4u][(k >> 2u) & 3u] >> ((k & 3u) * 8u)) & 0xFFu) * 0.25;
++    float up = (graph_y + kGraphHeight - f.y) / kGraphHeight * kGraphMs;  // the ms this pixel stands for
++    if (up <= ms) return vec4(FrameColor(ms), color.a);
++    float line_ms = kGraphMs / kGraphHeight / s;  // one output pixel, in ms
++    if (abs(up - 16.67) < line_ms * 0.5 || abs(up - 33.33) < line_ms * 0.5)
++      return vec4(mix(result.rgb, vec3(0.86, 0.88, 0.9), 0.35), color.a);
++    return result;
++  }
++  vec2 p = floor(f);
 +  if (p.x < 0.0 || p.y < 0.0) return result;
 +  uint x = uint(p.x), y = uint(p.y);
 +  uint col = x / 6u, line = y / 10u, gx = x % 6u, gy = y % 10u;
@@ -235,7 +263,7 @@ index c89a326..4ba73e3 100644
  void main() {
    // Output pixel centres -> source texels (the front buffer is render_scale.x of the output's size; 1 above render
    // scale 1, where the output is the rendered size). At 1 that is each texel's centre, read as is; below 1 it
-@@ -60,6 +112,7 @@ void main() {
+@@ -60,6 +137,7 @@ void main() {
                                   : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
    result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
                  1023.0) / 1023.0;
@@ -243,12 +271,12 @@ index c89a326..4ba73e3 100644
  }
  )";
  
-@@ -109,10 +162,43 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+@@ -109,10 +187,49 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
  }
  
  constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 -constexpr VkDeviceSize kRampBytes = 256 * 4 + 16;  // + render_scale
-+constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + 8 * 16 + 16;  // + render_scale, tbc overlay text and layout
++constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + 8 * 16 + 16 + 8 * 16;  // + render_scale, tbc overlay text, layout, graph
  
  }  // namespace
  
@@ -272,6 +300,12 @@ index c89a326..4ba73e3 100644
 +  }
 +}
 +
++void Renderer::AddFrameTime(double ms) {
++  overlay_graph_ = true;
++  frame_times_[frame_time_head_] = uint8_t(std::clamp(ms * 4.0 + 0.5, 0.0, 255.0));
++  frame_time_head_ = (frame_time_head_ + 1) % kGraphFrames;
++}
++
 +double Renderer::VramUsedMB() const {
 +  if (!allocator_) return 0.0;
 +  VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {};
@@ -288,7 +322,7 @@ index c89a326..4ba73e3 100644
  bool Renderer::InitPresent() {
    if (present_pipeline_) return true;
    const VkDevice dev = device_->device();
-@@ -180,8 +266,11 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+@@ -180,8 +297,14 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
      return v && std::strcmp(v, "bilinear") == 0;
    }();
    const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
@@ -296,8 +330,11 @@ index c89a326..4ba73e3 100644
 +  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
    std::memcpy(ramp + 256 * 4, params, sizeof(params));
 +  std::memcpy(ramp + 256 * 4 + 16, overlay_text_, sizeof(overlay_text_));
-+  const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, 0, 0};
++  const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, overlay_graph_ ? 1u : 0u, 0};
 +  std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_), text_layout, sizeof(text_layout));
++  uint8_t graph[kGraphFrames];  // oldest first
++  for (uint32_t k = 0; k < kGraphFrames; ++k) graph[k] = frame_times_[(frame_time_head_ + k) % kGraphFrames];
++  std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_) + sizeof(text_layout), graph, sizeof(graph));
    const VkDescriptorSet set = AllocateSet(present_set_layout_);
    if (!set) {
      static bool warned = false;
@@ -328,10 +365,10 @@ index 1155319..f7541b1 100644
      device_->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(device_->physical_device(), &props);
      timestamp_ns_ = props.limits.timestampPeriod;
 diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
-index bda30a2..16a66e8 100644
+index bda30a2..01e2f0c 100644
 --- a/src/gfx/vk/renderer.h
 +++ b/src/gfx/vk/renderer.h
-@@ -335,6 +335,10 @@ class Renderer : public Pm4Sink {
+@@ -335,6 +335,14 @@ class Renderer : public Pm4Sink {
    // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
    // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
    float scale_ = 1.0f;
@@ -339,10 +376,14 @@ index bda30a2..16a66e8 100644
 +  float overlay_fps_ = 0.0f;
 +  uint32_t overlay_text_[kOverlayLines * kOverlayColumns / 4] = {};
 +  uint32_t overlay_lines_ = 0, overlay_cols_ = 0;
++  static constexpr uint32_t kGraphFrames = 128;  // AddFrameTime
++  uint8_t frame_times_[kGraphFrames] = {};
++  uint32_t frame_time_head_ = 0;
++  bool overlay_graph_ = false;
    uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
    int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
    bool ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
-@@ -375,6 +379,13 @@ class Renderer : public Pm4Sink {
+@@ -375,6 +383,16 @@ class Renderer : public Pm4Sink {
    // The guest output image's size relative to the frame buffer: above render scale 1 the presenter gets the
    // rendered size (as the emulated renderer's resolution scale does); below 1 the present pass upscales to 1.
    float output_scale() const { return std::max(scale_, 1.0f); }
@@ -353,6 +394,9 @@ index bda30a2..16a66e8 100644
 +  // Device-local memory in use (VK_EXT_memory_budget's figure where the driver has it, else this process's
 +  // allocations), MB.
 +  double VramUsedMB() const;
++  // tbc: one frame's time for the overlay's frame time graph (the last 128, drawn under the text); the first call
++  // turns the graph on.
++  void AddFrameTime(double ms);
    enum GpuCat : uint8_t { kGpuDraw, kGpuResolve, kGpuUpload, kGpuTexture, kGpuTransfer, kGpuPresent, kGpuOther };
    static constexpr const char* kGpuCatNames[] = {"draw", "resolve", "upload", "texture", "transfer", "present",
                                                   "other"};

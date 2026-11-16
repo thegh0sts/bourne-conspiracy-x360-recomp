@@ -148,9 +148,11 @@ struct State {
   // unfocused one, the one only one of them has the focused one (whatever the game's focus
   // animation does, the menu's own colours are copied).
   std::vector<std::array<uint8_t, 16>> colours;
-  // And how each was drawn: offset from its place and scale (the focused entry is bigger).
+  // And how each was drawn: offset from its place, scale and font (the focused entry is in a
+  // bigger font).
   struct Look {
     double dx = 0, dy = 0, sx = 1, sy = 1;
+    uint32_t font = 0;
     bool set = false;
   };
   std::vector<Look> looks;
@@ -444,7 +446,7 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   if (index >= 0 && size_t(index) < s.colours.size() && visible) {
     std::memcpy(s.colours[index].data(), colour, 16);
     const Rect& r = sc.buttons[index].rect;
-    s.looks[index] = {x - r.l, y - r.t, call.f3.f64, call.f4.f64, true};
+    s.looks[index] = {x - r.l, y - r.t, call.f3.f64, call.f4.f64, call.r7.u32, true};
     // The colour most buttons share (unfocused) and the odd one out (focused); buttons not
     // drawn visibly yet don't count.
     std::map<std::array<uint8_t, 16>, int> counts;
@@ -487,8 +489,12 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
         f[k] = LoadF(s.focus_colour, 4 * k);
         f[4 + k] = LoadF(s.other_colour, 4 * k);
       }
-      REXLOG_INFO("menu_quit: focused colour ({:.2f} {:.2f} {:.2f} {:.2f}), others ({:.2f} {:.2f} {:.2f} {:.2f})",
-                  f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+      REXLOG_INFO("menu_quit: focused colour ({:.2f} {:.2f} {:.2f} {:.2f}), others ({:.2f} {:.2f} {:.2f} {:.2f}); "
+                  "focused font {:08X} scale {:.2f} offset {:.1f},{:.1f}, others font {:08X} scale {:.2f} offset "
+                  "{:.1f},{:.1f}",
+                  f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], s.focus_look.font, s.focus_look.sx,
+                  s.focus_look.dx, s.focus_look.dy, s.other_look.font, s.other_look.sx, s.other_look.dx,
+                  s.other_look.dy);
     }
   }
   // The button with the game's focus while Quit Game is selected: drawn as the others are.
@@ -501,11 +507,13 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     ctx.f2.f64 += to.dy - from.dy;
     ctx.f3.f64 *= to.sx / from.sx;
     ctx.f4.f64 *= to.sy / from.sy;
+    if (to.font && from.font != to.font && ctx.r7.u32 == from.font) ctx.r7.u64 = to.font;
   };
   const State::Look main_look = index >= 0 && size_t(index) < s.looks.size() ? s.looks[index] : State::Look{};
-  if (index >= 0 && s.selected && main_look.set && s.focus_look.set &&
-      std::fabs(main_look.sx - s.focus_look.sx) < 1e-6 && std::fabs(main_look.dx - s.focus_look.dx) < 1e-6 &&
-      s.have_other_colour && (focus_drawn || !visible)) {
+  const bool same_look = main_look.set && s.focus_look.set && main_look.font == s.focus_look.font &&
+                         std::fabs(main_look.sx - s.focus_look.sx) < 1e-6 &&
+                         std::fabs(main_look.dx - s.focus_look.dx) < 1e-6;
+  if (index >= 0 && s.selected && same_look && s.have_other_colour && (focus_drawn || !visible)) {
     // The entry the game still has focus on, while Quit Game is selected: as an unfocused one.
     if (focus_drawn) ctx.r8.u64 = s.guest + 16;
     restyle(main_look, s.other_look);

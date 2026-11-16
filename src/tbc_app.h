@@ -4,12 +4,15 @@
 
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <system_error>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/rex_app.h>
+#include <rex/system/achievement_manager.h>
 #include <rex/ui/overlay/achievement_notification.h>
 
 #include "crash_win.h"
@@ -34,6 +37,11 @@ REXCVAR_DEFINE_BOOL(show_fps, false, "UI", "Show a small frame rate counter in t
 // --achievement_popups=false: no pop-up when an achievement unlocks. It's still unlocked and
 // listed in the achievements overlay (F7); only the toast (an ImGui dialog) isn't made.
 REXCVAR_DEFINE_BOOL(achievement_popups, true, "UI", "Show a pop-up when an achievement unlocks");
+// --test_achievement_popups=true: 10 s after start, show the pop-ups of the game's first two
+// achievements, without unlocking them (AchievementManager::ShowAchievementNotification), to
+// check the pop-up without playing for one.
+REXCVAR_DEFINE_BOOL(test_achievement_popups, false, "UI",
+                    "Show two achievement pop-ups 10 s after start (nothing is unlocked)");
 REXCVAR_DEFINE_BOOL(show_fps_detail, false, "UI",
                     "With show_fps: also frame time, GPU, CPU and memory (native renderer)");
 
@@ -70,6 +78,20 @@ class TbcApp : public rex::ReXApp {
     }
     // --dev_debug_runtime: log and stub code addresses with no function (debug_tools.h).
     tbc::debug::RunIfEnabled(PPCImageConfig.code_base, PPCImageConfig.code_size);
+    if (REXCVAR_GET(test_achievement_popups)) {
+      std::thread([this] {
+        // The game's achievements are known once its module has loaded: wait for them.
+        for (int tries = 0; tries < 60; ++tries) {
+          std::this_thread::sleep_for(std::chrono::seconds(tries ? 1 : 10));
+          const auto list = achievements().ListAchievements();
+          if (list.empty()) continue;
+          for (size_t i = 0; i < list.size() && i < 2; ++i) {
+            achievements().ShowAchievementNotification(list[i].id);
+          }
+          return;
+        }
+      }).detach();
+    }
   }
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }

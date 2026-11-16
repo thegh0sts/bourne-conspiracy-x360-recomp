@@ -116,7 +116,6 @@ git config core.hooksPath .githooks
 
 ## Known issues
 
-- Function `0x825EADC8` is reported as 1.27 MB, which suggests several functions merged into one. Not yet investigated.
 - With Xenos, 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
 - The native renderer is new and hasn't been played through yet. If something looks wrong, switch **Renderer** to Xenos and report it.
 - Keyboard and mouse is controller emulation underneath, with a fixed layout: see [Keyboard and mouse controls](docs/keyboard-and-mouse.md). With mouse look (on by default) the camera turns by as much as the mouse moves.

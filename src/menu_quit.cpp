@@ -130,6 +130,11 @@ struct State {
   uint8_t other_colour[16] = {};
   bool have_focus_colour = false, have_other_colour = false;
   int logged = 0;
+  // The main menu's rows (Campaign to Cheats), and when a label was last drawn in each and in the
+  // row under Cheats.
+  std::vector<float> rows;
+  std::vector<std::chrono::steady_clock::time_point> row_hit;
+  std::chrono::steady_clock::time_point below_hit{};
   // What the live menu's Campaign and Cheats labels say, learnt from the first draws at their
   // places once the menu's scene appears (other menus reuse the same places for their own
   // entries, and the main menu's scene stays around underneath them).
@@ -251,6 +256,16 @@ void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
       }
       s.rects.clear();
       for (const auto& b : sc.buttons) s.rects.push_back(b.rect);
+      std::vector<float> rows;
+      for (const auto& b : sc.buttons) {
+        if (!b.rect.valid() || std::fabs(b.rect.l - cheats.l) > 4.0f) continue;
+        if (b.rect.t < campaign.t - 1.0f || b.rect.t > cheats.t + 1.0f) continue;
+        bool known = false;
+        for (float r : rows) known = known || std::fabs(r - b.rect.t) < 2.0f;
+        if (!known) rows.push_back(b.rect.t);
+      }
+      if (rows.size() != s.rows.size()) s.row_hit.assign(rows.size(), {});
+      s.rows = rows;
       s.cheats = cheats;
       s.campaign = campaign;
       s.focused = focused;
@@ -347,19 +362,27 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   const bool cheats = s.cheats.at(x, y);
   const auto now = std::chrono::steady_clock::now();
-  if (cheats || s.campaign.at(x, y)) {
-    // Only the main menu's own labels count: learnt in the scene's first second, compared after.
-    std::u16string text;
-    for (uint32_t p = ctx.r6.u32; p && text.size() < 64; p += 2) {
-      const char16_t c = char16_t(base[p] << 8 | base[p + 1]);
-      if (!c) break;
-      text.push_back(c);
+  // The main menu is on screen when every one of its rows (Campaign to Cheats) had a label drawn
+  // in the last moment and nothing was drawn in the row under Cheats. Its submenus reuse the same
+  // places (Replay Chapter puts its two chapters in the Extras and Cheats rows, Extras fills all
+  // five and a sixth) and its scene stays around under them, so its own places alone can't tell.
+  if (std::fabs(x - s.cheats.l) < 4.0) {
+    for (size_t i = 0; i < s.rows.size(); ++i) {
+      if (std::fabs(y - s.rows[i]) < 3.0) s.row_hit[i] = now;
     }
-    auto it = s.texts.find(s.live_scene);
-    if (it == s.texts.end()) return false;
-    std::u16string& known = cheats ? it->second.cheats : it->second.campaign;
-    if (known.empty() && now - it->second.first_seen < std::chrono::seconds(1)) known = text;
-    if (known.empty() || text != known) return false;
+    if (std::fabs(y - (s.cheats.t + (s.cheats.b - s.cheats.t))) < 3.0) s.below_hit = now;
+  }
+  if (cheats || s.campaign.at(x, y)) {
+    // Rows never drawn in at all (a hidden button's) don't count.
+    bool all = true;
+    int drawn_rows = 0;
+    for (const auto& t : s.row_hit) {
+      if (t == std::chrono::steady_clock::time_point{}) continue;
+      ++drawn_rows;
+      all = all && now - t < std::chrono::milliseconds(100);
+    }
+    all = all && drawn_rows >= 3;
+    if (!all || now - s.below_hit < std::chrono::milliseconds(150)) return false;
     s.drawn = now;
   }
   const bool showing = now - s.drawn < kRecent;

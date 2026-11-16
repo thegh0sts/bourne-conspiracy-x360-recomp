@@ -51,7 +51,9 @@ endforeach()
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/prompt_glyphs.cpp.in "${_glyphs_src}")
 configure_file(${CMAKE_CURRENT_BINARY_DIR}/prompt_glyphs.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/prompt_glyphs.cpp
     COPYONLY)
-set_source_files_properties(${K}/src/gfx/prompt_atlas.cpp PROPERTIES INCLUDE_DIRECTORIES ${REXGLUE_ROOT}/thirdparty/stb)
+# stb_image: prompt_atlas.cpp's PNGs, and native.cpp's achievement pop-up icons (patch 0006).
+set_source_files_properties(${K}/src/gfx/prompt_atlas.cpp ${K}/src/gfx/native.cpp
+                            PROPERTIES INCLUDE_DIRECTORIES ${REXGLUE_ROOT}/thirdparty/stb)
 
 add_library(rexgpu-native SHARED
     ${K}/src/gfx/native.cpp

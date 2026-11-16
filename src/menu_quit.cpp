@@ -44,6 +44,10 @@
 REXCVAR_DEFINE_BOOL(menu_quit, true, "Input", "A Quit Game entry under Cheats on the main menu");
 
 REX_EXTERN(__imp__sub_82C49D88);  // DrawString
+// The engine's text measuring (what Canvas.TextSize ends in, sub_82C288F0 -> sub_82C1A720):
+// r3 = the font, f1 / f2 = X / Y scale, r6 / r7 = where to write the width / height (ints),
+// r8 = the text. Measures as DrawString lays text out, character remapping and all.
+REX_EXTERN(sub_82C12D38);
 
 namespace {
 
@@ -135,7 +139,8 @@ struct State {
   };
   std::map<uint32_t, Texts> texts;
   uint8_t logged_colours[32] = {};
-  uint32_t guest = 0;  // guest memory: two colours (32 bytes) then the strings
+  uint32_t guest = 0;
+  uint32_t scratch = 0;  // guest memory: the width and height the engine measures  // guest memory: two colours (32 bytes) then the strings
   std::u16string label_text, hint_text;
   // Input.
   bool selected = false;  // Quit Game is selected
@@ -295,20 +300,23 @@ bool Guest(State& s, uint8_t* base) {
 uint32_t LabelAddr(const State& s) { return s.guest + 32; }
 uint32_t HintAddr(const State& s) { return s.guest + 32 + 2 * uint32_t(s.label_text.size() + 1); }
 
-// Width of a UTF-16 string in a font at scale 1 (as keyboard_prompts.cpp), or -1.
-double TextWidth(const uint8_t* base, uint32_t font, uint32_t text) {
-  if (Load32(base, font + 140) != 0) return -1.0;
-  const uint32_t glyphs = Load32(base, font + 60), count = Load32(base, font + 64);
-  const int32_t kerning = int32_t(Load32(base, font + 144));
-  if (!glyphs || count == 0 || count > 65536) return -1.0;
-  double width = 0.0;
-  for (uint32_t i = 0; i < 128; ++i, text += 2) {
-    const uint32_t c = uint32_t(base[text] << 8 | base[text + 1]);
-    if (c == 0) break;
-    const uint32_t index = c < count ? c : (127 < count ? 127 : 0);
-    width += double(int32_t(Load32(base, glyphs + index * 24 + 8)) + kerning);
-  }
-  return width;
+// Width of a UTF-16 string in a font at scale 1, measured by the engine, or -1.
+double TextWidth(const PPCContext& call, uint8_t* base, State& s, uint32_t font, uint32_t text) {
+  if (!font || !text) return -1.0;
+  auto* runtime = rex::Runtime::instance();
+  if (!s.scratch && runtime && runtime->memory()) s.scratch = runtime->memory()->SystemHeapAlloc(16);
+  if (!s.scratch) return -1.0;
+  std::memset(base + s.scratch, 0, 8);
+  PPCContext ctx = call;
+  ctx.r3.u64 = font;
+  ctx.f1.f64 = 1.0;
+  ctx.f2.f64 = 1.0;
+  ctx.r6.u64 = s.scratch;
+  ctx.r7.u64 = s.scratch + 4;
+  ctx.r8.u64 = text;
+  sub_82C12D38(ctx, base);
+  const int32_t width = int32_t(Load32(base, s.scratch));
+  return width > 0 && width < 4096 ? double(width) : -1.0;
 }
 
 void RequestQuit() {
@@ -412,8 +420,8 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   if (index >= 0 && s.selected && focus_drawn && s.have_other_colour) ctx.r8.u64 = s.guest + 16;
   if (hint) {
     // The hint line, right-aligned as the game lays it out.
-    const double before = TextWidth(base, call.r7.u32, call.r6.u32);
-    const double after = TextWidth(base, call.r7.u32, HintAddr(s));
+    const double before = TextWidth(call, base, s, call.r7.u32, call.r6.u32);
+    const double after = TextWidth(call, base, s, call.r7.u32, HintAddr(s));
     ctx.r6.u64 = HintAddr(s);
     if (before > 0 && after > 0) ctx.f1.f64 = x + (before - after) * call.f3.f64;
   }

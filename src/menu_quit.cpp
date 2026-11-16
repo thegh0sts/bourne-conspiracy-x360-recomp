@@ -97,7 +97,8 @@ bool IsObject(uint32_t a) {
 struct Rect {
   float l = 0, t = 0, r = 0, b = 0;
   bool valid() const { return r > l + 1 && b > t + 1 && r - l < 5000 && b - t < 5000; }
-  bool at(double x, double y) const { return std::fabs(x - l) < 1.5 && std::fabs(y - t) < 1.5; }
+  // The focused entry can be drawn a little bigger, a pixel or two left or up of its place.
+  bool at(double x, double y) const { return std::fabs(x - l) < 4.0 && std::fabs(y - t) < 3.0; }
 };
 
 enum Role { kOther, kFirst, kLast };
@@ -147,6 +148,13 @@ struct State {
   // unfocused one, the one only one of them has the focused one (whatever the game's focus
   // animation does, the menu's own colours are copied).
   std::vector<std::array<uint8_t, 16>> colours;
+  // And how each was drawn: offset from its place and scale (the focused entry is bigger).
+  struct Look {
+    double dx = 0, dy = 0, sx = 1, sy = 1;
+    bool set = false;
+  };
+  std::vector<Look> looks;
+  Look focus_look, other_look;
   uint32_t colours_scene = 0;
   uint8_t focus_colour[16] = {};
   uint8_t other_colour[16] = {};
@@ -418,6 +426,8 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   if (s.colours_scene != s.active || s.colours.size() != sc.buttons.size()) {
     s.colours_scene = s.active;
     s.colours.assign(sc.buttons.size(), {});
+    s.looks.assign(sc.buttons.size(), {});
+    s.focus_look = s.other_look = {};
     s.have_focus_colour = s.have_other_colour = false;
   }
   // Labels at a button's place that aren't the menu's own (another menu over it) are left alone.
@@ -433,6 +443,8 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   const bool visible = LoadF(colour, 12) > 0.05f;
   if (index >= 0 && size_t(index) < s.colours.size() && visible) {
     std::memcpy(s.colours[index].data(), colour, 16);
+    const Rect& r = sc.buttons[index].rect;
+    s.looks[index] = {x - r.l, y - r.t, call.f3.f64, call.f4.f64, true};
     // The colour most buttons share (unfocused) and the odd one out (focused); buttons not
     // drawn visibly yet don't count.
     std::map<std::array<uint8_t, 16>, int> counts;
@@ -459,6 +471,11 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     }
     std::memcpy(base + s.guest, s.focus_colour, 16);
     std::memcpy(base + s.guest + 16, s.other_colour, 16);
+    for (size_t i = 0; i < s.colours.size(); ++i) {
+      if (!s.looks[i].set) continue;
+      if (s.have_focus_colour && std::memcmp(s.colours[i].data(), s.focus_colour, 16) == 0) s.focus_look = s.looks[i];
+      if (s.have_other_colour && std::memcmp(s.colours[i].data(), s.other_colour, 16) == 0) s.other_look = s.looks[i];
+    }
     const bool changed = std::memcmp(s.logged_colours, s.focus_colour, 16) != 0 ||
                          std::memcmp(s.logged_colours + 16, s.other_colour, 16) != 0;
     if (s.logged < 20 && changed && s.have_focus_colour && s.have_other_colour) {
@@ -476,7 +493,23 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   }
   // The button with the game's focus while Quit Game is selected: drawn as the others are.
   const bool focus_drawn = s.have_focus_colour && std::memcmp(colour, s.focus_colour, 16) == 0;
-  if (index >= 0 && s.selected && focus_drawn && s.have_other_colour) ctx.r8.u64 = s.guest + 16;
+  // A pass of this label drawn as `to` instead of as it's drawn now (its main pass: `from`),
+  // keeping the pass's own offset from the main one (a shadow stays a shadow).
+  auto restyle = [&](const State::Look& from, const State::Look& to) {
+    if (!from.set || !to.set || from.sx <= 0 || from.sy <= 0) return;
+    ctx.f1.f64 += to.dx - from.dx;
+    ctx.f2.f64 += to.dy - from.dy;
+    ctx.f3.f64 *= to.sx / from.sx;
+    ctx.f4.f64 *= to.sy / from.sy;
+  };
+  const State::Look main_look = index >= 0 && size_t(index) < s.looks.size() ? s.looks[index] : State::Look{};
+  if (index >= 0 && s.selected && main_look.set && s.focus_look.set &&
+      std::fabs(main_look.sx - s.focus_look.sx) < 1e-6 && std::fabs(main_look.dx - s.focus_look.dx) < 1e-6 &&
+      s.have_other_colour && (focus_drawn || !visible)) {
+    // The entry the game still has focus on, while Quit Game is selected: as an unfocused one.
+    if (focus_drawn) ctx.r8.u64 = s.guest + 16;
+    restyle(main_look, s.other_look);
+  }
   if (hint) {
     // The hint line, right-aligned as the game lays it out.
     const double before = TextWidth(call, base, s, call.r7.u32, call.r6.u32);
@@ -491,6 +524,8 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
     ctx = call;
     ctx.r6.u64 = s.armed ? ConfirmAddr(s) : LabelAddr(s);
     ctx.f2.f64 = y + double(sc.last.b - sc.last.t);
+    // Sized and placed as an unfocused entry, or as the focused one while it's selected.
+    restyle(main_look, s.selected ? s.focus_look : s.other_look);
     const bool last_main = visible && (focus_drawn || (s.have_other_colour &&
                                                          std::memcmp(colour, s.other_colour, 16) == 0));
     if (last_main) {

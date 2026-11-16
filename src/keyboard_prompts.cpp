@@ -289,6 +289,7 @@ uint32_t GuestString(State& s, uint8_t* base, const std::string& text) {
 
 constexpr auto kRecent = std::chrono::milliseconds(500);
 std::atomic<int64_t> g_title_until{0};  // steady_clock ticks: PRESS START on screen until then
+std::atomic<int64_t> g_menu_until{0};   // steady_clock ticks: a menu's button bar on screen until then
 
 // Binds and --mnk_mode are read again every half second, so a change made while the game
 // runs (the runtime's settings overlay) shows up in the labels.
@@ -423,6 +424,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
         REXLOG_INFO("keyboard_prompts: menu, from the text \"{}\"", Ascii(base, text));
       }
       s.menu_seen = now;
+      g_menu_until.store((now + kRecent).time_since_epoch().count());
     }
     menu = now - s.menu_seen < kRecent;
     // The title screen's "PRESS START (Start)": A takes it too, so it shows A's menu key
@@ -550,6 +552,10 @@ void PatchHudTextures(const PPCContext& ctx, uint8_t* base) {
     }
     return KeyFor(s, name.c_str(), false, false);
   });
+}
+
+bool MenuUp() {
+  return std::chrono::steady_clock::now().time_since_epoch().count() < g_menu_until.load();
 }
 
 bool TitleScreenUp() {

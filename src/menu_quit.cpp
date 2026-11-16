@@ -202,7 +202,10 @@ void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
 void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
   const auto now = std::chrono::steady_clock::now();
   if (now >= s.next_scan) {
-    s.next_scan = now + std::chrono::milliseconds(500);
+    // Quickly while a menu is up and the main menu isn't found yet, so Quit Game shows with the
+    // rest of it; otherwise every half second (a full pass over the object table).
+    const bool soon = !s.found && tbc::prompts::MenuUp();
+    s.next_scan = now + std::chrono::milliseconds(soon ? 50 : 500);
     Scan(s, ctx, base);
   }
   s.found = false;

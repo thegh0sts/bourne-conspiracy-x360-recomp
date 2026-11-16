@@ -1040,6 +1040,10 @@ class SettingsView(tk.Frame):
         self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
         self._subheading(box, 5, "Game")
         self._combo(box, 6, "language", "Language", list(LANGUAGES))
+        tk.Label(box, text="The game's voices, subtitles and text, all in this language (each language has only its "
+                           "own voices and subtitles). The achievement names follow it too.",
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
+                 ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         box = self._page("Display")
         self._combo(box, 0, "renderer", "Renderer", RENDERERS)

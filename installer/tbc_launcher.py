@@ -1106,7 +1106,9 @@ class SettingsView(tk.Frame):
         foot.pack(side="bottom", fill="x", padx=28, pady=18)
         tk.Button(foot, text="Play", width=16, command=self.play, font=("Segoe UI", 13, "bold"), bg=ACCENT,
                   fg="white", activebackground="#e0203f", activeforeground="white", bd=0, pady=8).pack(side="left")
-        tk.Button(foot, text="Quit", width=10, command=self.winfo_toplevel().destroy, font=("Segoe UI", 12),
+        tk.Button(foot, text="Save", width=10, command=self.save, font=("Segoe UI", 12), bd=0, pady=8
+                  ).pack(side="left", padx=(10, 0))
+        tk.Button(foot, text="Quit", width=10, command=self.quit_launcher, font=("Segoe UI", 12),
                   bd=0, pady=8).pack(side="left", padx=10)
         tk.Button(foot, text="Defaults", width=10, command=self.reset, font=("Segoe UI", 11),
                   bd=0, pady=6).pack(side="right")
@@ -1120,6 +1122,7 @@ class SettingsView(tk.Frame):
         tk.Label(self, textvariable=self.status, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=700,
                  justify="left").pack(side="bottom", anchor="w", padx=28)
         body.pack(fill="both", expand=True, padx=28, pady=(14, 4))
+        self.saved = self._snapshot()  # what's saved, to ask about unsaved changes on quitting
 
     # widgets ------------------------------------------------------------
     def _page(self, title):
@@ -1476,6 +1479,34 @@ class SettingsView(tk.Frame):
                                             "Attach it when you report a problem. It contains the game log, "
                                             "your launcher settings and any crash dump (no game files).")
 
+    def save(self):
+        """Saves the settings without starting the game (Play saves them too)."""
+        save_settings(self.collect())
+        self.saved = self._snapshot()
+        self.status.set("Settings saved.")
+
+    def _snapshot(self) -> str:
+        """The settings as they stand, without the open tab (switching tabs isn't a change worth asking about)."""
+        return json.dumps({k: v for k, v in self.collect().items() if k != "tab"}, sort_keys=True, default=str)
+
+    def unsaved(self) -> bool:
+        return self._snapshot() != getattr(self, "saved", None)
+
+    def confirm_close(self) -> bool:
+        """Asks to save changed settings before the launcher closes; False to stay open."""
+        if not self.unsaved():
+            return True
+        answer = messagebox.askyesnocancel("Quit", "Save your changed settings before quitting?")
+        if answer is None:
+            return False
+        if answer:
+            self.save()
+        return True
+
+    def quit_launcher(self):
+        if self.confirm_close():
+            self.winfo_toplevel().destroy()
+
     def play(self):
         if self.needs_rebuild and not messagebox.askyesno(
                 "Play", f"The game hasn't been rebuilt for {VERSION} yet, so this version's changes aren't "
@@ -1483,6 +1514,7 @@ class SettingsView(tk.Frame):
             return
         s = self.collect()
         save_settings(s)
+        self.saved = self._snapshot()
         exe, game = Path(self.info["exe"]), Path(self.info["game"])
         try:
             summary = apply_game_config(game, s)
@@ -1567,6 +1599,8 @@ class Launcher:
         self.show_settings(save_install(exe, game))
 
     def on_close(self):
+        if isinstance(self.view, SettingsView) and not self.view.confirm_close():
+            return
         if isinstance(self.view, InstallView) and self.view.busy():
             if not messagebox.askyesno("Install running", "An install is still running. Quit anyway?\n"
                                        "Running the launcher again will pick up where it left off."):

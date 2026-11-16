@@ -14,6 +14,7 @@
 - **Achievement pop-ups drawn by the native renderer**, in the same look as before (the box, icon, yellow title, name and gamerscore, the ImGui font, the fade), so showing one no longer makes the runtime repaint every display refresh, and it shows in screenshots and recordings. Xenos keeps the runtime's pop-up.
 - Removed the shelved ReGPU renderer experiment (`regpu-plugin/`, `tools/build_regpu.bat`); added in 0.2.1, it never shipped in the installer.
 - The launcher's links (Key binds, Reinstall, Open logs, Check for updates and the rest) are small red buttons now.
+- **Save** button in the launcher, between Play and Quit: saves the settings without starting the game. Quitting (or closing the window) with unsaved changes asks whether to save them; before, settings were only saved by Play.
 - The launcher's Graphics path and Anti-aliasing settings only appear when the renderer is Xenos (they were greyed out otherwise).
 - **Game language** (launcher, Game files tab): English, German, French, Spanish or Italian, the languages on the disc (`--user_language`).
 - **Saves tab** in the launcher: every saved game in the saves folder, with its name, when it was last saved and its size (double-click one to open its folder), plus **Open saves folder** and **Back up saves**, which zips the game's saves, achievements and settings (not the shader caches) into `backups\saves-<date>-<time>.zip` in the same folder.

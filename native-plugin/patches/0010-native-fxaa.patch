@@ -1,0 +1,79 @@
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index 2155bff..07cd388 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -45,6 +45,36 @@ uint Ramp(float v) {
+ 
+ vec3 Tap(vec2 texel, vec2 size) { return textureLod(source, vec3(texel / size, 0.0), 0.0).rgb; }
+ 
++// tbc FXAA (render_scale.y: 1, 2 strong; 0 off), the SDK's swap FXAA (its Xenos path, --swap_post_effect) on the
++// front buffer before the gamma ramp, so the tbc overlay and the achievement pop-up drawn after it stay sharp. The
++// game's own HUD is already in the front buffer, so it gets the same light smoothing as everything else.
++float Luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
++
++vec3 Fxaa(vec2 uv, vec2 texel, bool strong) {
++  float edge_threshold = strong ? 0.063 : 0.166, edge_threshold_min = strong ? 0.0312 : 0.0833;
++  float span_max = strong ? 12.0 : 8.0;
++  const float kDirReduceMul = 0.125, kDirReduceMin = 1.0 / 128.0;
++  vec3 rgb_m = textureLod(source, vec3(uv, 0.0), 0.0).rgb;
++  float luma_m = Luma(rgb_m);
++  float luma_nw = Luma(textureLod(source, vec3(uv + vec2(-texel.x, -texel.y), 0.0), 0.0).rgb);
++  float luma_ne = Luma(textureLod(source, vec3(uv + vec2(texel.x, -texel.y), 0.0), 0.0).rgb);
++  float luma_sw = Luma(textureLod(source, vec3(uv + vec2(-texel.x, texel.y), 0.0), 0.0).rgb);
++  float luma_se = Luma(textureLod(source, vec3(uv + vec2(texel.x, texel.y), 0.0), 0.0).rgb);
++  float luma_min = min(luma_m, min(min(luma_nw, luma_ne), min(luma_sw, luma_se)));
++  float luma_max = max(luma_m, max(max(luma_nw, luma_ne), max(luma_sw, luma_se)));
++  if (luma_max - luma_min < max(edge_threshold_min, luma_max * edge_threshold)) return rgb_m;
++  vec2 dir = vec2(-((luma_nw + luma_ne) - (luma_sw + luma_se)), (luma_nw + luma_sw) - (luma_ne + luma_se));
++  float dir_reduce = max((luma_nw + luma_ne + luma_sw + luma_se) * (0.25 * kDirReduceMul), kDirReduceMin);
++  float rcp_dir_min = 1.0 / (min(abs(dir.x), abs(dir.y)) + dir_reduce);
++  dir = clamp(dir * rcp_dir_min, vec2(-span_max), vec2(span_max)) * texel;
++  vec3 rgb_a = 0.5 * (textureLod(source, vec3(uv + dir * (1.0 / 3.0 - 0.5), 0.0), 0.0).rgb +
++                      textureLod(source, vec3(uv + dir * (2.0 / 3.0 - 0.5), 0.0), 0.0).rgb);
++  vec3 rgb_b = rgb_a * 0.5 + 0.25 * (textureLod(source, vec3(uv + dir * -0.5, 0.0), 0.0).rgb +
++                                     textureLod(source, vec3(uv + dir * 0.5, 0.0), 0.0).rgb);
++  float luma_b = Luma(rgb_b);
++  return (luma_b < luma_min || luma_b > luma_max) ? rgb_a : rgb_b;
++}
++
+ // Catmull-Rom from 9 bilinear taps: the middle two weights of each axis share one tap.
+ vec3 CatmullRom(vec2 position, vec2 size) {
+   vec2 t1 = floor(position - 0.5) + 0.5;
+@@ -155,7 +185,7 @@ uint ToastChar(uint i) { return (toast_text[i >> 4u][(i >> 2u) & 3u] >> ((i & 3u
+ 
+ vec4 Toast(vec2 pixel, vec4 color) {
+   float a = uintBitsToFloat(toast.x);
+-  vec2 out_size = vec2(textureSize(source, 0).xy) / render_scale.xy;
++  vec2 out_size = vec2(textureSize(source, 0).xy) / render_scale.xx;
+   float s = max(1.0, round(out_size.y / 1080.0));
+   vec2 p = (pixel - (out_size - vec2(336.0, 96.0) * s)) / s;  // ImGui pixels in the window
+   if (p.x < 0.0 || p.y < 0.0 || p.x >= 320.0 || p.y >= 70.0) return color;
+@@ -205,8 +235,10 @@ void main() {
+   // upscales with Catmull-Rom (render_scale.z 1) or bilinearly.
+   vec2 size = vec2(textureSize(source, 0).xy);
+   vec2 position = gl_FragCoord.xy * render_scale.x;
+-  vec3 c = render_scale.z != 0.0 ? CatmullRom(position, size)
+-                                 : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
++  // FXAA at 1:1 only (render scale 1 and up): below 1 the upscale comes first, and the tap pattern assumes texels.
++  vec3 c = render_scale.y != 0.0 && render_scale.x == 1.0 ? Fxaa(position / size, 1.0 / size, render_scale.y > 1.5)
++           : render_scale.z != 0.0                        ? CatmullRom(position, size)
++                                                          : textureLod(source, vec3(position / size, 0.0), 0.0).rgb;
+   result = vec4(float((Ramp(c.r) >> 20) & 0x3FFu), float((Ramp(c.g) >> 10) & 0x3FFu), float(Ramp(c.b) & 0x3FFu),
+                 1023.0) / 1023.0;
+   // tbc brightness (text_layout.w, float bits; 0 or 1: none): a gamma curve, so black and white stay put.
+@@ -431,7 +463,14 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+     return v && std::strcmp(v, "bilinear") == 0;
+   }();
+   const float ratio = scale_ / output_scale();  // front buffer texels per output pixel
+-  const float params[4] = {ratio, ratio, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
++  // tbc: BOTS_GFX_FXAA=1|2 (strong): FXAA in the present pass; .y carries it (the shader reads the ratio from .x).
++  static const float fxaa = [] {
++    const char* v = std::getenv("BOTS_GFX_FXAA");
++    const int mode = v && *v ? std::atoi(v) : 0;
++    if (mode > 0) REXLOG_INFO("gfx native: FXAA{}", mode > 1 ? " (strong)" : "");
++    return mode > 1 ? 2.0f : mode == 1 ? 1.0f : 0.0f;
++  }();
++  const float params[4] = {ratio, fxaa, ratio < 1.0f && !bilinear ? 1.0f : 0.0f, overlay_fps_};
+   std::memcpy(ramp + 256 * 4, params, sizeof(params));
+   std::memcpy(ramp + 256 * 4 + 16, overlay_text_, sizeof(overlay_text_));
+   const uint32_t text_layout[4] = {overlay_lines_, overlay_cols_, overlay_graph_ ? 1u : 0u,

@@ -62,7 +62,7 @@ TABS = ("Game files", "Display", "Graphics", "Camera", "Controls", "Saves", "Ach
 # reaches the native renderer through the BOTS_GFX_RENDER_SCALE environment variable. The
 # upscaling filter (--present_effect) works with both: it's the runtime's presenter, which
 # scales the finished picture to the window for either renderer (FSR / CAS have Vulkan
-# shaders too). The graphics path and FXAA are Xenos (Direct3D 12) settings.
+# shaders too). The graphics path is a Xenos (Direct3D 12) setting; FXAA works with both.
 RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
 RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
 # Output resolutions. The ultrawide ones (experimental, native renderer only) also set the
@@ -967,6 +967,10 @@ def game_env(s):
         # A hair over the exact scale, so 1600 / 720 gives 1600 lines rather than 1599.
         k = scale_factor(s["render_scale"])
         env["BOTS_GFX_RENDER_SCALE"] = f"{k:g}" if k in (1, 1.5, 2, 3) else f"{k + 1e-6:.6f}"
+        # FXAA in the native renderer's last pass (native-plugin/patches/0010); Xenos takes --swap_post_effect.
+        fxaa = {"FXAA": "1", "FXAA (strong)": "2"}.get(s.get("aa"))
+        if fxaa:
+            env["BOTS_GFX_FXAA"] = fxaa
         aniso = ANISOTROPY.get(s.get("texture_filtering"), 0)
         if aniso:
             env["BOTS_GFX_FORCE_ANISO"] = str(aniso)
@@ -1314,10 +1318,10 @@ class SettingsView(tk.Frame):
         """Keep the output and render resolutions consistent with the renderer and each other."""
         if "render_scale" not in self.combos:
             return  # still building the screen
-        # Graphics path and anti-aliasing are Xenos settings: only shown with Xenos (grid_remove keeps their place
-        # in the grid, so they come back where they were; their empty rows take no space meanwhile).
+        # The graphics path is a Xenos setting: only shown with Xenos (grid_remove keeps its place in the grid,
+        # so it comes back where it was; its empty row takes no space meanwhile). Anti-aliasing works with both.
         xenos = RENDERER_PLUGIN.get(self.vars["renderer"].get()) == "xenos"
-        for key in ("render_path", "aa"):
+        for key in ("render_path",):
             if key in self.combos:
                 for widget in (self.combos[key], self.combo_labels[key]):
                     if xenos:

@@ -7,6 +7,7 @@
 - **Clock under the FPS counter** (native renderer): the PC's time to a tenth of a second, as the game log writes it, so a video recording can be matched to the log. Renderer patch `0007-overlay-clock.patch`, in the new SDK bundle **`tbc11`** (`SDK_BUNDLE` in `installer/build_installer.bat`); a reinstall replaces the bundle.
 
 - **Texture filtering** (launcher, Graphics tab, native renderer): **Anisotropic 16x** by default, or 8x, 4x or **Game's own**. The game asks for little or no anisotropic filtering, so floors, roads and walls blur at an angle; the renderer now raises it on the game's surface textures (mipmapped and linearly filtered), never lowering what the game asks for. The HUD, fonts and lookup textures keep the game's own filtering. Renderer patch `0009-force-anisotropy.patch` (`BOTS_GFX_FORCE_ANISO`).
+- **FXAA with the native renderer** (launcher, Display tab, **Anti-aliasing**: Off / FXAA / FXAA (strong), now shown for both renderers). Before, only Xenos had it, and on the native renderer the render resolution was the only way to smooth edges. It runs in the renderer's last pass at render resolution, before the gamma ramp; the FPS overlay and achievement pop-ups are drawn after it and stay sharp, but the game's own HUD is part of the picture and gets the same light smoothing. Renderer patch `0010-native-fxaa.patch` (`BOTS_GFX_FXAA`).
 - **Key glyphs redrawn with a black outline** (keys and mouse buttons), so they stay readable on light backgrounds; Space is the ␣ symbol instead of the word (`assets/keys/`).
 
 ### Fixes

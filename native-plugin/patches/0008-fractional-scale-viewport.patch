@@ -1,0 +1,23 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 18190a4..5d43d43 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1619,8 +1619,16 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   // Dynamic state (VulkanCommandProcessor::UpdateDynamicState).
+   VkViewport vp{-1.0f, -1.0f, 1.0f, 1.0f, viewport.z_min, viewport.z_max};
+   if (viewport.xy_extent[0] && viewport.xy_extent[1]) {
+-    vp.x = float(viewport.xy_offset[0]) * scale_, vp.y = float(viewport.xy_offset[1]) * scale_;
+-    vp.width = float(viewport.xy_extent[0]) * scale_, vp.height = float(viewport.xy_extent[1]) * scale_;
++    // tbc: edge by edge, rounded as Host() rounds images, scissors and resolve rects. The SDK gives whole-pixel
++    // viewport bounds on purpose (ViewportInfo); a fractional render scale (1.5 for 1080p) made them fractional
++    // again, so a buffer with an odd size (80x45 -> 120x67.5) left its image's last row or column undrawn
++    // (its image, scissor and resolves are 68 rows), and resolves and sampling then read what was there before:
++    // black seams and flicker, and a 1x1 target (2x2 on the host) averaged with three undrawn pixels. At whole
++    // scales Host() is exact, so nothing changes there.
++    const uint32_t x0 = Host(viewport.xy_offset[0]), y0 = Host(viewport.xy_offset[1]);
++    vp.x = float(x0), vp.y = float(y0);
++    vp.width = float(Host(viewport.xy_offset[0] + viewport.xy_extent[0]) - x0);
++    vp.height = float(Host(viewport.xy_offset[1] + viewport.xy_extent[1]) - y0);
+   }
+   // BOTS_DEBUG_PIXEL_FRACTION=f (0 < f < 1): draws shade only the top-left f x f of their scissor - a wrong picture,
+   // for measuring how much of a frame's GPU time is per-pixel (what a lower render resolution could save).

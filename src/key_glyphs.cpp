@@ -21,7 +21,7 @@
 //
 // File names are key names as in the binds (W.png, Space.png, LMB.png), case-insensitive, and
 // may have a "keyboard_" prefix and an "_icon" suffix (keyboard_backspace_icon.png);
-// mouse_left / mouse_right / mouse_middle name the mouse buttons, enter / esc / ctrl the keys
+// mouse_left / mouse_right / mouse_middle (or mouse_scroll) name the mouse buttons, enter / esc / ctrl the keys
 // the binds call Return / Escape / Control.
 //
 //   --key_glyphs=false        text labels only
@@ -699,8 +699,8 @@ void Install(uint8_t* base, uint32_t font) {
     if (key.starts_with("keyboard_")) key = key.substr(9);
     if (key.ends_with("_icon")) key.resize(key.size() - 5);
     static const std::unordered_map<std::string, std::string> kAlias = {
-        {"mouse_left", "lmb"}, {"mouse_right", "rmb"}, {"mouse_middle", "mmb"}, {"enter", "return"},
-        {"esc", "escape"},     {"ctrl", "control"}};
+        {"mouse_left", "lmb"}, {"mouse_right", "rmb"}, {"mouse_middle", "mmb"}, {"mouse_scroll", "mmb"},
+        {"enter", "return"},   {"esc", "escape"},      {"ctrl", "control"}};
     if (const auto it = kAlias.find(key); it != kAlias.end()) key = it->second;
     g_chars[key] = c;
     g_images[key] = Cropped(rgba, sw, sh);

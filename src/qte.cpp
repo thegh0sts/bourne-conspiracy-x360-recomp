@@ -199,7 +199,19 @@ void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
   }
   REXLOG_INFO("qte_probe: {} sequence players, {} branches", p.players.size(), p.branches.size());
   for (const uint32_t obj : p.players) {
-    REXLOG_INFO("qte_probe: player {:08X} {}{}", obj, tbc::prompts::ObjectPathName(ctx, base, obj),
+    // Its name only when its outer chain is all live objects: the object table can still list
+    // one whose outer was freed, and the game's GetPathName then reads unmapped memory (a
+    // crash with qte_probe on during a weapon takedown).
+    bool live = true;
+    uint32_t o = obj;
+    for (int depth = 0; o && depth < 16; ++depth) {
+      if (!Heap(o) || !Readable(o + 0x34) || !Readable(o)) { live = false; break; }
+      const uint32_t cls = Load32(base, o + 0x30);
+      if (!Heap(cls) || !Readable(cls + 0x30)) { live = false; break; }
+      o = Load32(base, o + 0x28);
+    }
+    REXLOG_INFO("qte_probe: player {:08X} {}{}", obj,
+                live ? tbc::prompts::ObjectPathName(ctx, base, obj) : std::string("(outer not live)"),
                 Words(base, obj, kPlayerBytes));
   }
   p.player_last.assign(p.players.size(), {});

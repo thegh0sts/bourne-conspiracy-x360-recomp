@@ -330,6 +330,15 @@ constexpr float kPromptWindow = 1.5f;
 constexpr auto kRescan = std::chrono::milliseconds(250);
 constexpr auto kRescanFor = std::chrono::seconds(8);
 uint32_t g_branch_class = 0;
+// Shooting takedowns (PlayerOverTheShoulder.Takedown, prompts A / B / X over about 9 s) aren't
+// played by branches but by the game's BnTakedownSequencePlayer: found with --qte_probe, its
+// +0x5C holds a pointer from the takedown's start to its end (0 otherwise; no melee takedown
+// set it), and its +0x74 (QuickActionStageIdx) steps 0 -> 2 -> 4 as each prompt comes up. While
+// +0x5C is set, W / A / S / D answer the prompts; Bourne can't be moved then anyway.
+uint32_t g_player_class = 0;
+std::vector<uint32_t> g_players;
+constexpr auto kShootingMax = std::chrono::seconds(15);  // a takedown left set mustn't keep the keys
+Clock::time_point g_shooting_since{};
 struct Branch {
   uint32_t addr;
   float last_time;
@@ -347,21 +356,25 @@ void ScanBranches(uint8_t* base) {  // holds g_mutex; g_branch_class known
     return;  // not the list we know: leave takedown prompts alone
   }
   std::vector<Branch> found;
+  std::vector<uint32_t> players;
   for (uint32_t i = 0; i < count; ++i) {
     if ((i & 1023) == 0 && !Readable(data + 4 * i)) break;
     const uint32_t obj = Load32(base, data + 4 * i);
     if (!Heap(obj) || !Readable(obj + 0x30) || !Readable(obj + 0x9C)) continue;
-    if (Load32(base, obj + 0x30) != g_branch_class) continue;
+    const uint32_t cls = Load32(base, obj + 0x30);
+    if (g_player_class && cls == g_player_class) players.push_back(obj);
+    if (cls != g_branch_class) continue;
     Branch b{obj, LoadFloat(base, obj + 0x88), Clock::time_point{}};
     for (const Branch& old : g_branches) {
       if (old.addr == obj) b = old;  // keep how long it's been moving
     }
     found.push_back(b);
   }
-  if (found.size() != g_branches.size() && REXCVAR_GET(qte_wasd_log)) {
-    REXLOG_INFO("qte: {} takedown branches", found.size());
+  if ((found.size() != g_branches.size() || players.size() != g_players.size()) && REXCVAR_GET(qte_wasd_log)) {
+    REXLOG_INFO("qte: {} takedown branches, {} sequence players", found.size(), players.size());
   }
   g_branches = std::move(found);
+  g_players = std::move(players);
 }
 
 void RefreshBranches(const PPCContext& ctx, uint8_t* base) {  // holds g_mutex
@@ -369,6 +382,7 @@ void RefreshBranches(const PPCContext& ctx, uint8_t* base) {  // holds g_mutex
     g_branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
     if (!g_branch_class) return;
   }
+  if (!g_player_class) g_player_class = FindObject(ctx, base, "BourneNative.BnTakedownSequencePlayer", 0);
   ScanBranches(base);
   const auto now = Clock::now();
   g_rescan_until = now + kRescanFor;
@@ -395,6 +409,21 @@ bool TakedownPromptUp(uint8_t* base) {  // holds g_mutex
     }
   }
   return up;
+}
+
+bool ShootingTakedownUp(uint8_t* base) {  // holds g_mutex
+  bool on = false;
+  for (const uint32_t pl : g_players) {
+    if (!ReadableNow(pl + 0x30) || !ReadableNow(pl + 0x78) || Load32(base, pl + 0x30) != g_player_class) continue;
+    if (Load32(base, pl + 0x5C) != 0) on = true;
+  }
+  const auto now = Clock::now();
+  if (!on) {
+    g_shooting_since = {};
+    return false;
+  }
+  if (g_shooting_since == Clock::time_point{}) g_shooting_since = now;
+  return now - g_shooting_since < kShootingMax;
 }
 }  // namespace
 
@@ -490,14 +519,20 @@ void OnControllerState(uint8_t* base, uint32_t state) {
   }
   const int64_t until = g_until.load();
   const bool qte = until && Clock::now().time_since_epoch().count() < until;
-  static bool was_takedown = false;
+  static bool was_takedown = false, was_shooting = false;
   const bool takedown = !g_branches.empty() && TakedownPromptUp(base);
   if (takedown && !was_takedown) {
     g_starts.fetch_add(1);
     if (REXCVAR_GET(qte_wasd_log)) REXLOG_INFO("qte: takedown prompt");
   }
   was_takedown = takedown;
-  if (!qte && !takedown) return;
+  const bool shooting = !g_players.empty() && ShootingTakedownUp(base);
+  if (shooting != was_shooting) {
+    if (shooting) g_starts.fetch_add(1);
+    if (REXCVAR_GET(qte_wasd_log)) REXLOG_INFO("qte: shooting takedown {}", shooting ? "started" : "over");
+  }
+  was_shooting = shooting;
+  if (!qte && !takedown && !shooting) return;
   auto load16 = [&](uint32_t a) { return int16_t(uint16_t(base[a] << 8 | base[a + 1])); };
   const int16_t lx = load16(state + 8), ly = load16(state + 10);
   const uint8_t dirs = Directions(lx, ly);

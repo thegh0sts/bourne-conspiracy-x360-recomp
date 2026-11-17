@@ -191,20 +191,11 @@ void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
     p.branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
     REXLOG_INFO("qte_probe: classes: sequence player {:08X}, branch {:08X}", p.player_class, p.branch_class);
   }
+  // GObjObjects is the global TArray at 0x83655774 (data, count). The probe used to search
+  // for it and sometimes settled on the wrong array (0 or a few objects found).
   if (!p.objects && p.player_class && p.branch_class) {
-    // GObjObjects: the global TArray whose Data[Index] is each object (index at +0x04).
-    const uint32_t a = p.player_class, b = p.branch_class;
-    const uint32_t ia = Load32(base, a + 4), ib = Load32(base, b + 4);
-    for (uint32_t g = 0x82000000; g < 0x83740000; g += 4) {
-      const uint32_t data = Load32(base, g);
-      if (!Heap(data) || !Readable(data + 4 * ia) || !Readable(data + 4 * ib)) continue;
-      if (Load32(base, data + 4 * ia) == a && Load32(base, data + 4 * ib) == b) {
-        p.objects = g;
-        REXLOG_INFO("qte_probe: GObjObjects at {:08X}: data {:08X}, {} objects", g, data, Load32(base, g + 4));
-        break;
-      }
-    }
-    if (!p.objects) REXLOG_INFO("qte_probe: GObjObjects not found");
+    p.objects = 0x83655774;
+    REXLOG_INFO("qte_probe: GObjObjects data {:08X}, {} objects", Load32(base, p.objects), Load32(base, p.objects + 4));
   }
   if (!p.objects) return;
   const uint32_t data = Load32(base, p.objects), count = std::min<uint32_t>(Load32(base, p.objects + 4), 2000000);
@@ -248,7 +239,9 @@ void Diff(uint8_t* base, const char* what, uint32_t obj, uint32_t from, std::vec
   if (!ReadableNow(obj + from) || !ReadableNow(obj + from + uint32_t(last.size()) - 1)) return;
   for (uint32_t i = 0; i < last.size(); i += 4) {
     if (std::memcmp(&last[i], base + obj + from + i, 4) == 0) continue;
-    if (p.lines < 6000) {
+    // A branch's +0x88 is its play time, counting every frame: known, and it would flood the log.
+    const bool clock = std::strcmp(what, "branch") == 0 && from + i == 0x88;
+    if (p.lines < 6000 && !clock) {
       const uint32_t was = uint32_t(last[i]) << 24 | uint32_t(last[i + 1]) << 16 | uint32_t(last[i + 2]) << 8 | last[i + 3];
       REXLOG_INFO("qte_probe: {} {:08X} +{:03X} {:08X} -> {:08X}", what, obj, from + i, was, Load32(base, obj + from + i));
       ++p.lines;

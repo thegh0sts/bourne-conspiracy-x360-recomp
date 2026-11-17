@@ -158,6 +158,12 @@ RENDER_PATH_FLAG = {RENDER_PATHS[1]: "rtv", RENDER_PATHS[2]: "rov"}
 UPSCALE = ["Bilinear (original)", "FSR (sharper 3D, softer text)", "CAS (sharpen only)"]
 UPSCALE_FLAG = {UPSCALE[1]: "fsr", UPSCALE[2]: "cas"}
 AA = ["Off", "FXAA", "FXAA (strong)"]
+# Texture filtering (native renderer, BOTS_GFX_FORCE_ANISO, native-plugin/patches/0009): raises the
+# game's anisotropic filtering to at least this on its surface textures (mipmapped, linearly
+# filtered), so floors, roads and walls stay sharp at an angle. The HUD, fonts and lookup
+# textures keep the game's own filtering. "Game's own" leaves every texture as the game set it.
+TEXTURE_FILTERING = ["Game's own", "Anisotropic 4x", "Anisotropic 8x", "Anisotropic 16x"]
+ANISOTROPY = {TEXTURE_FILTERING[1]: 4, TEXTURE_FILTERING[2]: 8, TEXTURE_FILTERING[3]: 16}
 AA_FLAG = {"FXAA": "fxaa", "FXAA (strong)": "fxaa_extreme"}
 # Frame rate. tbc.exe's --frame_rate (src/fps_unlock.cpp) sets both the game's present
 # interval and a host frame limiter. The limiter does the pacing because the launcher turns
@@ -330,6 +336,7 @@ DEFAULTS = {
     "vibration_strength": 100,
     "language": "English",
     "brightness": 100,
+    "texture_filtering": "Anisotropic 16x",
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -960,6 +967,9 @@ def game_env(s):
         # A hair over the exact scale, so 1600 / 720 gives 1600 lines rather than 1599.
         k = scale_factor(s["render_scale"])
         env["BOTS_GFX_RENDER_SCALE"] = f"{k:g}" if k in (1, 1.5, 2, 3) else f"{k + 1e-6:.6f}"
+        aniso = ANISOTROPY.get(s.get("texture_filtering"), 0)
+        if aniso:
+            env["BOTS_GFX_FORCE_ANISO"] = str(aniso)
     return env
 
 
@@ -1100,6 +1110,11 @@ class SettingsView(tk.Frame):
         tk.Label(box, text=tr("Brightness is for the native renderer (Xenos ignores it); black and white stay as they "
                               "are."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=6, column=0, columnspan=2, sticky="w")
+        self._combo(box, 7, "texture_filtering", "Texture filtering", TEXTURE_FILTERING)
+        tk.Label(box, text=tr("Texture filtering is for the native renderer: it keeps floors, roads and walls sharp at an "
+                              "angle. The HUD and text keep the game's own filtering."),
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
+                 ).grid(row=8, column=0, columnspan=2, sticky="w")
 
         box = self._page("Camera")
         self._slider(box, 0, "fov", "Field of view (%)", 80, 140, 5)

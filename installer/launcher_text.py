@@ -1475,4 +1475,34 @@ TEXT = {
         'CMake est introuvable. Ouvrez Visual Studio Installer, cliquez sur Modifier pour votre Visual Studio, cochez « Outils CMake C++ pour Windows », installez, puis réessayez.',
         'No se encontró CMake. Abre el Instalador de Visual Studio, haz clic en Modificar en tu Visual Studio, marca "Herramientas de CMake de C++ para Windows", instala y vuelve a intentarlo.',
         'CMake non è stato trovato. Apri il Visual Studio Installer, fai clic su Modifica per il tuo Visual Studio, seleziona "Strumenti CMake C++ per Windows", installa e riprova.'),
+    'Texture filtering': (
+        'Texturfilterung',
+        'Filtrage des textures',
+        'Filtrado de texturas',
+        'Filtro texture'),
+    "Game's own": (
+        'Wie im Spiel',
+        'Celui du jeu',
+        'El del juego',
+        'Quello del gioco'),
+    'Anisotropic 4x': (
+        'Anisotrop 4x',
+        'Anisotrope 4x',
+        'Anisotrópico 4x',
+        'Anisotropico 4x'),
+    'Anisotropic 8x': (
+        'Anisotrop 8x',
+        'Anisotrope 8x',
+        'Anisotrópico 8x',
+        'Anisotropico 8x'),
+    'Anisotropic 16x': (
+        'Anisotrop 16x',
+        'Anisotrope 16x',
+        'Anisotrópico 16x',
+        'Anisotropico 16x'),
+    "Texture filtering is for the native renderer: it keeps floors, roads and walls sharp at an angle. The HUD and text keep the game's own filtering.": (
+        'Die Texturfilterung gilt für den nativen Renderer: Sie hält Böden, Straßen und Wände auch im schrägen Blickwinkel scharf. HUD und Text behalten die Filterung des Spiels.',
+        "Le filtrage des textures s'applique au moteur de rendu natif : il garde les sols, les routes et les murs nets vus de biais. Le HUD et le texte gardent le filtrage du jeu.",
+        'El filtrado de texturas es para el renderizador nativo: mantiene nítidos los suelos, las carreteras y las paredes vistos en ángulo. El HUD y el texto conservan el filtrado del juego.',
+        "Il filtro texture vale per il renderer nativo: mantiene nitidi pavimenti, strade e muri visti di sbieco. L'HUD e il testo mantengono il filtro del gioco."),
 }

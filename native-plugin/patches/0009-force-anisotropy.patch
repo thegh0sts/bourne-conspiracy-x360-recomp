@@ -1,0 +1,46 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 5d43d43..abde553 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -243,6 +243,8 @@ bool Renderer::InitDrawing() {
+   if (const char* v = std::getenv("BOTS_GFX_PASS_MERGE"); v && *v) pass_merge_ = *v == '1';
+   if (const char* v = std::getenv("BOTS_GFX_LAZY_RAW_DEPTH"); v && *v) lazy_raw_depth_ = *v == '1';
+   if (const char* v = std::getenv("BOTS_GFX_MAX_ANISO"); v && *v) max_anisotropy_ = uint32_t(std::atoi(v));
++  if (const char* v = std::getenv("BOTS_GFX_FORCE_ANISO"); v && *v) force_anisotropy_ = uint32_t(std::atoi(v));
++  if (force_anisotropy_) REXLOG_INFO("gfx native: anisotropic filtering at least {}x on 3D textures", force_anisotropy_);
+   scale_ = RenderScale(device_);
+   if (scale_ != 1.0f) REXLOG_INFO("gfx native: render scale {}", scale_);
+   shaders_ = std::make_unique<ShaderCache>(device_, workers, warmup);
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index f6787ae..f1ba273 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -456,6 +456,7 @@ class Renderer : public Pm4Sink {
+   bool pass_merge_ = true;
+   bool lazy_raw_depth_ = true;  // BOTS_GFX_LAZY_RAW_DEPTH=0: write a depth resolve's raw 8888 image at once (A/B)
+   uint32_t max_anisotropy_ = 16;  // BOTS_GFX_MAX_ANISO=0|1|2|4|8|16: cap on the game's anisotropic filtering (0 = off)
++  uint32_t force_anisotropy_ = 0;  // BOTS_GFX_FORCE_ANISO=2|4|8|16: the least anisotropy for the game's 3D textures (0 = the game's own)
+   bool gpu_draw_labels_ = false;  // BOTS_GPU_TIMING=2: a span per draw, by shader pair
+   bool InitDrawing();
+   void DestroyDrawing();
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index d9536f2..a540210 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -613,6 +613,16 @@ VkSampler Renderer::GetSampler(const rg::xenos::xe_gpu_texture_fetch_t& fetch,
+     for (uint32_t n = 1; n <= limit; n <<= 1) ++host_max;
+   }
+   if (aniso == xe::AnisoFilter::kUseFetchConst) aniso = xe::AnisoFilter::kDisabled;
++  // BOTS_GFX_FORCE_ANISO: raise it (never lower it) on what looks like a surface texture: mipmapped, filtered
++  // linearly both ways, and not a volume. That leaves the HUD, fonts and screen-space buffers (no mips) and lookup
++  // tables (point filtered, or 3D) as the game set them. Anisotropic filtering also makes the mip blend linear.
++  if (force_anisotropy_ && mag == xe::TextureFilter::kLinear && min == xe::TextureFilter::kLinear &&
++      mip != xe::TextureFilter::kBaseMap && fetch.mip_max_level > fetch.mip_min_level &&
++      fetch.dimension != xe::DataDimension::k3D && fetch.dimension != xe::DataDimension::k1D) {
++    uint32_t forced = uint32_t(xe::AnisoFilter::kMax_1_1);
++    for (uint32_t n = 2; n <= std::min(force_anisotropy_, 16u); n <<= 1) ++forced;
++    aniso = xe::AnisoFilter(std::max(uint32_t(aniso), forced));
++  }
+   aniso = xe::AnisoFilter(std::min(uint32_t(aniso), host_max));
+   if (trace_textures_) {  // B-313: which filter a fetch uses (the ray pass's mask fetch)
+     std::fprintf(stderr, "sampler: %ux%u mag %u min %u mip %u clamp %u,%u\n", uint32_t(fetch.size_2d.width) + 1,

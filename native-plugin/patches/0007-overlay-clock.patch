@@ -1,0 +1,109 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 38e64b0..07f6e3e 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -16,6 +16,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <ctime>
+ #include <filesystem>
+ #include <iterator>
+ #include <mutex>
+@@ -451,7 +452,11 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     fps_last_ = now;
+     ++fps_frames_;
+     const double seconds = std::chrono::duration<double>(now - fps_start_).count();
+-    if (seconds < 0.5) return;
++    if (seconds < 0.5) {
++      // The clock line moves on every tenth of a second, between the half-second statistics.
++      if (UpdateClock()) renderer_->SetOverlay(fps_last_value_, WithClock(fps_last_lines_));
++      return;
++    }
+     const double frames = double(fps_frames_ - 1);
+     const double fps = frames / seconds;
+     std::vector<std::string> lines;
+@@ -488,11 +493,37 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       fps_cpu_ = cpu;
+       fps_system_ = system;
+     }
+-    renderer_->SetOverlay(float(fps), lines);
++    fps_last_value_ = float(fps);
++    fps_last_lines_ = lines;
++    UpdateClock();
++    renderer_->SetOverlay(fps_last_value_, WithClock(fps_last_lines_));
+     fps_frames_ = 1;
+     fps_start_ = now;
+     fps_worst_ms_ = 0.0;
+   }
++  // tbc: the PC's local time under the frame rate, to a tenth of a second, as the game log writes it, so a video
++  // recording of the game can be matched to the log. True when the shown time changed.
++  bool UpdateClock() {
++    const auto now = std::chrono::system_clock::now();
++    const std::time_t t = std::chrono::system_clock::to_time_t(now);
++    const int tenths =
++        int(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000 / 100);
++    std::tm local{};
++#ifdef _WIN32
++    localtime_s(&local, &t);
++#else
++    localtime_r(&t, &local);
++#endif
++    char buf[16];
++    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%d", local.tm_hour, local.tm_min, local.tm_sec, tenths);
++    if (fps_clock_ == buf) return false;
++    fps_clock_ = buf;
++    return true;
++  }
++  std::vector<std::string> WithClock(std::vector<std::string> lines) const {
++    lines.push_back(fps_clock_);
++    return lines;
++  }
+   // tbc: achievement pop-ups, drawn by the present pass (Renderer::SetToast) like the runtime's ImGui one, which the
+   // game turns off with this renderer (tbc_app.h). --achievement_popups=false: none. As the runtime's: each shows for
+   // 4.5 s, fading in over 0.3 s and out over the last 0.5, one after another.
+@@ -603,6 +634,9 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   }
+   uint64_t fps_frames_ = 0, fps_gpu_ns_ = 0;
+   double fps_worst_ms_ = 0.0;
++  float fps_last_value_ = 0.0f;
++  std::vector<std::string> fps_last_lines_;
++  std::string fps_clock_;
+   std::chrono::steady_clock::time_point fps_start_{}, fps_last_{};
+   host::CpuTimes fps_cpu_;
+   host::SystemCpu fps_system_;
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index ca73530..2155bff 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -28,7 +28,7 @@ layout(set = 0, binding = 0) uniform sampler2DArray source;
+ layout(set = 0, binding = 1) uniform Gamma {
+   uvec4 ramp[64];
+   vec4 render_scale;
+-  uvec4 text[8];
++  uvec4 text[10];  // 5 lines of 32 characters
+   uvec4 text_layout;
+   uvec4 graph[8];
+   uvec4 toast;           // x: opacity (float bits, 0 = none), y: name length, z: suffix length, w: has an icon
+@@ -265,7 +265,7 @@ void BurstToRgb(VkFormat f, const uint8_t* src, size_t texels, std::vector<uint8
+ constexpr VkFormat kGuestOutputFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+ // + render_scale, the tbc overlay's text, layout and graph, and the achievement pop-up (its header, text, font and
+ // icon)
+-constexpr VkDeviceSize kOverlayBytes = 8 * 16 + 16 + 8 * 16;
++constexpr VkDeviceSize kOverlayBytes = 10 * 16 + 16 + 8 * 16;
+ constexpr VkDeviceSize kToastBytes = 16 + 5 * 16 + 48 * 16 + 484 * 16;
+ constexpr VkDeviceSize kRampBytes = 256 * 4 + 16 + kOverlayBytes + kToastBytes;
+ 
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 8b0d0b6..f6787ae 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -335,7 +335,7 @@ class Renderer : public Pm4Sink {
+   // Render scale (RenderScale()): a guest coordinate (in samples) -> host pixels. Edges map through the same
+   // rounding everywhere, so rectangles that tile in guest pixels still tile on the host.
+   float scale_ = 1.0f;
+-  static constexpr uint32_t kOverlayLines = 4, kOverlayColumns = 32;  // SetOverlay
++  static constexpr uint32_t kOverlayLines = 5, kOverlayColumns = 32;  // SetOverlay
+   float overlay_fps_ = 0.0f;
+   uint32_t overlay_text_[kOverlayLines * kOverlayColumns / 4] = {};
+   uint32_t overlay_lines_ = 0, overlay_cols_ = 0;

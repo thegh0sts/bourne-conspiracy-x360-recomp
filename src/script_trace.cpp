@@ -125,7 +125,15 @@ void Dump(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t obje
 bool IsHandler(const std::string& name) {
   const size_t cut = name.find_last_of(":.");
   const size_t at = cut == std::string::npos ? 0 : cut + 1;
-  return name.size() > at + 2 && name[at] == 'O' && name[at + 1] == 'n' && std::isupper(uint8_t(name[at + 2]));
+  if (!(name.size() > at + 2 && name[at] == 'O' && name[at + 1] == 'n' && std::isupper(uint8_t(name[at + 2])))) {
+    return false;
+  }
+  // Called every frame or by animation, not by a level's Kismet: matinee property tracks
+  // (a cutscene's light brightness, about 120 calls a second) and the animation callbacks.
+  for (const char* noise : {"OnUpdateProperty", "OnEnterAnimState", "OnMotionStateTransition", "OnFightStrafeAttachTree"}) {
+    if (name.find(noise, at) == at) return false;
+  }
+  return true;
 }
 
 // Every handler call, named: target and the Kismet action passed first (see --script_trace_kismet).
@@ -137,9 +145,11 @@ void Kismet(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t ob
     second = now;
     lines = 0;
   }
-  if (++lines > 200) return;
   auto heap = [](uint32_t a) { return a >= 0x40000000 && a < 0x80000000; };
   const std::string target = tbc::prompts::ObjectPathName(ctx, base, object);
+  // Menus (Transient.*) aren't level scripting.
+  if (target.starts_with("Transient.")) return;
+  if (++lines > 200) return;
   std::string action;
   const uint32_t parms = ctx.r5.u32;
   const uint32_t size = uint32_t(base[function + 142]) << 8 | base[function + 143];

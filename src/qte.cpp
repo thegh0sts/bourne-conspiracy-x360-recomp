@@ -164,7 +164,21 @@ struct Probe {
   std::vector<std::vector<uint8_t>> player_last, branch_last;
   int64_t until = 0;
   int lines = 0;
+  // Shooting takedown (PlayerOverTheShoulder.Takedown): its prompts aren't BnTakedownBranch
+  // ones, so the player controller and its pawn are watched whole, for kWideFor.
+  struct Wide {
+    const char* what;
+    uint32_t addr = 0;
+    std::vector<uint8_t> last;
+    std::vector<uint8_t> changes;  // per word; a word that changes all the time stops being logged
+  };
+  std::vector<Wide> wide;
+  uint32_t pawn_class = 0;
 } g_probe;
+
+constexpr uint32_t kWideBytes = 0x1000;
+constexpr auto kWideFor = std::chrono::seconds(14);
+constexpr uint8_t kWideMaxChanges = 6;
 
 constexpr uint32_t kPlayerBytes = 0x100;
 constexpr uint32_t kBranchFrom = 0x60, kBranchBytes = 0x40;  // +0x60..+0x9F
@@ -250,11 +264,61 @@ void ProbeDiff(uint8_t* base) {
   if (!p.until) return;
   if (Clock::now().time_since_epoch().count() >= p.until) {
     p.until = 0;
+    p.wide.clear();
     REXLOG_INFO("qte_probe: end");
     return;
   }
   for (size_t k = 0; k < p.players.size(); ++k) Diff(base, "player", p.players[k], 0, p.player_last[k]);
   for (size_t k = 0; k < p.branches.size(); ++k) Diff(base, "branch", p.branches[k], kBranchFrom, p.branch_last[k]);
+  for (auto& w : p.wide) {
+    if (!ReadableNow(w.addr) || !ReadableNow(w.addr + kWideBytes - 1)) continue;
+    for (uint32_t i = 0; i < kWideBytes; i += 4) {
+      if (std::memcmp(&w.last[i], base + w.addr + i, 4) == 0) continue;
+      uint8_t& n = w.changes[i / 4];
+      if (n < 255) ++n;
+      if (n <= kWideMaxChanges && p.lines < 6000) {
+        const uint32_t was = uint32_t(w.last[i]) << 24 | uint32_t(w.last[i + 1]) << 16 |
+                             uint32_t(w.last[i + 2]) << 8 | w.last[i + 3];
+        const uint32_t now = Load32(base, w.addr + i);
+        float fw, fn;
+        std::memcpy(&fw, &was, 4);
+        std::memcpy(&fn, &now, 4);
+        REXLOG_INFO("qte_probe: {} +{:03X} {:08X} -> {:08X} ({:g} -> {:g}){}", w.what, i, was, now, fw, fn,
+                    n == kWideMaxChanges ? " [busy: no more]" : "");
+        ++p.lines;
+      }
+      std::memcpy(&w.last[i], base + w.addr + i, 4);
+    }
+  }
+}
+
+void WideSetup(const PPCContext& ctx, uint8_t* base, uint32_t controller) {  // holds g_mutex
+  Probe& p = g_probe;
+  p.wide.clear();
+  p.lines = 0;
+  auto add = [&](const char* what, uint32_t addr) {
+    if (!Heap(addr) || !ReadableNow(addr) || !ReadableNow(addr + kWideBytes - 1)) return;
+    Probe::Wide w;
+    w.what = what;
+    w.addr = addr;
+    w.last.assign(base + addr, base + addr + kWideBytes);
+    w.changes.assign(kWideBytes / 4, 0);
+    p.wide.push_back(std::move(w));
+    REXLOG_INFO("qte_probe: watching {} {:08X} ({} bytes) for {} s", what, addr, kWideBytes,
+                std::chrono::duration_cast<std::chrono::seconds>(kWideFor).count());
+  };
+  add("controller", controller);
+  if (!p.pawn_class) p.pawn_class = FindObject(ctx, base, "BourneNative.BnPlayerPawn", 0);
+  if (p.pawn_class && Heap(controller)) {
+    for (uint32_t i = 0; i < 0x800; i += 4) {
+      const uint32_t v = Load32(base, controller + i);
+      if (Heap(v) && ReadableNow(v + 0x30) && Load32(base, v + 0x30) == p.pawn_class) {
+        REXLOG_INFO("qte_probe: controller +{:03X} is its pawn", i);
+        add("pawn", v);
+        break;
+      }
+    }
+  }
 }
 
 // Takedown prompts (multi-takedowns). These don't go through OnBnQuickAction: the takedown's
@@ -352,16 +416,25 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
       auto it = kinds.find(function);
       if (it == kinds.end()) {
         const std::string name = tbc::prompts::ObjectPathName(ctx, base, function);
-        kind = name.ends_with(":OnBnQuickAction") ? 1 : name.ends_with("Takedown") ? 2 : 0;
+        kind = name.ends_with(":OnBnQuickAction") ? 1
+               : name.ends_with("OverTheShoulder.Takedown") ? 3
+               : name.ends_with("Takedown") ? 2 : 0;
         it = kinds.emplace(function, kind).first;
       }
       kind = it->second;
     }
     if (kind) {
-      REXLOG_INFO("qte_probe: {} on {:08X}: watching for 4 s", kind == 1 ? "QTE" : "takedown", ctx.r3.u32);
+      REXLOG_INFO("qte_probe: {} on {:08X}: watching for 4 s",
+                  kind == 1 ? "QTE" : kind == 3 ? "shooting takedown" : "takedown", ctx.r3.u32);
       std::lock_guard<std::mutex> lock(g_mutex);
       ProbeSetup(ctx, base);
-      g_probe.until = (Clock::now() + std::chrono::seconds(4)).time_since_epoch().count();
+      auto until = Clock::now() + std::chrono::seconds(4);
+      if (kind == 3) {
+        WideSetup(ctx, base, ctx.r3.u32);
+        until = Clock::now() + kWideFor;
+      }
+      // A later event (another takedown call) mustn't cut a longer watch short.
+      g_probe.until = std::max(g_probe.until, until.time_since_epoch().count());
     }
   }
   if (!REXCVAR_GET(qte_wasd) || !function) return;

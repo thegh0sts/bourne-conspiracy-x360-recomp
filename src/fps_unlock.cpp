@@ -23,9 +23,10 @@
 // With guest vsync on (--vsync=true), the original vblank pacing is used and the limiter
 // stays off.
 //
-// --frame_rate_test_key=true (testing): F9 switches the limiter between 60 and the set rate
+// --frame_rate_test_key=true (testing): Ctrl+F8 switches the limiter between 60 and the set rate
 // while the game runs (a rate above 60 or 0), so one checkpoint can be played at both without
 // restarting. Logged ("frame_rate test: 60" / "back to N"), to line runs up with the log.
+// (Not F9 alone: screen recorders use it, and a recording started the switch by accident.)
 
 #include "generated/default/tbc_pch.h"
 
@@ -50,7 +51,7 @@ REXCVAR_DEFINE_INT32(frame_rate, 30, "Game",
                      "Frame rate: 30 (original), 60, another limit, or 0 for no limit");
 
 REXCVAR_DEFINE_BOOL(frame_rate_test_key, false, "Debug",
-                    "Testing: F9 switches the frame limit between 60 and the set rate while the game runs");
+                    "Testing: Ctrl+F8 switches the frame limit between 60 and the set rate while the game runs");
 
 REX_EXTERN(__imp__sub_822F01E0);
 REX_EXTERN(__imp__sub_822FE688);
@@ -72,7 +73,7 @@ bool GuestVsyncOn() {
   }();
   return on;
 }
-// F9 (frame_rate_test_key): the limiter at 60 instead of the set rate until pressed again.
+// Ctrl+F8 (frame_rate_test_key): the limiter at 60 instead of the set rate until pressed again.
 // Polled once a frame, only while this process's window has focus.
 int32_t TestRate(int32_t fps) {
 #ifdef _WIN32
@@ -81,13 +82,14 @@ int32_t TestRate(int32_t fps) {
   DWORD pid = 0;
   const HWND fg = GetForegroundWindow();
   if (fg) GetWindowThreadProcessId(fg, &pid);
-  const bool down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+  const bool down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_F8) & 0x8000) != 0 &&
+                    (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
   if (down && !was_down) {
     cap60 = !cap60;
     if (cap60) {
-      REXLOG_INFO("frame_rate test: 60 (F9)");
+      REXLOG_INFO("frame_rate test: 60 (Ctrl+F8)");
     } else {
-      REXLOG_INFO("frame_rate test: back to {} (F9)", fps);
+      REXLOG_INFO("frame_rate test: back to {} (Ctrl+F8)", fps);
     }
   }
   was_down = down;

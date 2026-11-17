@@ -22,17 +22,35 @@
 //
 // With guest vsync on (--vsync=true), the original vblank pacing is used and the limiter
 // stays off.
+//
+// --frame_rate_test_key=true (testing): F9 switches the limiter between 60 and the set rate
+// while the game runs (a rate above 60 or 0), so one checkpoint can be played at both without
+// restarting. Logged ("frame_rate test: 60" / "back to N"), to line runs up with the log.
 
 #include "generated/default/tbc_pch.h"
 
 #include <rex/cvar.h>
 
+#include <atomic>
 #include <string>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "frame_pacing.h"
 
 REXCVAR_DEFINE_INT32(frame_rate, 30, "Game",
                      "Frame rate: 30 (original), 60, another limit, or 0 for no limit");
+
+REXCVAR_DEFINE_BOOL(frame_rate_test_key, false, "Debug",
+                    "Testing: F9 switches the frame limit between 60 and the set rate while the game runs");
 
 REX_EXTERN(__imp__sub_822F01E0);
 REX_EXTERN(__imp__sub_822FE688);
@@ -53,6 +71,30 @@ bool GuestVsyncOn() {
     return result;
   }();
   return on;
+}
+// F9 (frame_rate_test_key): the limiter at 60 instead of the set rate until pressed again.
+// Polled once a frame, only while this process's window has focus.
+int32_t TestRate(int32_t fps) {
+#ifdef _WIN32
+  static bool cap60 = false, was_down = false;
+  if (!REXCVAR_GET(frame_rate_test_key) || !(fps == 0 || fps > 60)) return fps;
+  DWORD pid = 0;
+  const HWND fg = GetForegroundWindow();
+  if (fg) GetWindowThreadProcessId(fg, &pid);
+  const bool down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+  if (down && !was_down) {
+    cap60 = !cap60;
+    if (cap60) {
+      REXLOG_INFO("frame_rate test: 60 (F9)");
+    } else {
+      REXLOG_INFO("frame_rate test: back to {} (F9)", fps);
+    }
+  }
+  was_down = down;
+  return cap60 ? 60 : fps;
+#else
+  return fps;
+#endif
 }
 }  // namespace
 
@@ -75,6 +117,6 @@ extern "C" REX_FUNC(sub_822F01E0) {
 // D3D Swap (calls VdSwap). Callers: 0x8231193C, 0x827C0014, 0x827DB428 (end of frame).
 extern "C" REX_FUNC(sub_822FE688) {
   const int32_t fps = REXCVAR_GET(frame_rate);
-  tbc::pacing::BeforeSwap(GuestVsyncOn() ? 0 : fps);
+  tbc::pacing::BeforeSwap(GuestVsyncOn() ? 0 : TestRate(fps));
   __imp__sub_822FE688(ctx, base);
 }

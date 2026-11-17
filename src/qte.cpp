@@ -332,7 +332,10 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
       g_probe.until = (Clock::now() + std::chrono::seconds(4)).time_since_epoch().count();
     }
   }
-  if (!REXCVAR_GET(qte_wasd) || !function || !KeyboardOn()) return;
+  if (!REXCVAR_GET(qte_wasd) || !function) return;
+  // With qte_wasd_log the QTE is logged on a controller too, so a keyboard run can be compared.
+  const bool keyboard = KeyboardOn();
+  if (!keyboard && !REXCVAR_GET(qte_wasd_log)) return;
   int kind;  // 0 other, 1 QTE (OnBnQuickAction), 2 a takedown starting
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -345,21 +348,33 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
     }
     kind = it->second;
     if (kind == 2) {
-      RefreshBranches(ctx, base);
+      if (keyboard) RefreshBranches(ctx, base);
       return;
     }
   }
   if (kind != 1) return;
   const uint32_t parms = ctx.r5.u32;
   const uint32_t action = parms ? Load32(base, parms) : 0;
-  float window = action >= 0x40000000 && action < 0x80000000 ? LoadFloat(base, action + 0xEC) : 0.0f;
+  const bool live = action >= 0x40000000 && action < 0x80000000;
+  const float raw = live ? LoadFloat(base, action + 0xEC) : 0.0f;
+  float window = raw;
   if (!(window > 0.2f && window < 10.0f)) window = 2.0f;  // not the layout we know: a safe default
+  if (REXCVAR_GET(qte_wasd_log)) {
+    // The Kismet node that raised it (its name is stable across runs) and its class, so a QTE
+    // that misbehaves can be told apart from the ones that work.
+    std::string node = "?", cls = "?";
+    if (live) {
+      node = tbc::prompts::ObjectPathName(ctx, base, action);
+      const uint32_t c = Load32(base, action + 0x30);
+      if (c >= 0x40000000 && c < 0x80000000) cls = tbc::prompts::ObjectPathName(ctx, base, c);
+    }
+    REXLOG_INFO("qte: started, {:.1f} s (+0xEC reads {:.3f}) node {} class {}{}", window, raw, node, cls,
+                keyboard ? "" : " [controller: keys not mapped]");
+  }
+  if (!keyboard) return;
   const auto until = Clock::now() + std::chrono::milliseconds(int((window + 0.3f) * 1000));
   g_until.store(until.time_since_epoch().count());
   g_starts.fetch_add(1);
-  if (REXCVAR_GET(qte_wasd_log)) {
-    REXLOG_INFO("qte: started, {:.1f} s (action {:08X})", window, action);
-  }
 }
 
 void OnControllerState(uint8_t* base, uint32_t state) {

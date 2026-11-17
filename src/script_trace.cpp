@@ -15,6 +15,11 @@
 //                                  game (a QTE) and the functions first seen then are its own
 //   --script_trace_filter=Qte|Quick   also log every call of functions whose name contains one
 //                                  of these (case-sensitive), at most 50 lines a second
+//   --script_trace_kismet=true     log every call of a Kismet handler (a script event named On...,
+//                                  which a level's Kismet calls on its target: OnToggle,
+//                                  OnBnAiMoveToActor, ...) with the target's and the Kismet
+//                                  action's names. Those names are the same every run, so a run
+//                                  at 60 fps and one above it can be compared line by line.
 //   --script_trace_dump=OnBnQuickAction   for functions whose name contains one of these, also
 //                                  log the parameters (UFunction +142 = ParmsSize) and, when the
 //                                  first parameter is an object (Kismet handlers get their
@@ -23,6 +28,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -41,6 +47,10 @@ REXCVAR_DEFINE_BOOL(script_trace, false, "Debug",
 REXCVAR_DEFINE_STRING(script_trace_filter, "", "Debug",
                       "Also log every call of script events whose name contains one of these "
                       "(separated by |); development only");
+
+REXCVAR_DEFINE_BOOL(script_trace_kismet, false, "Debug",
+                    "Log every Kismet handler call (script events named On...) with its target "
+                    "and Kismet action by name; development only");
 
 REXCVAR_DEFINE_STRING(script_trace_dump, "", "Debug",
                       "For script events whose name contains one of these (separated by |), "
@@ -111,6 +121,46 @@ void Dump(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t obje
   REXLOG_INFO("script_trace dump: first parameter {:08X} = {}\n{}", first, first_name, Hex(base, first, 0x200));
 }
 
+// A Kismet handler: the function's own name (after the class or state) starts with "On".
+bool IsHandler(const std::string& name) {
+  const size_t cut = name.find_last_of(":.");
+  const size_t at = cut == std::string::npos ? 0 : cut + 1;
+  return name.size() > at + 2 && name[at] == 'O' && name[at + 1] == 'n' && std::isupper(uint8_t(name[at + 2]));
+}
+
+// Every handler call, named: target and the Kismet action passed first (see --script_trace_kismet).
+void Kismet(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t object, uint32_t function) {
+  static std::chrono::steady_clock::time_point second{};
+  static int lines = 0;
+  const auto now = std::chrono::steady_clock::now();
+  if (now - second > std::chrono::seconds(1)) {
+    second = now;
+    lines = 0;
+  }
+  if (++lines > 200) return;
+  auto heap = [](uint32_t a) { return a >= 0x40000000 && a < 0x80000000; };
+  const std::string target = tbc::prompts::ObjectPathName(ctx, base, object);
+  std::string action;
+  const uint32_t parms = ctx.r5.u32;
+  const uint32_t size = uint32_t(base[function + 142]) << 8 | base[function + 143];
+  if (parms && size >= 4) {
+    // Only when it's an object whose class is one too (a Kismet action is): a first parameter
+    // that's a number mustn't be named.
+    const uint32_t first = Load32(base, parms);
+    if (heap(first)) {
+      const uint32_t cls = Load32(base, first + 0x30);
+      if (heap(cls) && heap(Load32(base, cls + 0x30))) {
+        action = tbc::prompts::ObjectPathName(ctx, base, first);
+        // The level's name is already in the target's path: keep from the sequence on.
+        if (const size_t at = action.find("Main_Sequence"); at != std::string::npos) action = action.substr(at);
+      }
+    }
+  }
+  const size_t short_at = name.find_last_of(":");
+  REXLOG_INFO("kismet: {} on {}{}{}", short_at == std::string::npos ? name : name.substr(short_at + 1), target,
+              action.empty() ? "" : " by ", action);
+}
+
 }  // namespace
 
 extern "C" REX_FUNC(sub_828B8750) {
@@ -120,7 +170,8 @@ extern "C" REX_FUNC(sub_828B8750) {
   const uint32_t function = ctx.r4.u32;
   tbc::qte::OnProcessEvent(ctx, base, ctx.r4.u32);
   const std::string& dump_text = REXCVAR_GET(script_trace_dump);
-  if ((!trace && filter_text.empty() && dump_text.empty()) || !object || !function) {
+  const bool kismet = REXCVAR_GET(script_trace_kismet);
+  if ((!trace && !kismet && filter_text.empty() && dump_text.empty()) || !object || !function) {
     __imp__sub_828B8750(ctx, base);
     return;
   }
@@ -161,6 +212,7 @@ extern "C" REX_FUNC(sub_828B8750) {
       break;
     }
   }
+  if (kismet && IsHandler(name)) Kismet(ctx, base, name, object, function);
   if (!dump_text.empty()) {
     for (const std::string& part : Split(dump_text)) {
       if (name.find(part) != std::string::npos) {

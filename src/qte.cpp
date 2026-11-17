@@ -134,20 +134,26 @@ std::string Words(const uint8_t* base, uint32_t addr, uint32_t size) {
 bool Heap(uint32_t a) { return a >= 0x40000000 && a < 0x80000000; }
 
 // Whether a guest address can be read: the first probe crashed reading through a word that only
-// looked like a heap pointer. Answers are kept per 4 KB page.
-bool Readable(uint32_t addr) {
-  static std::unordered_map<uint32_t, bool> pages;
-  const uint32_t page = addr >> 12;
-  if (const auto it = pages.find(page); it != pages.end()) return it->second;
-  bool ok = false;
+// looked like a heap pointer. Answers are kept per 4 KB page, but only for one scan (ScanBegin):
+// memory is freed and mapped again all the time, and a page remembered from an earlier scan was
+// how GObjObjects, once it had grown into pages that had been unmapped, read as empty (no takedown
+// prompts for the rest of the session), and how a freed page could still read as safe.
+std::unordered_map<uint32_t, bool> g_pages;
+void ScanBegin() { g_pages.clear(); }
+
+bool ReadableNow(uint32_t addr) {
   auto* runtime = rex::Runtime::instance();
-  if (runtime && runtime->memory()) {
-    if (auto* heap = runtime->memory()->LookupHeap(addr)) {
-      uint32_t protect = 0;
-      ok = heap->QueryProtect(addr, &protect) && (protect & rex::memory::kMemoryProtectRead);
-    }
-  }
-  pages.emplace(page, ok);
+  if (!runtime || !runtime->memory()) return false;
+  auto* heap = runtime->memory()->LookupHeap(addr);
+  uint32_t protect = 0;
+  return heap && heap->QueryProtect(addr, &protect) && (protect & rex::memory::kMemoryProtectRead);
+}
+
+bool Readable(uint32_t addr) {
+  const uint32_t page = addr >> 12;
+  if (const auto it = g_pages.find(page); it != g_pages.end()) return it->second;
+  const bool ok = ReadableNow(addr);
+  g_pages.emplace(page, ok);
   return ok;
 }
 
@@ -165,6 +171,7 @@ constexpr uint32_t kBranchFrom = 0x60, kBranchBytes = 0x40;  // +0x60..+0x9F
 
 void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
   Probe& p = g_probe;
+  ScanBegin();
   if (!p.player_class) {
     p.player_class = FindObject(ctx, base, "BourneNative.BnTakedownSequencePlayer", 0);
     p.branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
@@ -224,6 +231,7 @@ void ProbeSetup(const PPCContext& ctx, uint8_t* base) {
 
 void Diff(uint8_t* base, const char* what, uint32_t obj, uint32_t from, std::vector<uint8_t>& last) {
   Probe& p = g_probe;
+  if (!ReadableNow(obj + from) || !ReadableNow(obj + from + uint32_t(last.size()) - 1)) return;
   for (uint32_t i = 0; i < last.size(); i += 4) {
     if (std::memcmp(&last[i], base + obj + from + i, 4) == 0) continue;
     if (p.lines < 6000) {
@@ -257,9 +265,13 @@ void ProbeDiff(uint8_t* base) {
 // kPromptWindow of it, and the branch time is still moving (a takedown that ends or is cut
 // short leaves a branch frozen, which mustn't keep W / A / S / D remapped).
 // The branches are looked up through GObjObjects (the engine's list of every object, a global
-// TArray at 0x83655774: data, count) whenever a takedown starts.
+// TArray at 0x83655774: data, count) when a takedown starts, and again every kRescan for
+// kRescanFor after it: a takedown's branches can be made only once it has begun, so a single
+// look at the start found none of them (every multi-takedown on keys failed in a new session).
 constexpr uint32_t kObjects = 0x83655774;
 constexpr float kPromptWindow = 1.5f;
+constexpr auto kRescan = std::chrono::milliseconds(250);
+constexpr auto kRescanFor = std::chrono::seconds(8);
 uint32_t g_branch_class = 0;
 struct Branch {
   uint32_t addr;
@@ -267,33 +279,53 @@ struct Branch {
   Clock::time_point moved;
 };
 std::vector<Branch> g_branches;
+Clock::time_point g_rescan_until{}, g_rescan_next{};
 
-void RefreshBranches(const PPCContext& ctx, uint8_t* base) {  // holds g_mutex
-  if (!g_branch_class) {
-    g_branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
-    if (!g_branch_class) return;
-  }
+void ScanBranches(uint8_t* base) {  // holds g_mutex; g_branch_class known
   const uint32_t data = Load32(base, kObjects);
   const uint32_t count = std::min<uint32_t>(Load32(base, kObjects + 4), 2000000);
-  if (!Heap(data) || Load32(base, data + 4 * Load32(base, g_branch_class + 4)) != g_branch_class) {
+  ScanBegin();
+  if (!Heap(data) || !Readable(data + 4 * Load32(base, g_branch_class + 4)) ||
+      Load32(base, data + 4 * Load32(base, g_branch_class + 4)) != g_branch_class) {
     return;  // not the list we know: leave takedown prompts alone
   }
   std::vector<Branch> found;
   for (uint32_t i = 0; i < count; ++i) {
     if ((i & 1023) == 0 && !Readable(data + 4 * i)) break;
     const uint32_t obj = Load32(base, data + 4 * i);
-    if (!Heap(obj) || !Readable(obj + 0x30)) continue;
-    if (Load32(base, obj + 0x30) == g_branch_class) {
-      found.push_back({obj, LoadFloat(base, obj + 0x88), Clock::time_point{}});
+    if (!Heap(obj) || !Readable(obj + 0x30) || !Readable(obj + 0x9C)) continue;
+    if (Load32(base, obj + 0x30) != g_branch_class) continue;
+    Branch b{obj, LoadFloat(base, obj + 0x88), Clock::time_point{}};
+    for (const Branch& old : g_branches) {
+      if (old.addr == obj) b = old;  // keep how long it's been moving
     }
+    found.push_back(b);
+  }
+  if (found.size() != g_branches.size() && REXCVAR_GET(qte_wasd_log)) {
+    REXLOG_INFO("qte: {} takedown branches", found.size());
   }
   g_branches = std::move(found);
+}
+
+void RefreshBranches(const PPCContext& ctx, uint8_t* base) {  // holds g_mutex
+  if (!g_branch_class) {
+    g_branch_class = FindObject(ctx, base, "BourneNative.BnTakedownBranch", 0);
+    if (!g_branch_class) return;
+  }
+  ScanBranches(base);
+  const auto now = Clock::now();
+  g_rescan_until = now + kRescanFor;
+  g_rescan_next = now + kRescan;
 }
 
 bool TakedownPromptUp(uint8_t* base) {  // holds g_mutex
   const auto now = Clock::now();
   bool up = false;
   for (Branch& b : g_branches) {
+    // A branch freed since the scan: skip it rather than read freed memory.
+    if (!ReadableNow(b.addr + 0x30) || !ReadableNow(b.addr + 0x9C) || Load32(base, b.addr + 0x30) != g_branch_class) {
+      continue;
+    }
     const float time = LoadFloat(base, b.addr + 0x88);
     if (time != b.last_time) {
       b.last_time = time;
@@ -381,6 +413,15 @@ void OnControllerState(uint8_t* base, uint32_t state) {
   if (REXCVAR_GET(qte_probe)) ProbeDiff(base);
   if (!REXCVAR_GET(qte_wasd) || !KeyboardOn()) return;
   std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_branch_class && g_rescan_until != Clock::time_point{}) {
+    const auto now = Clock::now();
+    if (now >= g_rescan_until) {
+      g_rescan_until = {};
+    } else if (now >= g_rescan_next) {
+      g_rescan_next = now + kRescan;
+      ScanBranches(base);
+    }
+  }
   const int64_t until = g_until.load();
   const bool qte = until && Clock::now().time_since_epoch().count() < until;
   static bool was_takedown = false;

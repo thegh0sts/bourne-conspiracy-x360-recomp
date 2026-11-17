@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### New
+- **Clock under the FPS counter** (native renderer): the PC's time to a tenth of a second, as the game log writes it, so a video recording can be matched to the log. Renderer patch `0007-overlay-clock.patch`, in the new SDK bundle **`tbc11`** (`SDK_BUNDLE` in `installer/build_installer.bat`); a reinstall replaces the bundle.
+
 ### Changed
 - **Frame rate note in the launcher** (Display tab): above 60 FPS is experimental and scripted scenes can stall; for smoother motion, keep 60 and use the graphics driver's frame generation. The README has the steps for NVIDIA Smooth Motion, AMD Fluid Motion Frames and Lossless Scaling ("Smoother than 60: driver frame generation").
 

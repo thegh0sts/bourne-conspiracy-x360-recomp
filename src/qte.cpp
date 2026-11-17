@@ -285,6 +285,8 @@ void ProbeDiff(uint8_t* base) {
   }
 }
 
+uint32_t g_player_controller = 0;  // the last object a BnPlayerController event ran on
+
 void WideSetup(const PPCContext& ctx, uint8_t* base, uint32_t controller) {  // holds g_mutex
   Probe& p = g_probe;
   p.wide.clear();
@@ -301,15 +303,15 @@ void WideSetup(const PPCContext& ctx, uint8_t* base, uint32_t controller) {  // 
                 std::chrono::duration_cast<std::chrono::seconds>(kWideFor).count());
   };
   add("controller", controller);
-  if (!p.pawn_class) p.pawn_class = FindObject(ctx, base, "BourneNative.BnPlayerPawn", 0);
-  if (p.pawn_class && Heap(controller)) {
-    for (uint32_t i = 0; i < 0x800; i += 4) {
-      const uint32_t v = Load32(base, controller + i);
-      if (Heap(v) && ReadableNow(v + 0x30) && Load32(base, v + 0x30) == p.pawn_class) {
-        REXLOG_INFO("qte_probe: controller +{:03X} is its pawn", i);
-        add("pawn", v);
-        break;
-      }
+  // A scripted fight takedown runs on the enemy, but Bourne takes part: watch his controller too.
+  if (g_player_controller && g_player_controller != controller) add("player", g_player_controller);
+  // Controller.Pawn is +0x1B0 (found on the player controller; the field is the engine's
+  // Controller class's, so an AI controller has it there too).
+  if (Heap(controller) && ReadableNow(controller + 0x1B4)) {
+    const uint32_t pawn = Load32(base, controller + 0x1B0);
+    if (Heap(pawn) && ReadableNow(pawn + 0x30)) {
+      REXLOG_INFO("qte_probe: pawn {:08X} {}", pawn, tbc::prompts::ObjectPathName(ctx, base, pawn));
+      add("pawn", pawn);
     }
   }
 }
@@ -440,18 +442,29 @@ void OnProcessEvent(const PPCContext& ctx, uint8_t* base, uint32_t function) {
         const std::string name = tbc::prompts::ObjectPathName(ctx, base, function);
         kind = name.ends_with(":OnBnQuickAction") ? 1
                : name.ends_with("OverTheShoulder.Takedown") ? 3
+               : name.ends_with(":OnPlayFightTakedown") ? 4
                : name.ends_with("Takedown") ? 2 : 0;
         it = kinds.emplace(function, kind).first;
       }
       kind = it->second;
+      static std::unordered_map<uint32_t, bool> player_fn;  // UFunction -> a BnPlayerController event
+      auto pit = player_fn.find(function);
+      if (pit == player_fn.end()) {
+        pit = player_fn.emplace(function, tbc::prompts::ObjectPathName(ctx, base, function)
+                                              .starts_with("BourneNative.BnPlayerController:")).first;
+      }
+      if (pit->second) g_player_controller = ctx.r3.u32;
     }
     if (kind) {
       REXLOG_INFO("qte_probe: {} on {:08X}: watching for 4 s",
-                  kind == 1 ? "QTE" : kind == 3 ? "shooting takedown" : "takedown", ctx.r3.u32);
+                  kind == 1 ? "QTE" : kind == 3 ? "shooting takedown" : kind == 4 ? "scripted fight takedown" : "takedown",
+                  ctx.r3.u32);
       std::lock_guard<std::mutex> lock(g_mutex);
       ProbeSetup(ctx, base);
       auto until = Clock::now() + std::chrono::seconds(4);
-      if (kind == 3) {
+      if (kind == 3 || kind == 4) {
+        // 4: a level's scripted fight takedown (Solomon's intro), run on the enemy's controller:
+        // above 60 fps it can start and never play, leaving the enemy stuck.
         WideSetup(ctx, base, ctx.r3.u32);
         until = Clock::now() + kWideFor;
       }

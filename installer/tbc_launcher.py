@@ -27,8 +27,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import launcher_text
 import tbc_config as cfg
 import xex_achievements
+from launcher_text import tr, tr_label
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
@@ -49,25 +51,6 @@ FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
 # The game's languages (the disc has these five): the runtime's user_language, an XLanguage id.
 LANGUAGES = {"English": 1, "German": 3, "French": 4, "Spanish": 5, "Italian": 6}
 
-# The Achievements tab's own words in each language (the achievements themselves come from the game).
-# A first piece of the launcher translation on the roadmap.
-ACHIEVEMENT_TEXT = {
-    "English": {"summary": "{got} of {total} unlocked    {score} of {max} G", "unlocked": "Unlocked {date}",
-                "locked": "Locked", "first_start": "Start the game once (to the title screen) and its achievements appear here.",
-                "months": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec"},
-    "German": {"summary": "{got} von {total} freigeschaltet    {score} von {max} G", "unlocked": "Freigeschaltet am {date}",
-               "locked": "Gesperrt", "first_start": "Starte das Spiel einmal (bis zum Titelbildschirm), dann erscheinen hier seine Erfolge.",
-               "months": "Jan. Feb. März Apr. Mai Juni Juli Aug. Sep. Okt. Nov. Dez."},
-    "French": {"summary": "{got} sur {total} débloqués    {score} sur {max} G", "unlocked": "Débloqué le {date}",
-               "locked": "Verrouillé", "first_start": "Lancez le jeu une fois (jusqu'à l'écran titre) et ses succès apparaîtront ici.",
-               "months": "janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc."},
-    "Spanish": {"summary": "{got} de {total} desbloqueados    {score} de {max} G", "unlocked": "Desbloqueado el {date}",
-                "locked": "Bloqueado", "first_start": "Inicia el juego una vez (hasta la pantalla de título) y sus logros aparecerán aquí.",
-                "months": "ene. feb. mar. abr. may. jun. jul. ago. sept. oct. nov. dic."},
-    "Italian": {"summary": "{got} di {total} sbloccati    {score} di {max} G", "unlocked": "Sbloccato il {date}",
-                "locked": "Bloccato", "first_start": "Avvia il gioco una volta (fino alla schermata del titolo) e i suoi obiettivi appariranno qui.",
-                "months": "gen feb mar apr mag giu lug ago set ott nov dic"},
-}
 # The settings screen's tabs, top to bottom.
 TABS = ("Game files", "Display", "Graphics", "Camera", "Controls", "Saves", "Achievements")
 
@@ -367,6 +350,8 @@ DEFAULTS = {
     "mouse_look_direct": True,
     "turn_speed": 100,
     "close_on_play": True,
+    # The launcher's own language (launcher_text.py): "same" as the game's, or en / de / fr / es / it.
+    "launcher_language": "same",
 }
 
 
@@ -631,7 +616,7 @@ def apply_game_config(game: Path, s) -> str:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
-        return "original game config"
+        return tr("original game config")
 
     files = cfg.decode(conf_bak.read_bytes())
     for short, section, key, value in edits:
@@ -672,7 +657,7 @@ def apply_game_config(game: Path, s) -> str:
             files[i] = (name, _edit_camera_freedom(body, wide_pitch, no_recenter, linear_stick))
     shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
     cfg.write(game, files)
-    return f"{len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free} config change(s)"
+    return tr("{n} config change(s)", n=len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free)
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -989,18 +974,37 @@ def link_button(parent, text, cmd):
 
 
 class SettingsView(tk.Frame):
-    def __init__(self, master, info, on_reinstall, on_locate):
+    def __init__(self, master, info, on_reinstall, on_locate, on_language=None, settings=None, saved=None):
+        """settings / saved: when rebuilt for another launcher language (on_language), the settings as they
+        stood (unsaved changes kept) and what was saved, so leaving still asks about the same changes."""
         super().__init__(master, bg=BG)
         self.info = info
-        self.s = load_settings()
+        self.s = dict(settings) if settings else load_settings()
+        self.on_language = on_language
         self.vars = {}
         self.combos = {}
+        self.combo_values = {}  # the settings' own (English) values behind each list's translated labels
         self.combo_labels = {}
 
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=28, pady=(20, 4))
         tk.Label(head, text=APP_NAME.upper(), font=("Segoe UI", 22, "bold"), fg=ACCENT, bg=BG).pack(side="left")
-        tk.Label(head, text=f"Launcher {VERSION}", font=("Segoe UI", 9), fg=DIM, bg=BG).pack(side="right", anchor="s")
+        # The launcher's language, top right: "Same as game" or one of the five, each in its own language.
+        choices = ["same"] + list(launcher_text.LANGUAGE_CODES)
+        names = [tr("Same as game")] + [launcher_text.NATIVE_NAMES[c] for c in launcher_text.LANGUAGE_CODES]
+        current = self.s.get("launcher_language", "same")
+        self.vars["launcher_language"] = tk.StringVar(value=current if current in choices else "same")
+        picker = ttk.Combobox(head, values=names, state="readonly", width=16)
+        picker.current(choices.index(self.vars["launcher_language"].get()))
+        picker.pack(side="right", anchor="s")
+        picker.bind("<<ComboboxSelected>>", lambda e: self._launcher_language(choices[picker.current()]))
+        tk.Label(head, text=tr("Launcher language"), font=("Segoe UI", 9), fg=DIM, bg=BG
+                 ).pack(side="right", anchor="s", padx=(16, 6), pady=(0, 2))
+        tk.Label(head, text=tr("Launcher {version}", version=VERSION), font=("Segoe UI", 9), fg=DIM, bg=BG
+                 ).pack(side="right", anchor="s", pady=(0, 2))
+        if launcher_text.language() != "en":
+            tk.Label(self, text=tr("Translated by AI, not yet checked by native speakers."), font=("Segoe UI", 8),
+                     fg=DIM, bg=BG).pack(anchor="e", padx=28)
         # Filled in by the update check, if a newer release is out.
         self.update_line = tk.Frame(self, bg=BG)
         self.update_line.pack(fill="x", padx=28)
@@ -1009,11 +1013,11 @@ class SettingsView(tk.Frame):
         if version_key(built_version(info)) < version_key(GAME_VERSION):
             box = tk.Frame(self, bg=ACCENT)
             box.pack(fill="x", padx=28, pady=(6, 2))
-            tk.Label(box, text=f"Your game was built with {built_version(info)}; this launcher is {VERSION}. "
-                               "Reinstall to rebuild the game with this version's changes.",
+            tk.Label(box, text=tr("Your game was built with {built}; this launcher is {version}. Reinstall to rebuild "
+                                  "the game with this version's changes.", built=built_version(info), version=VERSION),
                      font=("Segoe UI", 10, "bold"), fg="white", bg=ACCENT, wraplength=700, justify="left"
                      ).pack(side="left", padx=10, pady=8)
-            tk.Button(box, text="Reinstall now", command=on_reinstall, font=("Segoe UI", 10, "bold"),
+            tk.Button(box, text=tr("Reinstall now"), command=on_reinstall, font=("Segoe UI", 10, "bold"),
                       bd=0, padx=10, pady=4).pack(side="right", padx=10)
             self.needs_rebuild = True
         else:
@@ -1031,26 +1035,26 @@ class SettingsView(tk.Frame):
         self.pages_frame.pack(side="left", fill="both", expand=True)
         self.pages, self.tab_buttons = {}, {}
         for name in TABS:
-            b = tk.Button(nav, text=name, anchor="w", font=("Segoe UI", 11, "bold"), bd=0, padx=16, pady=9,
+            b = tk.Button(nav, text=tr(name), anchor="w", font=("Segoe UI", 11, "bold"), bd=0, padx=16, pady=9,
                           cursor="hand2", command=lambda n=name: self.show_tab(n))
             b.pack(fill="x", pady=(0, 2))
             self.tab_buttons[name] = b
 
         box = self._page("Game files")
-        tk.Label(box, text=f"Installed in {info['game']}", font=("Segoe UI", 9), fg=DIM, bg=PANEL,
+        tk.Label(box, text=tr("Installed in {folder}", folder=info['game']), font=("Segoe UI", 9), fg=DIM, bg=PANEL,
                  anchor="w").grid(row=0, column=0, columnspan=2, sticky="w")
-        self._link(box, "Reinstall from a disc image...", on_reinstall).grid(row=1, column=0, sticky="w", pady=(10, 4))
-        self._link(box, "Use a different install...", on_locate).grid(row=2, column=0, sticky="w")
+        self._link(box, tr("Reinstall from a disc image..."), on_reinstall).grid(row=1, column=0, sticky="w", pady=(10, 4))
+        self._link(box, tr("Use a different install..."), on_locate).grid(row=2, column=0, sticky="w")
         self._subheading(box, 3, "Help")
         links = tk.Frame(box, bg=PANEL)
         links.grid(row=4, column=0, columnspan=2, sticky="w")
-        self._link(links, "Open logs", self.open_logs).pack(side="left")
-        self._link(links, "Save crash report", self.crash_report).pack(side="left", padx=8)
-        self._link(links, "Check for updates", lambda: self.check_updates(manual=True)).pack(side="left")
+        self._link(links, tr("Open logs"), self.open_logs).pack(side="left")
+        self._link(links, tr("Save crash report"), self.crash_report).pack(side="left", padx=8)
+        self._link(links, tr("Check for updates"), lambda: self.check_updates(manual=True)).pack(side="left")
         self._subheading(box, 5, "Game")
-        self._combo(box, 6, "language", "Language", list(LANGUAGES))
-        tk.Label(box, text="The game's voices, subtitles and text, all in this language (each language has only its "
-                           "own voices and subtitles). The achievement names follow it too.",
+        self._combo(box, 6, "language", "Game language", list(LANGUAGES))
+        tk.Label(box, text=tr("The game's voices, subtitles and text, all in this language (each language has only "
+                              "its own voices and subtitles). The achievement names follow it too."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
                  ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
@@ -1060,13 +1064,13 @@ class SettingsView(tk.Frame):
         self._combo(box, 2, "resolution", "Output resolution", self._resolutions())
         self._combo(box, 4, "render_scale", "Render resolution (sharper, slower)",
                     render_scales(self.s["resolution"]))
-        tk.Label(box, text="Ultrawide outputs are experimental and need the native renderer.",
+        tk.Label(box, text=tr("Ultrawide outputs are experimental and need the native renderer."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=3, column=0, columnspan=2, sticky="w")
         self.vars["renderer"].trace_add("write", lambda *_: self._display_changed())
         self.vars["resolution"].trace_add("write", lambda *_: self._display_changed())
-        # The Achievements tab follows the launcher's language: rebuilt when it changes.
-        self.vars["language"].trace_add(
-            "write", lambda *_: hasattr(self, "achievements_box") and self.refresh_achievements())
+        # The achievements' names follow the game's language: rebuilt when it changes. With the launcher's
+        # language "Same as game", the whole launcher follows it too.
+        self.vars["language"].trace_add("write", lambda *_: self._game_language_changed())
         self._combo(box, 5, "render_path", "Graphics path", RENDER_PATHS)
         self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
         self._combo(box, 7, "aa", "Anti-aliasing", AA)
@@ -1074,17 +1078,17 @@ class SettingsView(tk.Frame):
         self._combo(box, 8, "fps", "Frame rate", FPS)
         # Above 60, scripted scenes can stall (README, Known issues); the driver's frame generation
         # on top of 60 is the smooth option until that's fixed.
-        tk.Label(box, text="Above 60 is experimental: some scripted scenes can stall. For smoother motion, keep 60 "
-                           "and turn on your graphics driver's frame generation (NVIDIA Smooth Motion, AMD Fluid "
-                           "Motion Frames); see the README.",
+        tk.Label(box, text=tr("Above 60 is experimental: some scripted scenes can stall. For smoother motion, keep 60 "
+                              "and turn on your graphics driver's frame generation (NVIDIA Smooth Motion, AMD Fluid "
+                              "Motion Frames); see the README."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
                  ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
         self._combo(box, 10, "fps_counter", "FPS counter", FPS_COUNTER)
         self._checks(box, 11, [("vsync", "VSync (off: may tear, can be faster)"),
                                ("original_pacing", "Original Xbox 360 frame pacing (slower)")])
         self._check(box, 12, "hide_achievements", "Hide achievement pop-ups")
-        tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
-                           "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
+        tk.Label(box, text=tr("Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
+                              "BSD 3-Clause)."), font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
                  ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         box = self._page("Graphics")
@@ -1093,7 +1097,8 @@ class SettingsView(tk.Frame):
                                            ("distortion", "Heat haze / distortion"))):
             self._check(box, row, key, text)
         self._slider(box, 5, "brightness", "Brightness (%)", 50, 200, 5)
-        tk.Label(box, text="Brightness is for the native renderer (Xenos ignores it); black and white stay as they are.",
+        tk.Label(box, text=tr("Brightness is for the native renderer (Xenos ignores it); black and white stay as they "
+                              "are."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w").grid(row=6, column=0, columnspan=2, sticky="w")
 
         box = self._page("Camera")
@@ -1106,9 +1111,9 @@ class SettingsView(tk.Frame):
         line = tk.Frame(box, bg=PANEL)
         line.grid(row=0, column=0, columnspan=2, sticky="w")
         v = self.vars["kbm"] = tk.BooleanVar(value=self.s["kbm"])
-        tk.Checkbutton(line, text="Keyboard and mouse", variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
+        tk.Checkbutton(line, text=tr("Keyboard and mouse"), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL,
                        selectcolor=PANEL, activebackground=PANEL, activeforeground=FG).pack(side="left")
-        self._link(line, "Key binds", self.show_keys).pack(side="left", padx=14, pady=4)
+        self._link(line, tr("Key binds"), self.show_keys).pack(side="left", padx=14, pady=4)
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
         self._slider(box, 3, "vibration_strength", "Controller vibration (%, 0 = off)", 0, 100, 5)
@@ -1119,23 +1124,23 @@ class SettingsView(tk.Frame):
                           ("mouse_look_direct", "Direct (1:1)"),
                           ("kbm_aim_assist", "Aim assist")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
-            tk.Checkbutton(line2, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
+            tk.Checkbutton(line2, text=tr(text), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
         self._slider(box, 6, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
         self._slider(box, 7, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
         self._slider(box, 8, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
-        tk.Label(box, text="Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
-                           "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
-                           "Aim assist: the game's sticky aim, made for a controller; off by default with keyboard "
-                           "and mouse (for a controller used alongside too).",
+        tk.Label(box, text=tr("Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
+                              "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
+                              "Aim assist: the game's sticky aim, made for a controller; off by default with keyboard "
+                              "and mouse (for a controller used alongside too)."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
                  ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
         box = self._page("Saves")
         line = tk.Frame(box, bg=PANEL)
         line.grid(row=0, column=0, columnspan=2, sticky="w")
-        self._link(line, "Open saves folder", self.open_saves).pack(side="left")
-        self._link(line, "Back up saves", self.backup_saves).pack(side="left", padx=8)
-        self._link(line, "Refresh", self.refresh_saves).pack(side="left")
+        self._link(line, tr("Open saves folder"), self.open_saves).pack(side="left")
+        self._link(line, tr("Back up saves"), self.backup_saves).pack(side="left", padx=8)
+        self._link(line, tr("Refresh"), self.refresh_saves).pack(side="left")
         self.saves_label = tk.Label(box, text="", font=("Segoe UI", 9), fg=DIM, bg=PANEL, anchor="w", justify="left",
                                     wraplength=600)
         self.saves_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 6))
@@ -1149,7 +1154,7 @@ class SettingsView(tk.Frame):
                                        columns=("name", "modified", "size", "folder"))
         for col, text, width in (("name", "Save", 220), ("modified", "Last saved", 150), ("size", "Size", 70),
                                  ("folder", "Folder", 160)):
-            self.saves_tree.heading(col, text=text, anchor="w")
+            self.saves_tree.heading(col, text=tr(text, "column"), anchor="w")
             self.saves_tree.column(col, width=width, anchor="w", stretch=col == "name")
         bar = ttk.Scrollbar(tree_box, orient="vertical", command=self.saves_tree.yview)
         self.saves_tree.configure(yscrollcommand=bar.set)
@@ -1164,25 +1169,26 @@ class SettingsView(tk.Frame):
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(side="bottom", fill="x", padx=28, pady=18)
-        tk.Button(foot, text="Play", width=16, command=self.play, font=("Segoe UI", 13, "bold"), bg=ACCENT,
+        tk.Button(foot, text=tr("Play"), width=16, command=self.play, font=("Segoe UI", 13, "bold"), bg=ACCENT,
                   fg="white", activebackground="#e0203f", activeforeground="white", bd=0, pady=8).pack(side="left")
-        tk.Button(foot, text="Save", width=10, command=self.save, font=("Segoe UI", 12), bd=0, pady=8
+        tk.Button(foot, text=tr("Save"), width=10, command=self.save, font=("Segoe UI", 12), bd=0, pady=8
                   ).pack(side="left", padx=(10, 0))
-        tk.Button(foot, text="Quit", width=10, command=self.quit_launcher, font=("Segoe UI", 12),
+        tk.Button(foot, text=tr("Quit"), width=10, command=self.quit_launcher, font=("Segoe UI", 12),
                   bd=0, pady=8).pack(side="left", padx=10)
-        tk.Button(foot, text="Defaults", width=10, command=self.reset, font=("Segoe UI", 11),
+        tk.Button(foot, text=tr("Defaults"), width=10, command=self.reset, font=("Segoe UI", 11),
                   bd=0, pady=6).pack(side="right")
         self.vars["close_on_play"] = tk.BooleanVar(value=self.s["close_on_play"])
-        tk.Checkbutton(foot, text="Close launcher when the game starts", variable=self.vars["close_on_play"],
+        tk.Checkbutton(foot, text=tr("Close launcher when the game starts"), variable=self.vars["close_on_play"],
                        font=("Segoe UI", 9), fg=DIM, bg=BG, selectcolor=BG, activebackground=BG,
                        activeforeground=FG).pack(side="right", padx=10)
 
-        self.status = tk.StringVar(value="Experimental options may cause glitches. "
-                                         "Set them back to default to restore the original game.")
+        self.status = tk.StringVar(value=tr("Experimental options may cause glitches. Set them back to default to "
+                                            "restore the original game."))
         tk.Label(self, textvariable=self.status, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=700,
                  justify="left").pack(side="bottom", anchor="w", padx=28)
         body.pack(fill="both", expand=True, padx=28, pady=(14, 4))
-        self.saved = self._snapshot()  # what's saved, to ask about unsaved changes on quitting
+        # What's saved, to ask about unsaved changes on quitting (kept through a language switch).
+        self.saved = saved if saved is not None else self._snapshot()
 
     # widgets ------------------------------------------------------------
     def _page(self, title):
@@ -1196,7 +1202,7 @@ class SettingsView(tk.Frame):
         return box
 
     def _subheading(self, box, row, text):
-        tk.Label(box, text=text, font=("Segoe UI", 9, "bold"), fg=DIM, bg=PANEL
+        tk.Label(box, text=tr(text), font=("Segoe UI", 9, "bold"), fg=DIM, bg=PANEL
                  ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(14, 4))
 
     def show_tab(self, name):
@@ -1216,7 +1222,7 @@ class SettingsView(tk.Frame):
 
     def _check(self, box, row, key, text):
         v = self.vars[key] = tk.BooleanVar(value=self.s[key])
-        tk.Checkbutton(box, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
+        tk.Checkbutton(box, text=tr(text), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                        activebackground=PANEL, activeforeground=FG, anchor="w"
                        ).grid(row=row, column=0, columnspan=2, sticky="w")
 
@@ -1226,17 +1232,63 @@ class SettingsView(tk.Frame):
         line.grid(row=row, column=0, columnspan=2, sticky="w")
         for key, text in items:
             v = self.vars[key] = tk.BooleanVar(value=self.s[key])
-            tk.Checkbutton(line, text=text, variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
+            tk.Checkbutton(line, text=tr(text), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 18))
 
     def _combo(self, box, row, key, text, values):
+        """A list setting. Its variable holds the setting's own (English) value; the list shows each in the
+        launcher's language (tr_label), so the settings file and the game's config don't change with it."""
         v = self.vars[key] = tk.StringVar(value=self.s[key] if self.s[key] in values else DEFAULTS[key])
-        label = tk.Label(box, text=text, font=("Segoe UI", 10), fg=FG, bg=PANEL)
+        label = tk.Label(box, text=tr(text), font=("Segoe UI", 10), fg=FG, bg=PANEL)
         label.grid(row=row, column=0, sticky="w", pady=2)
-        combo = ttk.Combobox(box, textvariable=v, values=values, state="readonly", width=32)
+        combo = ttk.Combobox(box, state="readonly", width=32)
         combo.grid(row=row, column=1, sticky="e", pady=2)
         self.combos[key] = combo
         self.combo_labels[key] = label
+        combo.bind("<<ComboboxSelected>>", lambda e, k=key: self._combo_picked(k))
+        v.trace_add("write", lambda *_, k=key: self._combo_show(k))
+        self._set_combo_values(key, values)
+
+    def _set_combo_values(self, key, values):
+        self.combo_values[key] = list(values)
+        self.combos[key]["values"] = [tr_label(x) for x in values]
+        self._combo_show(key)
+
+    def _combo_show(self, key):
+        if key in self.combos:
+            self.combos[key].set(tr_label(self.vars[key].get()))
+
+    def _combo_picked(self, key):
+        i = self.combos[key].current()
+        if 0 <= i < len(self.combo_values[key]):
+            self.vars[key].set(self.combo_values[key][i])
+
+    def _launcher_language(self, choice):
+        """A launcher language picked: saved at once on its own (it isn't one of the settings Save is about,
+        and other unsaved changes stay unsaved), then the launcher is drawn again in it, with the unsaved
+        changes and the open tab kept."""
+        self.vars["launcher_language"].set(choice)
+        try:
+            stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = dict(DEFAULTS)
+        stored["launcher_language"] = choice
+        try:
+            save_settings(stored)
+        except OSError:
+            pass
+        saved = json.loads(self.saved)
+        saved["launcher_language"] = choice
+        self.saved = json.dumps(saved, sort_keys=True, default=str)
+        if self.on_language:
+            self.after_idle(self.on_language, self.collect(), self.saved)
+
+    def _game_language_changed(self):
+        if self.vars.get("launcher_language") and self.vars["launcher_language"].get() == "same" and self.on_language \
+                and launcher_text.resolve("same", self.vars["language"].get()) != launcher_text.language():
+            self.after_idle(self.on_language, self.collect(), self.saved)
+        elif hasattr(self, "achievements_box"):
+            self.refresh_achievements()
 
     def _resolutions(self):
         """Output resolutions: the ultrawide ones only with the native renderer."""
@@ -1258,12 +1310,12 @@ class SettingsView(tk.Frame):
                     else:
                         widget.grid_remove()
         resolutions = self._resolutions()
-        self.combos["resolution"]["values"] = resolutions
+        self._set_combo_values("resolution", resolutions)
         if self.vars["resolution"].get() not in resolutions:
             self.vars["resolution"].set("1440p")  # an ultrawide output with Xenos: nearest 16:9; re-enters
             return
         resolution = self.vars["resolution"].get()
-        self.combos["render_scale"]["values"] = render_scales(resolution)
+        self._set_combo_values("render_scale", render_scales(resolution))
         current = self.vars["render_scale"].get()
         wanted = matching_scale(resolution, current)
         if wanted != current:
@@ -1271,7 +1323,7 @@ class SettingsView(tk.Frame):
 
     def _slider(self, box, row, key, text, lo, hi, step):
         v = self.vars[key] = tk.IntVar(value=int(self.s[key]))
-        tk.Label(box, text=text, font=("Segoe UI", 10), fg=FG, bg=PANEL).grid(row=row, column=0, sticky="w")
+        tk.Label(box, text=tr(text), font=("Segoe UI", 10), fg=FG, bg=PANEL).grid(row=row, column=0, sticky="w")
         tk.Scale(box, variable=v, from_=lo, to=hi, resolution=step, orient="horizontal", length=230,
                  bg=PANEL, fg=FG, troughcolor="#2a2f38", highlightthickness=0, bd=0, activebackground=ACCENT
                  ).grid(row=row, column=1, sticky="e")
@@ -1284,7 +1336,7 @@ class SettingsView(tk.Frame):
 
     def reset(self):
         for k, v in self.vars.items():
-            if k != "render_scale":
+            if k not in ("render_scale", "launcher_language"):  # Defaults keeps the launcher's language
                 v.set(DEFAULTS[k])
         self.vars["render_scale"].set(DEFAULTS["render_scale"])
 
@@ -1334,7 +1386,7 @@ class SettingsView(tk.Frame):
         result = {}
         threading.Thread(target=lambda: result.update(found=latest_release(), done=True), daemon=True).start()
         if manual:
-            self.status.set("Checking for updates...")
+            self.status.set(tr("Checking for updates..."))
         self.after(300, self._poll_update, result, manual, 40)
 
     def _poll_update(self, result, manual, tries):
@@ -1346,16 +1398,17 @@ class SettingsView(tk.Frame):
                 if tries > 0:
                     self.after(300, self._poll_update, result, manual, tries - 1)
                 elif manual:
-                    self.status.set("Couldn't reach GitHub to check for updates.")
+                    self.status.set(tr("Couldn't reach GitHub to check for updates."))
                 return
             found = result.get("found")
             if found and version_key(found[0]) > version_key(VERSION):
                 self._show_update(*found)
                 if manual:
-                    self.status.set(f"Version {found[0].lstrip('vV')} is out: \"Download and update\" above.")
+                    self.status.set(tr("Version {version} is out: \"Download and update\" above.",
+                                       version=found[0].lstrip('vV')))
             elif manual:
-                self.status.set(f"You have the latest version ({VERSION})." if found
-                                else "Couldn't reach GitHub to check for updates.")
+                self.status.set(tr("You have the latest version ({version}).", version=VERSION) if found
+                                else tr("Couldn't reach GitHub to check for updates."))
         except tk.TclError:  # the view was replaced (reinstall) meanwhile
             pass
 
@@ -1364,12 +1417,13 @@ class SettingsView(tk.Frame):
             return
         self._update_shown = True
         version = tag.lstrip("vV")
-        tk.Label(self.update_line, text=f"Update available: {version} (you have {VERSION}).",
+        tk.Label(self.update_line, text=tr("Update available: {version} (you have {current}).", version=version,
+                                           current=VERSION),
                  font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=BG).pack(side="left")
         if exe_url:
-            tk.Button(self.update_line, text="Download and update", font=("Segoe UI", 10, "bold"), bd=0, padx=8,
+            tk.Button(self.update_line, text=tr("Download and update"), font=("Segoe UI", 10, "bold"), bd=0, padx=8,
                       command=lambda: self.download_update(version, exe_url)).pack(side="left", padx=10)
-        self._link_bg(self.update_line, "What's new", lambda: webbrowser.open(url)).pack(side="left")
+        self._link_bg(self.update_line, tr("What's new"), lambda: webbrowser.open(url)).pack(side="left")
 
     def _link_bg(self, parent, text, cmd):
         return self._link(parent, text, cmd)
@@ -1396,30 +1450,33 @@ class SettingsView(tk.Frame):
                 return
             if not state["done"]:
                 f = state["frac"]
-                self.status.set(f"Downloading {version}..." + (f" {int(f * 100)}%" if f is not None else ""))
+                self.status.set(tr("Downloading {version}...", version=version) +
+                                (f" {int(f * 100)}%" if f is not None else ""))
                 self.after(250, poll)
                 return
             if state["error"]:
-                self.status.set(f"Download failed ({state['error']}). Use \"What's new\" to download it yourself.")
+                self.status.set(tr("Download failed ({error}). Use \"What's new\" to download it yourself.",
+                                   error=state['error']))
                 return
-            self.status.set(f"Downloaded {version} to {dest.parent}.")
-            if messagebox.askyesno("Update", f"{version} is downloaded.\n\nStart it now? This launcher closes, "
-                                             "and the new one asks you to reinstall the game (pick your disc "
-                                             "image) so the game is rebuilt with the update."):
+            self.status.set(tr("Downloaded {version} to {folder}.", version=version, folder=dest.parent))
+            if messagebox.askyesno(tr("Update"), tr("{version} is downloaded.\n\nStart it now? This launcher closes, "
+                                                    "and the new one asks you to reinstall the game (pick your disc "
+                                                    "image) so the game is rebuilt with the update.",
+                                                    version=version)):
                 try:
                     subprocess.Popen([str(dest)], cwd=str(dest.parent))
                 except OSError as e:
-                    messagebox.showerror("Update", f"Couldn't start {dest}: {e}")
+                    messagebox.showerror(tr("Update"), tr("Couldn't start {file}: {error}", file=dest, error=e))
                     return
                 self.winfo_toplevel().destroy()
 
         threading.Thread(target=work, daemon=True).start()
-        self.status.set(f"Downloading {version}...")
+        self.status.set(tr("Downloading {version}...", version=version))
         self.after(250, poll)
 
     def show_keys(self):
         win = tk.Toplevel(self)
-        win.title("Keyboard and mouse")
+        win.title(tr("Keyboard and mouse"))
         win.configure(bg=BG)
         win.transient(self.winfo_toplevel())
         win.resizable(False, False)
@@ -1427,23 +1484,23 @@ class SettingsView(tk.Frame):
         body.pack(fill="both", expand=True, padx=22, pady=(16, 8))
         row = 0
         for title, keys in CONTROLS:
-            tk.Label(body, text=title, font=("Segoe UI", 11, "bold"), fg=ACCENT, bg=BG, anchor="w"
+            tk.Label(body, text=tr(title), font=("Segoe UI", 11, "bold"), fg=ACCENT, bg=BG, anchor="w"
                      ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10 if row else 0, 2))
             row += 1
             for key, action in keys:
-                tk.Label(body, text=key, font=("Segoe UI", 10, "bold"), fg=FG, bg=BG, anchor="w"
+                tk.Label(body, text=tr(key), font=("Segoe UI", 10, "bold"), fg=FG, bg=BG, anchor="w"
                          ).grid(row=row, column=0, sticky="w", padx=(0, 18))
-                tk.Label(body, text=action, font=("Segoe UI", 10), fg=FG, bg=BG, anchor="w"
+                tk.Label(body, text=tr(action), font=("Segoe UI", 10), fg=FG, bg=BG, anchor="w"
                          ).grid(row=row, column=1, sticky="w")
                 row += 1
-        tk.Label(body, text="The layout is fixed: the prompts and the key images in the game are drawn for it.",
+        tk.Label(body, text=tr("The layout is fixed: the prompts and the key images in the game are drawn for it."),
                  font=("Segoe UI", 8), fg=DIM, bg=BG, anchor="w").grid(row=row, column=0, columnspan=2,
                                                                        sticky="w", pady=(12, 0))
         foot = tk.Frame(win, bg=BG)
         foot.pack(fill="x", padx=22, pady=(4, 16))
-        tk.Button(foot, text="Close", width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
+        tk.Button(foot, text=tr("Close"), width=10, command=win.destroy, font=("Segoe UI", 10), bd=0, pady=4
                   ).pack(side="right")
-        link_button(foot, "Full page with notes", lambda: webbrowser.open(CONTROLS_URL)).pack(side="left")
+        link_button(foot, tr("Full page with notes"), lambda: webbrowser.open(CONTROLS_URL)).pack(side="left")
         win.bind("<Escape>", lambda e: win.destroy())
         win.grab_set()
         win.focus_set()
@@ -1453,7 +1510,7 @@ class SettingsView(tk.Frame):
         try:
             os.startfile(str(folder))
         except OSError as e:
-            messagebox.showerror("Open logs", f"Couldn't open {folder}: {e}")
+            messagebox.showerror(tr("Open logs"), tr("Couldn't open {folder}: {error}", folder=folder, error=e))
 
     def open_saves(self):
         folder = user_data_dir(self.info)
@@ -1461,17 +1518,18 @@ class SettingsView(tk.Frame):
             folder.mkdir(parents=True, exist_ok=True)
             os.startfile(str(folder))
         except OSError as e:
-            messagebox.showerror("Saves", f"Couldn't open {folder}: {e}")
+            messagebox.showerror(tr("Saves"), tr("Couldn't open {folder}: {error}", folder=folder, error=e))
 
     def backup_saves(self):
         try:
             out = backup_saves(self.info)
         except (OSError, zipfile.BadZipFile) as e:
-            messagebox.showerror("Back up saves", f"Couldn't back up the saves: {e}")
+            messagebox.showerror(tr("Back up saves"), tr("Couldn't back up the saves: {error}", error=e))
             return
-        messagebox.showinfo("Back up saves", f"Saved {out.name} to {out.parent}.\n\n"
-                                             "To restore it, close the game and unzip it into "
-                                             f"{out.parent.parent}, replacing the files there.")
+        messagebox.showinfo(tr("Back up saves"), tr("Saved {file} to {folder}.\n\nTo restore it, close the game and "
+                                                    "unzip it into {saves folder}, replacing the files there.")
+                            .replace("{file}", out.name).replace("{folder}", str(out.parent))
+                            .replace("{saves folder}", str(out.parent.parent)))
         try:
             os.startfile(str(out.parent))
         except OSError:
@@ -1487,11 +1545,19 @@ class SettingsView(tk.Frame):
             iid = str(i)
             self.save_paths[iid] = save["path"]
             self.saves_tree.insert("", "end", iid=iid, values=(
-                save["name"], time.strftime("%d %b %Y  %H:%M", time.localtime(save["modified"])),
-                f"{save['size'] / 1024:.0f} KB", save["path"].name))
-        where = f"Saves folder: {root}"
-        self.saves_label.configure(text=(f"{len(saves)} saved game{'s' if len(saves) != 1 else ''}. " if saves else
-                                         "No saved games yet. ") + where + "\nDouble-click a save to open its folder.")
+                save["name"], self._date(time.localtime(save["modified"])) +
+                time.strftime("  %H:%M", time.localtime(save["modified"])),
+                tr("{n} KB", n=f"{save['size'] / 1024:.0f}"), save["path"].name))
+        where = tr("Saves folder: {folder}", folder=root)
+        count = (tr("{n} saved game. ", n=1) if len(saves) == 1 else tr("{n} saved games. ", n=len(saves))) if saves \
+            else tr("No saved games yet. ")
+        self.saves_label.configure(text=count + where + "\n" + tr("Double-click a save to open its folder."))
+
+    @staticmethod
+    def _date(t):
+        """A day in the launcher's language: 17 Nov 2026 (the month's short name from the translations)."""
+        months = tr("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec").split()
+        return f"{t.tm_mday} {months[t.tm_mon - 1]} {t.tm_year}"
 
     def open_save_folder(self):
         sel = self.saves_tree.selection()
@@ -1499,7 +1565,7 @@ class SettingsView(tk.Frame):
             try:
                 os.startfile(str(self.save_paths[sel[0]]))
             except OSError as e:
-                messagebox.showerror("Saves", f"Couldn't open the folder: {e}")
+                messagebox.showerror(tr("Saves"), tr("Couldn't open the folder: {error}", error=e))
 
     def refresh_achievements(self):
         """The Achievements tab: every achievement, unlocked first (newest first), with icon, description,
@@ -1508,21 +1574,21 @@ class SettingsView(tk.Frame):
         for child in box.winfo_children():
             child.destroy()
         try:
-            language = self.vars["language"].get()
-            text = ACHIEVEMENT_TEXT.get(language, ACHIEVEMENT_TEXT["English"])
+            language = self.vars["language"].get()  # the achievements' names: the game's language
             items = load_achievements(self.info, LANGUAGES.get(language, 1))
         except (OSError, ValueError, KeyError) as e:
-            tk.Label(box, text=f"Couldn't read the achievements: {e}", font=("Segoe UI", 10), fg=FG, bg=PANEL
+            tk.Label(box, text=tr("Couldn't read the achievements: {error}", error=e), font=("Segoe UI", 10), fg=FG, bg=PANEL
                      ).pack(anchor="w")
             return
         if not items:
-            tk.Label(box, text=text["first_start"],
+            tk.Label(box, text=tr("Start the game once (to the title screen) and its achievements appear here."),
                      font=("Segoe UI", 10), fg=FG, bg=PANEL).pack(anchor="w")
             return
         got = [a for a in items if a["unlocked"]]
         score = sum(int(a["gamerscore"]) for a in got)
         total = sum(int(a["gamerscore"]) for a in items)
-        tk.Label(box, text=text["summary"].format(got=len(got), total=len(items), score=score, max=total), font=("Segoe UI", 11, "bold"),
+        tk.Label(box, text=tr("{got} of {total} unlocked    {score} of {max} G", got=len(got), total=len(items),
+                              score=score, max=total), font=("Segoe UI", 11, "bold"),
                  fg=FG, bg=PANEL, anchor="w").pack(fill="x", pady=(0, 8))
         outer = tk.Frame(box, bg=PANEL)
         outer.pack(fill="both", expand=True)
@@ -1565,11 +1631,9 @@ class SettingsView(tk.Frame):
             tk.Label(row, text=desc, font=("Segoe UI", 9), fg=DIM, bg=bg, anchor="w", justify="left",
                      wraplength=420).grid(row=1, column=1, sticky="w")
             if a["unlocked"]:
-                u = a["unlocked"]
-                month = text["months"].split()[u.tm_mon - 1]
-                when = text["unlocked"].format(date=f"{u.tm_mday} {month} {u.tm_year}")
+                when = tr("Unlocked {date}", date=self._date(a["unlocked"]))
             else:
-                when = text["locked"]
+                when = tr("Locked")
             tk.Label(row, text=f"{a['gamerscore']} G", font=("Segoe UI", 10, "bold"), fg=ACCENT if a["unlocked"] else DIM,
                      bg=bg).grid(row=0, column=2, sticky="e", padx=(10, 0))
             tk.Label(row, text=when, font=("Segoe UI", 8), fg=DIM, bg=bg).grid(row=1, column=2, sticky="e", padx=(10, 0))
@@ -1579,17 +1643,17 @@ class SettingsView(tk.Frame):
         try:
             out = save_crash_report(self.info)
         except OSError as e:
-            messagebox.showerror("Crash report", f"Couldn't save the report: {e}")
+            messagebox.showerror(tr("Crash report"), tr("Couldn't save the report: {error}", error=e))
             return
-        messagebox.showinfo("Crash report", f"Saved {out.name} to {out.parent}.\n\n"
-                                            "Attach it when you report a problem. It contains the game log, "
-                                            "your launcher settings and any crash dump (no game files).")
+        messagebox.showinfo(tr("Crash report"), tr("Saved {file} to {folder}.\n\nAttach it when you report a problem. "
+                                                   "It contains the game log, your launcher settings and any crash "
+                                                   "dump (no game files).", file=out.name, folder=out.parent))
 
     def save(self):
         """Saves the settings without starting the game (Play saves them too)."""
         save_settings(self.collect())
         self.saved = self._snapshot()
-        self.status.set("Settings saved.")
+        self.status.set(tr("Settings saved."))
 
     def _snapshot(self) -> str:
         """The settings as they stand, without the open tab (switching tabs isn't a change worth asking about)."""
@@ -1602,7 +1666,7 @@ class SettingsView(tk.Frame):
         """Asks to save changed settings before the launcher closes; False to stay open."""
         if not self.unsaved():
             return True
-        answer = messagebox.askyesnocancel("Quit", "Save your changed settings before quitting?")
+        answer = messagebox.askyesnocancel(tr("Quit"), tr("Save your changed settings before quitting?"))
         if answer is None:
             return False
         if answer:
@@ -1615,8 +1679,9 @@ class SettingsView(tk.Frame):
 
     def play(self):
         if self.needs_rebuild and not messagebox.askyesno(
-                "Play", f"The game hasn't been rebuilt for {VERSION} yet, so this version's changes aren't "
-                        "in it, and its new settings may not work.\n\nPlay anyway? (Reinstall now to rebuild it.)"):
+                tr("Play"), tr("The game hasn't been rebuilt for {version} yet, so this version's changes aren't "
+                               "in it, and its new settings may not work.\n\nPlay anyway? (Reinstall now to rebuild "
+                               "it.)", version=VERSION)):
             return
         s = self.collect()
         save_settings(s)
@@ -1625,30 +1690,31 @@ class SettingsView(tk.Frame):
         try:
             summary = apply_game_config(game, s)
         except PermissionError:
-            messagebox.showerror("Play", "Couldn't update the game's config files. Is the game already running?")
+            messagebox.showerror(tr("Play"), tr("Couldn't update the game's config files. Is the game already running?"))
             return
         except Exception as e:  # keep the launcher usable even if config editing fails
-            if not messagebox.askyesno("Play", f"Couldn't apply the config settings ({e}).\n\n"
-                                               "Start the game with its original config instead?"):
+            if not messagebox.askyesno(tr("Play"), tr("Couldn't apply the config settings ({error}).\n\nStart the "
+                                                      "game with its original config instead?", error=e)):
                 return
-            summary = "config unchanged"
+            summary = tr("config unchanged")
         try:
             apply_intro_skip(game, False)  # undo the removed "skip intro" option, if it was used
         except OSError as e:
-            messagebox.showwarning("Play", f"Couldn't change the intro movies ({e}). Starting anyway.")
+            messagebox.showwarning(tr("Play"), tr("Couldn't change the intro movies ({error}). Starting anyway.",
+                                                  error=e))
         log = Path(self.info.get("root", exe.parent)) / "game.log"
         args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
         args += user_data_args(self.info, exe)
         try:
             if RENDERER_PLUGIN.get(s.get("renderer")) == "native" and not any(exe.parent.glob("rexgpu-native*.dll")):
-                messagebox.showwarning("Play", "The native renderer isn't installed (this build's SDK "
-                                               "wasn't made with it). Starting with Xenos instead.")
+                messagebox.showwarning(tr("Play"), tr("The native renderer isn't installed (this build's SDK wasn't "
+                                                      "made with it). Starting with Xenos instead."))
                 args[args.index("native")] = "xenos"
             start_game(args, exe.parent, game_env(s))
         except OSError as e:
-            messagebox.showerror("Play", f"Couldn't start the game: {e}")
+            messagebox.showerror(tr("Play"), tr("Couldn't start the game: {error}", error=e))
             return
-        self.status.set(f"Started with {summary}.")
+        self.status.set(tr("Started with {summary}.", summary=summary))
         if s["close_on_play"]:
             self.after(800, self.winfo_toplevel().destroy)
 
@@ -1660,6 +1726,9 @@ class Launcher:
         self.root.geometry(f"980x{height}")
         self.root.minsize(900, 660)
         self.view = None
+        s = load_settings()
+        launcher_text.set_language(launcher_text.resolve(s.get("launcher_language", "same"),
+                                                         s.get("language") if load_install() else None))
         info = load_install()
         if info:
             self.show_settings(info)
@@ -1673,34 +1742,58 @@ class Launcher:
         self.view = view
         view.pack(fill="both", expand=True)
 
-    def show_settings(self, info):
-        self._swap(SettingsView(self.root, info, on_reinstall=lambda: self.show_install(), on_locate=self.locate))
+    def show_settings(self, info, settings=None, saved=None):
+        self._swap(SettingsView(self.root, info, on_reinstall=lambda: self.show_install(), on_locate=self.locate,
+                                on_language=lambda s, done: self._relabel(info, s, done), settings=settings,
+                                saved=saved))
 
-    def show_install(self, first_time=False):
+    def _relabel(self, info, s, saved):
+        """The launcher in another language: the settings screen drawn again with the settings as they stood."""
+        launcher_text.set_language(launcher_text.resolve(s.get("launcher_language", "same"), s.get("language")))
+        self.show_settings(info, settings=s, saved=saved)
+
+    def show_install(self, first_time=False, iso="", folder=None):
         info = load_install()
         default = Path(info["root"]) if info and info.get("root") else None
         back = None if first_time else (lambda: self.show_settings(load_install()))
-        view = InstallView(self.root, on_installed=self.installed, on_back=back, default_dir=default)
+        view = InstallView(self.root, on_installed=self.installed, on_back=back, default_dir=default,
+                           on_language=lambda choice, iso, folder: self._relabel_install(first_time, choice, iso,
+                                                                                         folder),
+                           language_choice=load_settings().get("launcher_language", "same"), iso=iso)
+        if folder:
+            view.dir_var.set(folder)
         if first_time:
             self._link_locate(view)
         self._swap(view)
 
+    def _relabel_install(self, first_time, choice, iso, folder):
+        """The install screen in another language: the choice saved, the screen drawn again with what was typed."""
+        s = load_settings()
+        s["launcher_language"] = choice
+        try:
+            save_settings(s)
+        except OSError:
+            pass
+        info = load_install()
+        launcher_text.set_language(launcher_text.resolve(choice, s.get("language") if info else None))
+        self.show_install(first_time, iso=iso, folder=folder)
+
     def _link_locate(self, view):
-        link_button(view, "Already installed? Locate tbc.exe...", self.locate).pack(anchor="w", padx=28, pady=(8, 0))
+        link_button(view, tr("Already installed? Locate tbc.exe..."), self.locate).pack(anchor="w", padx=28, pady=(8, 0))
 
     def installed(self, exe, game, root):
         self.show_settings(save_install(exe, game, root))
 
     def locate(self):
-        exe = filedialog.askopenfilename(title="Locate tbc.exe", filetypes=[("tbc.exe", "tbc.exe"),
-                                                                            ("Programs", "*.exe")])
+        exe = filedialog.askopenfilename(title=tr("Locate tbc.exe"), filetypes=[("tbc.exe", "tbc.exe"),
+                                                                                (tr("Programs"), "*.exe")])
         if not exe:
             return
-        game = filedialog.askdirectory(title="Choose the extracted game folder (the one with default.xex)")
+        game = filedialog.askdirectory(title=tr("Choose the extracted game folder (the one with default.xex)"))
         if not game:
             return
         if not (Path(game) / "default.xex").is_file():
-            messagebox.showerror("Locate", "That folder doesn't contain default.xex.")
+            messagebox.showerror(tr("Locate"), tr("That folder doesn't contain default.xex."))
             return
         self.show_settings(save_install(exe, game))
 
@@ -1708,8 +1801,8 @@ class Launcher:
         if isinstance(self.view, SettingsView) and not self.view.confirm_close():
             return
         if isinstance(self.view, InstallView) and self.view.busy():
-            if not messagebox.askyesno("Install running", "An install is still running. Quit anyway?\n"
-                                       "Running the launcher again will pick up where it left off."):
+            if not messagebox.askyesno(tr("Install running"), tr("An install is still running. Quit anyway?\nRunning "
+                                                                 "the launcher again will pick up where it left off.")):
                 return
         self.root.destroy()
 

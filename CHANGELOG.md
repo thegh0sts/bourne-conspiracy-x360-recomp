@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### New
+- **The launcher in German, French, Spanish and Italian.** A **Launcher language** list at the top right of the launcher and of the install screen: **Same as game** (the default: the launcher follows the game's language, set on the Game files tab, and before anything is installed, Windows' display language), or English, Deutsch, Français, Español or Italiano, each named in its own language. It switches at once, keeping unsaved changes and the open tab, and is saved straight away. Everything is translated: tabs, settings and their choices, notes, buttons, status lines, message boxes, the key binds window, the Saves and Achievements tabs, and the install screen with its progress and error messages. The translations were made by AI (Claude) and haven't been checked by native speakers yet; the launcher says so under the list when it isn't in English. Settings still store their English values, so switching changes nothing else. The game's own setting is now called **Game language**. Text is in `installer/launcher_text.py` (from the Launcher Text sheet, plus the strings added since); a string missing there shows in English, and `tools/check_launcher_text.py` lists any.
 - **Clock under the FPS counter** (native renderer): the PC's time to a tenth of a second, as the game log writes it, so a video recording can be matched to the log. Renderer patch `0007-overlay-clock.patch`, in the new SDK bundle **`tbc11`** (`SDK_BUNDLE` in `installer/build_installer.bat`); a reinstall replaces the bundle.
 
 ### Changed

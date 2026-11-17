@@ -44,8 +44,8 @@ W / A / S / D in the same places:
 | Bottom (A) | S |
 | Right (B) | D |
 
-This works for every QTE, multi-takedowns and boss takedowns included. The usual keys for those
-buttons (Space, F, E, Q) work too.
+This works for every QTE, multi-takedowns, boss takedowns and shooting takedowns included. The
+usual keys for those buttons (Space, F, E, Q) work too.
 
 ## Menus
 

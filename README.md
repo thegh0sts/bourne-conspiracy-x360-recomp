@@ -72,7 +72,7 @@ The launcher also turns off the graphics plugin's imitation of the Xbox 360 vbla
 **60 FPS is experimental.** Keep these caveats in mind:
 
 - The game was only ever tuned and tested at 30 FPS. Gameplay speed, physics, animation and cutscene timing at 60 FPS have only been lightly tested, through the first level. If anything looks too fast, too slow or broken, switch back to 30.
-- Above 60 FPS (120, 144, unlimited) is untested beyond starting the game.
+- Above 60 FPS (120, 144, unlimited) can break scripted moments: in the second level, Solomon's intro takedown in the warehouse sometimes never starts (he stands still and can't be hurt), and on the boat one enemy of the second wave can stay on the support ship. Load the last checkpoint, or play at 60.
 - Heavy scenes don't hold 60. The runtime's imitation of the Xbox 360 graphics hardware is expensive, so even a fast graphics card dips into the 40s in busy areas. Expect an uneven frame rate rather than a steady 60.
 - Higher render resolutions still cost more than in PC games. With the **Graphics path** on Auto or ROV, 2560×1440 reaches the mid-40s in the busy street. 3840×2160 reaches about 22, so it's playable but below 30 there; 2x is the better choice for a steady 30 or more.
 
@@ -118,6 +118,7 @@ git config core.hooksPath .githooks
 
 - With Xenos, 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
 - The native renderer is new and hasn't been played through yet. If something looks wrong, switch **Renderer** to Xenos and report it.
+- Above 60 FPS, some scripted moments can stall (see above). Play at 60 if one does.
 - Keyboard and mouse is controller emulation underneath, with a fixed layout: see [Keyboard and mouse controls](docs/keyboard-and-mouse.md). With mouse look (on by default) the camera turns by as much as the mouse moves.
 
 ## Credits

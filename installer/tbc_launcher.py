@@ -32,7 +32,7 @@ import xex_achievements
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
@@ -42,7 +42,7 @@ SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 # The last launcher version whose changes need the game rebuilt (src/, the SDK, the build). A
 # launcher-only release leaves this alone, so games built with it aren't asked to reinstall.
-GAME_VERSION = "0.3.0"
+GAME_VERSION = "0.3.2"
 # The FPS counter: off, the frame rate, or the frame rate with frame time, GPU, CPU and memory
 # (--show_fps_detail; the native renderer's counter only, Xenos shows the frame rate).
 FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]

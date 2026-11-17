@@ -1,12 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-11-17)
+
+Keyboard and mouse for every takedown and QTE in the second level, a middle-mouse glyph, and a fix for Quit Game showing in submenus. Needs a reinstall (**Reinstall now** on the launcher's red notice): the game code changed.
 
 ### New
+- **Shooting takedowns with keyboard and mouse.** The three prompts of a shooting takedown (adrenaline filled, gun drawn) now take W / A / S / D like the other prompts. They aren't QTEs to the game but run by its takedown sequence player (`BnTakedownSequencePlayer`, found with `--qte_probe`), whose `+0x5C` is set from the takedown's start to its end; while it is, the keys answer the prompts (Bourne can't be moved then anyway), for at most 15 s.
+- **Middle mouse button glyph** in prompts bound to it (recentre the camera, switch shoulder): `assets/keys/mouse_scroll.png`. `mouse_scroll` is now also accepted as the file name for MMB, beside `mouse_middle`.
 - **Aim assist with keyboard and mouse off by default** (launcher, Controls tab, Mouse: **Aim assist**, unticked). The game's sticky aim (the reticle following a target while either of you strafes, `MaxStrafeSticky` in `[Hm_Engine.HmTargetCirclePositionAdjuster]`) is made for a stick and drags the camera against the mouse. Tick it to keep it. It's one setting for the session, so a controller used alongside keyboard and mouse goes without it too; with keyboard and mouse off, the game is unchanged.
 
 ### Fixes
+- **Multi-takedown and boss takedown prompts ignored the keys** in a new session (the first takedown of each kind) and for the rest of a session after the boat sequence. The takedown's branches (`BnTakedownBranch`) were looked up once, as it started, and can be made only after that; and the check for which memory can be read remembered pages from earlier lookups, so once the game's object list grew into memory that had been unmapped, it read as empty. The branches are now looked up every quarter second for 8 s after a takedown starts, readability is checked afresh each time, and freed branches are skipped.
 - **Quit Game showed under Replay Chapter's list** (and could in other menus that reuse the main menu's places). The main menu is now recognised by its shape: a label in each of its rows and nothing in the row under Cheats, instead of by the words learnt when it opened, which could be learnt from a submenu.
+- The log's first line said 0.2.7; it shows the release again (`TBC_RELEASE` in `CMakeLists.txt`).
+- `--qte_probe` (a development tool) crashed the game during a weapon takedown: it named an object whose owner had been freed. Objects are only named now when their whole owner chain is live.
+
+### Known issues
+- **Above 60 FPS, scripted moments can stall.** In the second level: Solomon's intro takedown in the warehouse sometimes never starts (the level asks for it, but no takedown branch begins, so there's no prompt; he stands still and can't be hurt), and on the boat one enemy of the second support-ship wave can stay on the ship (his last jump animation's follow-up, a teleport onto the boat, never fires). Both happen only some of the time and only above 60 FPS. Being investigated; load the last checkpoint or play at 60.
+
+### Development
+- `--script_trace_kismet`: logs every Kismet handler call (`On...` script events a level's Kismet calls on its target) with the target and the Kismet action by name. The names are the same every run, so a run at 60 FPS and one above it can be compared line by line. Menus, matinee property tracks and animation callbacks are left out.
+- `--qte_wasd_log` names the Kismet node and class behind each QTE (on a controller too).
+- `--qte_probe` uses GObjObjects at `0x83655774` (its search could settle on the wrong array), and on a shooting takedown or a scripted fight takedown (`OnPlayFightTakedown`) also watches the player controller, the enemy's controller and pawn (`Controller.Pawn` at `+0x1B0`), 4 KB each for 14 s.
+- `--frame_rate_test_key`: Ctrl+F8 switches the frame limit between 60 and the set rate while the game runs (when that's above 60 or unlimited), so one checkpoint can be played at both without restarting.
+- Native renderer patch `0007-overlay-clock.patch`: the PC's time, to a tenth of a second, under the FPS counter, to match video recordings to the log. It's in the renderer, so it ships with the next SDK bundle; 0.3.2 keeps `tbc10`.
 
 ## 0.3.1 (2026-11-17)
 

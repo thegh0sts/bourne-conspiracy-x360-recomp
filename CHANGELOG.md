@@ -10,6 +10,8 @@
 - **FXAA with the native renderer** (launcher, Display tab, **Anti-aliasing**: Off / FXAA / FXAA (strong), now shown for both renderers). Before, only Xenos had it, and on the native renderer the render resolution was the only way to smooth edges. It runs in the renderer's last pass at render resolution, before the gamma ramp; the FPS overlay and achievement pop-ups are drawn after it and stay sharp, but the game's own HUD is part of the picture and gets the same light smoothing. Renderer patch `0010-native-fxaa.patch` (`BOTS_GFX_FXAA`).
 - **Key glyphs redrawn with a black outline** (keys and mouse buttons), so they stay readable on light backgrounds; Space is the ␣ symbol instead of the word (`assets/keys/`).
 
+- **Groundwork for real MSAA in the native renderer** (`docs/native-msaa.md`): the plan, from a trace of how a frame uses the GPU's memory. The renderer now logs what MSAA the graphics card supports at start-up (`gfx native: MSAA support: ...`, renderer patch `0011-msaa-support-log.patch`). No change to rendering yet.
+
 ### Fixes
 - **Black flicker at the 1920×1080 render resolution** (native renderer, render scale 1.5). The renderer scaled the game's viewports without rounding, so at a fractional scale a buffer with an odd size (80×45 becomes 120×67.5) left the last row or column of its image undrawn, while its image, scissor and copies are rounded to whole pixels (68 rows); copies and sampling then read stale pixels. Viewport edges are now rounded the same way (renderer patch `0008-fractional-scale-viewport.patch`, in the `tbc11` bundle). Whole-number scales (720p, 1440p, 4K) are unchanged.
 

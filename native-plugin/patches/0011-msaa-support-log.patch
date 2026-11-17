@@ -1,0 +1,29 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index abde553..e6df923 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -245,6 +245,24 @@ bool Renderer::InitDrawing() {
+   if (const char* v = std::getenv("BOTS_GFX_MAX_ANISO"); v && *v) max_anisotropy_ = uint32_t(std::atoi(v));
+   if (const char* v = std::getenv("BOTS_GFX_FORCE_ANISO"); v && *v) force_anisotropy_ = uint32_t(std::atoi(v));
+   if (force_anisotropy_) REXLOG_INFO("gfx native: anisotropic filtering at least {}x on 3D textures", force_anisotropy_);
++  {
++    // tbc: what host MSAA would have to work with (docs/native-msaa.md in tbc), logged once: the sample counts usable
++    // for colour and depth targets and for sampling them back, per-sample shading, and writing stencil from a shader
++    // (to copy a resolved depth/stencil back into a multisampled one).
++    auto counts = [](VkSampleCountFlags f) {
++      std::string out;
++      for (uint32_t n = 2; n <= 16; n <<= 1) {
++        if (f & n) out += (out.empty() ? "" : "/") + std::to_string(n);
++      }
++      return out.empty() ? std::string("none") : out;
++    };
++    REXLOG_INFO("gfx native: MSAA support: colour {}, depth {}, stencil {}, sampled colour {}, sampled depth {}; "
++                "sample-rate shading {}, shader stencil export {}",
++                counts(props.framebufferColorSampleCounts), counts(props.framebufferDepthSampleCounts),
++                counts(props.framebufferStencilSampleCounts), counts(props.sampledImageColorSampleCounts),
++                counts(props.sampledImageDepthSampleCounts), props.sampleRateShading ? "yes" : "no",
++                device_->extensions().ext_EXT_shader_stencil_export ? "yes" : "no");
++  }
+   scale_ = RenderScale(device_);
+   if (scale_ != 1.0f) REXLOG_INFO("gfx native: render scale {}", scale_);
+   shaders_ = std::make_unique<ShaderCache>(device_, workers, warmup);

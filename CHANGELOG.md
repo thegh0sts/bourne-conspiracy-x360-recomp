@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Frame rate note in the launcher** (Display tab): above 60 FPS is experimental and scripted scenes can stall; for smoother motion, keep 60 and use the graphics driver's frame generation. The README has the steps for NVIDIA Smooth Motion, AMD Fluid Motion Frames and Lossless Scaling ("Smoother than 60: driver frame generation").
+
 ## 0.3.2 (2026-11-17)
 
 Keyboard and mouse for every takedown and QTE in the second level, a middle-mouse glyph, and a fix for Quit Game showing in submenus. Needs a reinstall (**Reinstall now** on the launcher's red notice): the game code changed.

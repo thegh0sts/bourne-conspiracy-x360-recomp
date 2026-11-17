@@ -1072,13 +1072,20 @@ class SettingsView(tk.Frame):
         self._combo(box, 7, "aa", "Anti-aliasing", AA)
         self._display_changed()  # hide the Xenos-only settings for the native renderer
         self._combo(box, 8, "fps", "Frame rate", FPS)
-        self._combo(box, 9, "fps_counter", "FPS counter", FPS_COUNTER)
-        self._checks(box, 10, [("vsync", "VSync (off: may tear, can be faster)"),
+        # Above 60, scripted scenes can stall (README, Known issues); the driver's frame generation
+        # on top of 60 is the smooth option until that's fixed.
+        tk.Label(box, text="Above 60 is experimental: some scripted scenes can stall. For smoother motion, keep 60 "
+                           "and turn on your graphics driver's frame generation (NVIDIA Smooth Motion, AMD Fluid "
+                           "Motion Frames); see the README.",
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
+                 ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._combo(box, 10, "fps_counter", "FPS counter", FPS_COUNTER)
+        self._checks(box, 11, [("vsync", "VSync (off: may tear, can be faster)"),
                                ("original_pacing", "Original Xbox 360 frame pacing (slower)")])
-        self._check(box, 11, "hide_achievements", "Hide achievement pop-ups")
+        self._check(box, 12, "hide_achievements", "Hide achievement pop-ups")
         tk.Label(box, text="Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, "
                            "BSD 3-Clause).", font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w"
-                 ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                 ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         box = self._page("Graphics")
         for row, (key, text) in enumerate((("motion_blur", "Motion blur"), ("depth_of_field", "Depth of field"),

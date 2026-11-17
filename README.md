@@ -114,11 +114,19 @@ Turn on the leak-scan hooks once per clone, so game files, generated code and pe
 git config core.hooksPath .githooks
 ```
 
+## Smoother than 60: driver frame generation
+
+Until the scripted scenes work above 60 FPS, the smooth option is to keep the launcher at **60** and let the graphics driver add a generated frame between each pair (about 120 on screen). It works outside the game, so nothing in the port changes; expect a little more input lag and occasional smearing on fast motion and HUD text. The FPS counter still shows 60: it counts the game's own frames.
+
+- **NVIDIA (RTX 40 and 50 series): Smooth Motion.** Update the NVIDIA App and driver. In the NVIDIA App, open **Graphics > Program Settings**, click **Add** and pick `tbc.exe` (in your install folder, under `project\out\build\win-amd64-relwithdebinfo`), then under **Driver Settings** switch **Smooth Motion** on.
+- **AMD (RX 6000 and newer): Fluid Motion Frames.** In AMD Software, under **Gaming > Graphics**, turn on **AMD Fluid Motion Frames**. Set there, it applies to every game; to keep it to this one, set it in a game profile for `tbc.exe` instead.
+- **Any GPU: Lossless Scaling** (a paid app): start it, then switch it on over the game window.
+
 ## Known issues
 
 - With Xenos, 60 FPS and higher render resolutions are limited by graphics performance (see above). ROV makes higher resolutions much faster but hasn't been played through yet; if something looks wrong, set **Graphics path** to RTV.
 - The native renderer is new and hasn't been played through yet. If something looks wrong, switch **Renderer** to Xenos and report it.
-- Above 60 FPS, some scripted moments can stall (see above). Play at 60 if one does.
+- Above 60 FPS, some scripted moments can stall (see above). Play at 60 if one does; for smoother motion, see [Smoother than 60: driver frame generation](#smoother-than-60-driver-frame-generation).
 - Keyboard and mouse is controller emulation underneath, with a fixed layout: see [Keyboard and mouse controls](docs/keyboard-and-mouse.md). With mouse look (on by default) the camera turns by as much as the mouse moves.
 
 ## Credits

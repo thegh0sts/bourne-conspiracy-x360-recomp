@@ -1,6 +1,6 @@
 # Real MSAA in the native renderer: plan
 
-Status: preparation. Nothing here changes rendering yet. The only code so far is
+Status: preparation done (both traces and the GPU's capabilities are in); implementation for 0.3.4. Nothing here changes rendering yet. The only code so far is
 `native-plugin/patches/0011-msaa-support-log.patch`, which logs what MSAA the GPU supports
 (`gfx native: MSAA support: ...`).
 
@@ -53,6 +53,43 @@ What this means for MSAA:
   divided by the sample count, to keep the numbers the game's visibility checks see the same
   as without MSAA. (The render scale already inflates them by its area today, and the game
   copes, so this is about keeping behaviour unchanged, not a known bug.)
+
+## 16:9 trace (2026-11-18)
+
+`BOTS_DRAW_TRACE=1` at 1280x720, render scale 1, standing in a mission: 41 frames, about 920 draws,
+17 resolves and 7 transfers each. Same structure as the ultrawide trace, with these corrections:
+
+| Step | Draws | Target (pitch) | Depth | Then |
+|---|---|---|---|---|
+| Depth clear + z-prepass | 1 + ~297 | (colour masked) | base 0 (1280), write, GEQUAL | depth resolve |
+| **Occlusion queries** | 177 | (colour masked) | **base 388, pitch 640** (half-resolution depth), test only | |
+| Shadow maps (3 cascades) | ~20 | 880x880 | base 5A0 | 3 depth resolves |
+| **Shadow mask** | ~10 | base 2D0 fmt 0, **pitch 640** | base 388 (640), stencil | 3 resolves 640x360 |
+| Stencil clear, `src/msaa.cpp`'s ClearZ, colour clear (depth trick) | 4 | base 2D0 fmt 3 (1280) | base 0 | transfer depth -> fmt 3 |
+| **Main colour pass** | 298 | base 2D0 fmt 3 (1280) | base 0, write, GEQUAL | colour + depth resolves |
+| Distortion / decal buffer | 1 + 34 | base 2D0 fmt 2 / A (1280) | base 0, test only | resolve |
+| Composite, **translucents** | 1 + 38 | base 2D0 fmt 3 / C (1280) | base 0, test only | colour resolve |
+| Bloom | 5 | 400x960 fmt 5 | none | 3 resolves |
+| Tone map + HUD | 25 | base 2D0 fmt 0 (1280) | none | resolve to the front buffer |
+
+- **The colour base moves with the resolution** (`0x2D0` at 1280x720: depth takes the first 720
+  tiles, 1280x720 / (80x16)). Surfaces are picked by pitch (the screen width), not by base.
+- **Occlusion queries and the shadow mask run at half resolution** (pitch 640) with their own
+  depth buffer. Multisampling only full-width surfaces leaves both alone: no occlusion count
+  scaling, and no stencil work inside the multisampled depth.
+- **Full-resolution stencil is only ever cleared** (the quarter-size clears, ClearZ); no full-width
+  draw tests or writes it. A clear can clear the multisampled twin directly, so stencil never has
+  to be copied up, and the GPU's lack of shader stencil export (RTX 4080 SUPER:
+  `shader stencil export no`) doesn't matter.
+- The z-prepass's depth is resolved for the shadow mask, then cleared (ClearZ) before the main
+  pass, which writes its own depth. It doesn't need multisampling itself; it gets it anyway because
+  it draws into the same depth surface, at the cost of some depth bandwidth.
+- Edges come from three runs of draws: the main pass (fmt 3), the decal buffer (fmt A) and the
+  translucents (fmt C). Everything else at full width is full-screen quads, which multisample
+  correctly but gain nothing.
+
+GPU (from 0011's log line on the RTX 4080 SUPER): colour and depth 2/4/8 samples, sampling them
+2/4/8, per-sample shading yes, shader stencil export no.
 
 ## Design
 

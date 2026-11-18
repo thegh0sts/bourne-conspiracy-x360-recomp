@@ -2,19 +2,24 @@
 
 ## Unreleased
 
+## 0.3.3 (2026-11-18)
+
+The launcher in four more languages, sharper textures and FXAA with the native renderer, a clock on the FPS overlay, outlined key glyphs, and fixes for the installer and for flicker at 1920×1080. Needs a reinstall (**Reinstall now** in the launcher): the bundled SDK is now `tbc11`.
+
 ### New
 - **The launcher in German, French, Spanish and Italian.** A **Launcher language** list at the top right of the launcher and of the install screen: **Same as game** (the default: the launcher follows the game's language, set on the Game files tab, and before anything is installed, Windows' display language), or English, Deutsch, Français, Español or Italiano, each named in its own language. It switches at once, keeping unsaved changes and the open tab, and is saved straight away. Everything is translated: tabs, settings and their choices, notes, buttons, status lines, message boxes, the key binds window, the Saves and Achievements tabs, and the install screen with its progress and error messages. The translations were made by AI (Claude) and haven't been checked by native speakers yet; the launcher says so under the list when it isn't in English. Settings still store their English values, so switching changes nothing else. The game's own setting is now called **Game language**. Text is in `installer/launcher_text.py` (from the Launcher Text sheet, plus the strings added since); a string missing there shows in English, and `tools/check_launcher_text.py` lists any.
 - **Clock under the FPS counter** (native renderer): the PC's time to a tenth of a second, as the game log writes it, so a video recording can be matched to the log. Renderer patch `0007-overlay-clock.patch`, in the new SDK bundle **`tbc11`** (`SDK_BUNDLE` in `installer/build_installer.bat`); a reinstall replaces the bundle.
-
 - **Texture filtering** (launcher, Graphics tab, native renderer): **Anisotropic 16x** by default, or 8x, 4x or **Game's own**. The game asks for little or no anisotropic filtering, so floors, roads and walls blur at an angle; the renderer now raises it on the game's surface textures (mipmapped and linearly filtered), never lowering what the game asks for. The HUD, fonts and lookup textures keep the game's own filtering. Renderer patch `0009-force-anisotropy.patch` (`BOTS_GFX_FORCE_ANISO`).
 - **FXAA with the native renderer** (launcher, Display tab, **Anti-aliasing**: Off / FXAA / FXAA (strong), now shown for both renderers). Before, only Xenos had it, and on the native renderer the render resolution was the only way to smooth edges. It runs in the renderer's last pass at render resolution, before the gamma ramp; the FPS overlay and achievement pop-ups are drawn after it and stay sharp, but the game's own HUD is part of the picture and gets the same light smoothing. Renderer patch `0010-native-fxaa.patch` (`BOTS_GFX_FXAA`).
 - **Key glyphs redrawn with a black outline** (keys and mouse buttons), so they stay readable on light backgrounds; Space is the ␣ symbol instead of the word (`assets/keys/`).
-
 - **Groundwork for real MSAA in the native renderer** (`docs/native-msaa.md`): the plan, from a trace of how a frame uses the GPU's memory. The renderer now logs what MSAA the graphics card supports at start-up (`gfx native: MSAA support: ...`, renderer patch `0011-msaa-support-log.patch`). No change to rendering yet.
 
 ### Fixes
 - **Installer: build tools not found when Visual Studio was already installed without every part.** If Visual Studio 2022 or newer (Build Tools, Community, ...) was there without Clang or CMake, the installer ran the Build Tools installer, which leaves an existing install unchanged, and then stopped with "Build Tools finished installing but couldn't be found". It now adds the missing parts to that Visual Studio (Windows asks for administrator permission), and only installs Build Tools when that doesn't work. It also looks past the newest Visual Studio for one that has everything, and ignores Visual Studio 2019, whose Clang is too old.
 - **Black flicker at the 1920×1080 render resolution** (native renderer, render scale 1.5). The renderer scaled the game's viewports without rounding, so at a fractional scale a buffer with an odd size (80×45 becomes 120×67.5) left the last row or column of its image undrawn, while its image, scissor and copies are rounded to whole pixels (68 rows); copies and sampling then read stale pixels. Viewport edges are now rounded the same way (renderer patch `0008-fractional-scale-viewport.patch`, in the `tbc11` bundle). Whole-number scales (720p, 1440p, 4K) are unchanged.
+
+### Known issues
+- **Above 60 FPS, scripted moments can still stall** (Solomon's intro in the warehouse, the boat's second wave), as in 0.3.2.
 
 ### Changed
 - **Frame rate note in the launcher** (Display tab): above 60 FPS is experimental and scripted scenes can stall; for smoother motion, keep 60 and use the graphics driver's frame generation. The README has the steps for NVIDIA Smooth Motion, AMD Fluid Motion Frames and Lossless Scaling ("Smoother than 60: driver frame generation").

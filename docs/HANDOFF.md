@@ -48,15 +48,31 @@ working session. Last updated: 2026-11-18, after the 0.3.3 release.
   take the tail with `Get-Content -Tail`.
 - Commit messages end with the Co-Authored-By and Claude-Session lines.
 
-## Released
+## History
 
-- **0.3.3** (2026-11-18): launcher in German, French, Spanish, Italian; texture filtering (forced
-  anisotropy, patch 0009); FXAA on the native renderer (0010); clock on the FPS overlay (0007);
-  outlined key glyphs; 1080p render flicker fix (0008); installer adds missing Visual Studio parts;
-  frame rate note; MSAA capability log (0011). SDK bundle tbc11.
-- **0.3.2** (2026-11-17): keyboard and mouse for shooting, multi and boss takedowns; MMB glyph;
-  aim assist checkbox; Quit Game only on the main menu.
-- Older: see `CHANGELOG.md`.
+The project started on 2026-11-09 (243 commits by 0.3.3). `CHANGELOG.md` has every detail; this is
+the story in short.
+
+| Release | Date | What it brought |
+|---|---|---|
+| 0.1.0 | 11-09 | The game recompiled with ReXGlue SDK 0.10.1, playable through the first levels. Installer that builds the game from the player's own disc image; launcher with display, graphics, camera and controller settings. |
+| 0.2.0 | 11-10 | Our own patched SDK build. 60 FPS and higher, frame pacing (from the Table Tennis PC port), FSR/CAS upscaling, VSync, FPS counter, render resolution, post-processing toggles, SDK bundled in the installer, leak-scan git hooks. |
+| 0.2.1 | 11-11 | Keyboard and mouse, editable key binds, camera turn speed, mouse sensitivity. ReGPU renderer tried and shelved. |
+| 0.2.2 | 11-12 | Much faster above 720p, easier mouse aiming, GPU-wait hook and refresh-rate matching (from WetRecomp), SDK fixes (jump tables, XMA audio, mouse curve). |
+| 0.2.3 | 11-13 | **Native Vulkan renderer** (Skullburglar's, `native-plugin/`) as the default; the game's own 2x MSAA turned off (`src/msaa.cpp`) to make that possible; first keyboard prompts; 1920x1080 render resolution; mouse buttons attack in fights. |
+| 0.2.4 / -1 | 11-14 | Ultrawide (experimental, native renderer); crash after starting fixed; installer checks the game files; fix for PCs with another Clang; Shift and Ctrl as binds; QTEs on W/A/S/D. |
+| 0.2.5 | 11-14 | Keyboard and mouse finished: mouse look, the player's keys in every prompt, keys on HUD badges and QTEs, fixed key layout, launcher update check and rebuild notice. |
+| 0.2.6 | 11-15 | PlayStation button prompts, controller swapping mid-game, crash fix for non-English Documents folders. |
+| 0.2.7 | 11-15 | More responsive mouse look (direct 1:1, smoothing setting, aiming sensitivity); look further up and down; no auto-recentre; linear stick turning; arrow keys in menus. |
+| 0.2.8 | 11-16 | Launcher settings in tabs. |
+| 0.3.0 | 11-16 | Quit Game on the main menu; detailed performance overlay and achievement pop-ups drawn by the native renderer (so they show in fullscreen); brightness; vibration strength; Achievements and Saves tabs; game language; prompts in every language. SDK bundle tbc10. |
+| 0.3.1 | 11-17 | Installer fixes ("cmake is not recognized"). |
+| 0.3.2 | 11-17 | Shooting, multi and boss takedowns on keys; MMB glyph; aim assist checkbox; Quit Game only on the main menu. Known issue: high-fps scripting stalls. |
+| 0.3.3 | 11-18 | Launcher in German, French, Spanish, Italian; texture filtering (forced anisotropy, patch 0009); FXAA on the native renderer (0010); clock on the FPS overlay (0007); outlined key glyphs; 1080p render flicker fix (0008); installer adds missing Visual Studio parts; frame rate note; MSAA capability log (0011). SDK bundle tbc11. |
+
+Credits carried in the releases: Skullburglar by nlwstein (native renderer, SDK patches, crash
+reporting, leak scanner; BSD 3-Clause), WetRecomp by nikolaygorb (MIT), Table Tennis PC (MIT),
+ReGPU and Glue2GPU by zer0ducksgiven (MIT; shelved).
 
 ## Unreleased (for 0.3.4)
 
@@ -88,6 +104,56 @@ longer window); controller remapping; HUD and subtitle options; alpha-to-coverag
 Linux and Steam Deck build; Discord Rich Presence; save backup. Shelved: SMAA (FXAA first),
 real frame generation (no motion vectors; driver frame generation recommended instead), Quit Game
 in the pause menu, skip intro videos.
+
+## Technical notes
+
+Things learnt the hard way, worth knowing before changing these areas.
+
+**Game objects and QTEs** (`src/qte.cpp`)
+- `GObjObjects` is at `0x83655774` (a search for it once settled on the wrong array). `Controller.Pawn` is at +0x1B0.
+- QTEs are Kismet `SeqAct_BnQuickAction` nodes handled by `OnBnQuickAction`; the input window is at +0xEC.
+- Multi-takedowns use `BnTakedownBranch` (+0x88 play time, +0x98 prompt start). The first takedown
+  of each kind in a session, and every one after the boat, needed rescans: `ScanBranches` rescans
+  every 250 ms for 8 s after a takedown event.
+- Shooting takedowns (`PlayerOverTheShoulder.Takedown`) use `BnTakedownSequencePlayer`: +0x5C is
+  non-zero only during one, +0x74 is the stage (0, 2, 4).
+- Readable-page cache is per scan only (`ScanBegin`); a stale cache made keys stop working.
+
+**High-fps stalls** (open)
+- Solomon's warehouse intro: `SeqAct_PlayFightTakedown_16107` fires but the takedown branch never
+  starts (no `ReenableDamage`). Boat finale `Support_Ship_Wave_2`: `SeqAct_Teleport_15892` (enemy onto
+  the boat after `PlayAnimation_4`) and `SeqAct_Teleport_11930` (player) never fire uncapped.
+- Launcher 120/144/Unlimited set `MaxSmoothedFrameRate` to 1000. Ctrl+F8 (`--frame_rate_test_key`)
+  switches between 60 and the set rate; F9 clashed with the screen recorder.
+
+**Renderer**
+- `Host(v) = uint32_t(float(v)*scale_+0.5f)`. The SDK's viewport bounds are integers; scaling them
+  without rounding left the last row undrawn at render scale 1.5 (the 1080p flicker, patch 0008).
+- 1x render resolution can't be 1080p: 1920x1080 needs about 16.6 MB of EDRAM, over the 360's 10 MB.
+- The launcher's FSR is `--present_effect fsr`, i.e. FSR 1 (EASU + RCAS). The temporal FSR path
+  (`fsr2`/`fsr3`) isn't used. ReXGlue builds FidelityFX without frame generation, and frame generation
+  couldn't work anyway: no motion vectors, and the HUD is baked into the image.
+- A frame (see `docs/native-msaa.md`): z-prepass, half-resolution occlusion queries and shadow mask,
+  three shadow cascades, main colour pass (HDR, fmt 3), decal buffer, translucents, bloom, tone map
+  and HUD. Everything at full width shares colour base `0x2D0` (at 720p) and depth base 0.
+- The pipeline manifest's record size must not change, or every player's shader list starts over.
+
+**Game config** (`Coalesced.ini`, edited by the launcher through `tools/tbc_config.py`)
+- Aim assist checkbox sets `Hm_Engine.HmTargetCirclePositionAdjuster.MaxStrafeSticky` (0.9 → 0).
+  The snap onto targets when aiming isn't in the config.
+- Movement and strafing are animation-driven (`BnPlayerPawnAnimRates`, `StrafeRateZoomedOut=1.4`);
+  there's no movement ramp or dead zone in the config.
+
+**Launcher and installer**
+- Translations: the key "Save" has two meanings, separated by `CONTEXT`; CSV imports had leading
+  apostrophes once.
+- `build_installer.bat` deletes `payload` each run; without `SDK_ZIP` it packs
+  `C:\rexglue-src\rexglue-sdk\out\install\win-amd64`.
+- The installer finds Visual Studio with `vswhere` (2022+, MSVC x64 + Clang + CMake); missing parts
+  are added with the Visual Studio Installer's `modify` (0.3.3). Before that, running the Build Tools
+  bootstrapper over an existing install changed nothing.
+- In `cmd`, `%PATH%` in one line expands before `vcvars64.bat` runs: tool folders go first on PATH
+  in the starting environment, never as `set "PATH=...;%PATH%"` in the command.
 
 ## Code map (main pieces)
 

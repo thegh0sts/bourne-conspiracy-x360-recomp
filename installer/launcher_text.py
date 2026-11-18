@@ -1505,4 +1505,9 @@ TEXT = {
         "Le filtrage des textures s'applique au moteur de rendu natif : il garde les sols, les routes et les murs nets vus de biais. Le HUD et le texte gardent le filtrage du jeu.",
         'El filtrado de texturas es para el renderizador nativo: mantiene nítidos los suelos, las carreteras y las paredes vistos en ángulo. El HUD y el texto conservan el filtrado del juego.',
         "Il filtro texture vale per il renderer nativo: mantiene nitidi pavimenti, strade e muri visti di sbieco. L'HUD e il testo mantengono il filtro del gioco."),
+    'Adding the missing C++ parts to your Visual Studio (this can take 10-30 minutes)...': (
+        'Die fehlenden C++-Teile werden zu deinem Visual Studio hinzugefügt (das kann 10–30 Minuten dauern)...',
+        'Ajout des éléments C++ manquants à votre Visual Studio (cela peut prendre 10 à 30 minutes)...',
+        'Añadiendo los componentes de C++ que faltan a tu Visual Studio (puede tardar entre 10 y 30 minutos)...',
+        'Aggiunta delle parti C++ mancanti al tuo Visual Studio (può richiedere 10-30 minuti)...'),
 }

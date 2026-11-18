@@ -13,6 +13,7 @@
 - **Groundwork for real MSAA in the native renderer** (`docs/native-msaa.md`): the plan, from a trace of how a frame uses the GPU's memory. The renderer now logs what MSAA the graphics card supports at start-up (`gfx native: MSAA support: ...`, renderer patch `0011-msaa-support-log.patch`). No change to rendering yet.
 
 ### Fixes
+- **Installer: build tools not found when Visual Studio was already installed without every part.** If Visual Studio 2022 or newer (Build Tools, Community, ...) was there without Clang or CMake, the installer ran the Build Tools installer, which leaves an existing install unchanged, and then stopped with "Build Tools finished installing but couldn't be found". It now adds the missing parts to that Visual Studio (Windows asks for administrator permission), and only installs Build Tools when that doesn't work. It also looks past the newest Visual Studio for one that has everything, and ignores Visual Studio 2019, whose Clang is too old.
 - **Black flicker at the 1920×1080 render resolution** (native renderer, render scale 1.5). The renderer scaled the game's viewports without rounding, so at a fractional scale a buffer with an odd size (80×45 becomes 120×67.5) left the last row or column of its image undrawn, while its image, scissor and copies are rounded to whole pixels (68 rows); copies and sampling then read stale pixels. Viewport edges are now rounded the same way (renderer patch `0008-fractional-scale-viewport.patch`, in the `tbc11` bundle). Whole-number scales (720p, 1440p, 4K) are unchanged.
 
 ### Changed

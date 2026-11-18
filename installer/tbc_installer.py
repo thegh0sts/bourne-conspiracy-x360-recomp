@@ -188,19 +188,43 @@ def vswhere() -> Path:
         "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
 
 
-def find_vs():
+# Visual Studio 2022 (17) and newer: 2019's Clang is too old for the SDK.
+VS_VERSIONS = "[17.0,"
+
+
+def _vswhere_paths(*extra):
     exe = vswhere()
     if not exe.exists():
-        return None
-    args = [str(exe), "-latest", "-products", "*", "-property", "installationPath", "-requires", *VS_REQUIRED]
+        return []
+    args = [str(exe), "-products", "*", "-version", VS_VERSIONS, "-sort", "-property", "installationPath", *extra]
     try:
-        out = subprocess.run(args, capture_output=True, text=True, creationflags=NO_WINDOW).stdout.strip()
+        out = subprocess.run(args, capture_output=True, text=True, creationflags=NO_WINDOW).stdout
     except OSError:
-        return None
-    if not out:
-        return None
-    vcvars = Path(out.splitlines()[0]) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
-    return vcvars if vcvars.exists() else None
+        return []
+    return [Path(line.strip()) for line in out.splitlines() if line.strip()]
+
+
+def find_vs():
+    # Every instance with all the parts, newest first (-latest would only look at the newest one, and miss a
+    # complete Build Tools next to a newer Visual Studio without Clang).
+    for path in _vswhere_paths("-requires", *VS_REQUIRED):
+        vcvars = path / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+        if vcvars.exists():
+            return vcvars
+    return None
+
+
+def find_vs_incomplete():
+    """A Visual Studio 2022+ install (Build Tools, Community, ...) that has the C++ build tools' basics but not
+    every part we need: the parts are added to it (setup.exe modify) instead of installing Build Tools beside it.
+    Running the Build Tools bootstrapper with --add where Build Tools is already installed doesn't change that
+    install, which left people with "finished installing but couldn't be found"."""
+    paths = _vswhere_paths()
+    with_msvc = set(_vswhere_paths("-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"))
+    for path in paths:
+        if path in with_msvc:
+            return path
+    return paths[0] if paths else None
 
 
 def http_get(url: str, accept="application/octet-stream") -> urllib.request.addinfourl:
@@ -411,6 +435,11 @@ class Installer:
         if vcvars:
             self.log(f"Using build tools: {vcvars}")
             return vcvars
+        existing = find_vs_incomplete()
+        if existing:
+            vcvars = self.complete_vs(existing)
+            if vcvars:
+                return vcvars
         self.status(tr("Downloading Visual Studio Build Tools installer..."))
         boot = self.root / "vs_buildtools.exe"
         download(VS_BOOTSTRAPPER, boot, self.stage(0.30, 0.31))
@@ -431,6 +460,31 @@ class Installer:
             raise InstallError(tr("Build Tools finished installing but couldn't be found. Restart your PC and run "
                                   "the installer again."))
         return vcvars
+
+    def complete_vs(self, path: Path):
+        """Adds the missing parts to the Visual Studio install at `path`. None if that didn't work out (the caller
+        then installs Build Tools on its own)."""
+        setup = vswhere().parent / "setup.exe"
+        self.log(f"Visual Studio at {path} is missing parts we need (C++ build tools, Clang, CMake).")
+        if not setup.exists():
+            self.log("Visual Studio Installer (setup.exe) not found; installing Build Tools instead.")
+            return None
+        self.status(tr("Adding the missing C++ parts to your Visual Studio (this can take 10-30 minutes)..."))
+        self.log("Windows will ask for administrator permission.")
+        args = ["modify", "--installPath", f'"{path}"', "--quiet", "--norestart", "--includeRecommended"]
+        for c in VS_COMPONENTS:
+            args += ["--add", c]
+        ps = ("$p = Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+              .format(str(setup).replace("'", "''"), " ".join(args).replace("'", "''")))
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], creationflags=NO_WINDOW)
+        self.log(f"Visual Studio Installer (modify) exit code: {r.returncode}")
+        vcvars = find_vs()
+        if vcvars:
+            self.log(f"Using build tools: {vcvars}")
+            return vcvars
+        if r.returncode in (0, 3010):
+            self.log("The parts were added but the build tools still weren't found; installing Build Tools instead.")
+        return None
 
     def ensure_sdk(self):
         root = find_sdk_root(self.sdk_dir) if self.sdk_dir.exists() else None

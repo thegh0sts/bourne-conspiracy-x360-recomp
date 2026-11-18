@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixes
+- **Quit Game showed under Replay Chapter's list again** once five chapters were unlocked: the list then fills exactly the main menu's five rows with nothing under them, which is what the 0.3.2 check took for the main menu. Text to the left of the labels in those rows (the chapters' cities) now also means it isn't the main menu.
+
 ## 0.3.3 (2026-11-18)
 
 The launcher in four more languages, sharper textures and FXAA with the native renderer, a clock on the FPS overlay, outlined key glyphs, and fixes for the installer and for flicker at 1920×1080. Needs a reinstall (**Reinstall now** in the launcher): the bundled SDK is now `tbc11`.

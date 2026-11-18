@@ -135,6 +135,9 @@ struct State {
   std::vector<float> rows;
   std::vector<std::chrono::steady_clock::time_point> row_hit;
   std::chrono::steady_clock::time_point below_hit{};
+  // Text drawn left of the labels in their rows: Replay Chapter's city names ("Marseilles",
+  // "Zurich"). The main menu has nothing there.
+  std::chrono::steady_clock::time_point left_hit{};
   // What the live menu's Campaign and Cheats labels say, learnt from the first draws at their
   // places once the menu's scene appears (other menus reuse the same places for their own
   // entries, and the main menu's scene stays around underneath them).
@@ -363,14 +366,19 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
   const bool cheats = s.cheats.at(x, y);
   const auto now = std::chrono::steady_clock::now();
   // The main menu is on screen when every one of its rows (Campaign to Cheats) had a label drawn
-  // in the last moment and nothing was drawn in the row under Cheats. Its submenus reuse the same
-  // places (Replay Chapter puts its two chapters in the Extras and Cheats rows, Extras fills all
-  // five and a sixth) and its scene stays around under them, so its own places alone can't tell.
+  // in the last moment, nothing was drawn in the row under Cheats, and nothing left of the labels
+  // in their rows. Its submenus reuse the same places and its scene stays around under them, so
+  // its own places alone can't tell: Replay Chapter lists one chapter per row from the bottom up
+  // (with five unlocked it fills exactly Campaign to Cheats) with each chapter's city to its left,
+  // and Extras fills all five rows and a sixth.
+  const double row_h = s.cheats.b - s.cheats.t;
   if (std::fabs(x - s.cheats.l) < 4.0) {
     for (size_t i = 0; i < s.rows.size(); ++i) {
       if (std::fabs(y - s.rows[i]) < 3.0) s.row_hit[i] = now;
     }
-    if (std::fabs(y - (s.cheats.t + (s.cheats.b - s.cheats.t))) < 3.0) s.below_hit = now;
+    if (std::fabs(y - (s.cheats.t + row_h)) < 3.0) s.below_hit = now;
+  } else if (x < s.cheats.l - 16.0 && y >= s.campaign.t - 3.0 && y <= s.cheats.b + 3.0) {
+    s.left_hit = now;
   }
   if (cheats || s.campaign.at(x, y)) {
     // Rows never drawn in at all (a hidden button's) don't count.
@@ -382,7 +390,10 @@ bool OnDrawString(PPCContext& ctx, uint8_t* base) {
       all = all && now - t < std::chrono::milliseconds(100);
     }
     all = all && drawn_rows >= 3;
-    if (!all || now - s.below_hit < std::chrono::milliseconds(150)) return false;
+    if (!all || now - s.below_hit < std::chrono::milliseconds(150) ||
+        now - s.left_hit < std::chrono::milliseconds(150)) {
+      return false;
+    }
     s.drawn = now;
   }
   const bool showing = now - s.drawn < kRecent;

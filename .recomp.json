@@ -5,5 +5,7 @@
   "system": "Xbox 360",
   "type": "recomp",
   "status": "playable",
-  "targets": ["Windows"]
+  "targets": ["Windows"],
+  "toolchain": "Rexglue",
+  "maintainers": "thegh0sts",
 }

@@ -8,7 +8,7 @@ working session. Last updated: 2026-11-18, after the 0.3.3 release.
 | What | Where |
 |---|---|
 | Repository | `thegh0sts/bourne-conspiracy-x360-recomp`, branch `main` |
-| Developer's test clone | `C:\Users\kshla\source\repos\tbc-test` |
+| Developer's test clone | `%USERPROFILE%\source\repos\tbc-test` |
 | Test install (0.3.3) | `F:\Retail Games\tbc4\BourneConspiracyPC` (`game.log` and `install.log` at its root, `tbc.toml` in the build folder `project\out\build\win-amd64-relwithdebinfo`) |
 | Launcher settings | `%LOCALAPPDATA%\BourneConspiracyPC\settings.json`; `launcher.json` there names the install the launcher uses |
 | Native shader list (pipeline manifest) | `Documents\tbc\cache\native\565507D4.manifest.bin` (3,101 pipelines on 2026-11-18) |

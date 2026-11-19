@@ -1,0 +1,9 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Robert Ludlum's The Bourne Conspiracy",
+  "wikidata": "Q1189155",
+  "system": "Xbox 360",
+  "type": "recomp",
+  "status": "playable",
+  "targets": ["Windows"]
+}

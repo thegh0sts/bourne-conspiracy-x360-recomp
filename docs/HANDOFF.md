@@ -14,7 +14,7 @@ working session. Last updated: 2026-11-18, after the 0.3.3 release.
 | Native shader list (pipeline manifest) | `Documents\tbc\cache\native\565507D4.manifest.bin` (3,101 pipelines on 2026-11-18) |
 | SDK build output | `C:\rexglue-src\rexglue-sdk\out\install\win-amd64` (`bin\rexgpu-nativerd.dll` is the RelWithDebInfo native renderer) |
 | SDK bundles | GitHub release `sdk` ("SDK bundles"): `rexglue-sdk-0.10.1-tbc10-win-amd64.zip`, `...-tbc11-...` |
-| Skullburglar (native renderer) | pinned at `67aacb28670077e839f84931dee9b162526bbdb2`; our patches `native-plugin/patches/0001`-`0011`, applied by `tools/build_sdk.bat` after a hard reset of its checkout |
+| Skullburglar (native renderer) | pinned at `67aacb28670077e839f84931dee9b162526bbdb2`; our patches `native-plugin/patches/0001`-`0012`, applied by `tools/build_sdk.bat` after a hard reset of its checkout |
 
 ## How work is done
 
@@ -84,6 +84,11 @@ ReGPU and Glue2GPU by zer0ducksgiven (MIT; shelved).
   GPU's capabilities in), no code yet. Waiting for the go-ahead. Key findings: multisample only
   full-width surfaces (picked by pitch); occlusion queries and the shadow mask are half resolution,
   so untouched; full-resolution stencil is only cleared, so no stencil export needed.
+
+- **Native renderer patch 0012 (tiled frames)**, shared with the Eat Lead port (same SDK build in
+  `C:\rexglue-src`). No change for Bourne by default; a test with `--msaa=true` on the native renderer
+  would show whether the game's own 2x MSAA strips now work. Keep the `--msaa=false` workarounds and the
+  host MSAA plan either way.
 
 ## Open issues and waiting items
 

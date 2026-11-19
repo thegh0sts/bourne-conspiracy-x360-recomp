@@ -1,0 +1,196 @@
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index f7541b1..6a7bcbe 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
++#include <rex/graphics/pipeline/texture/info.h>  // tbc: FormatInfo (TiledResolveBase)
+ 
+ namespace bots::gfx::vk {
+ namespace {
+@@ -1066,6 +1067,26 @@ Renderer::Image* Renderer::ResolveTexture(uint32_t address, uint32_t format, uin
+   return slot.get();
+ }
+ 
++uint32_t Renderer::TiledResolveBase(uint32_t address, uint32_t format, uint32_t width, uint32_t height,
++                                    VkOffset2D& offset) {
++  offset = {0, 0};
++  const rg::FormatInfo* info = rg::FormatInfo::Get(format & 0x3F);
++  if (!info || !width || !height) return address;
++  const uint32_t bytes = info->bytes_per_block();
++  const uint32_t tile_bytes = 32 * 32 * bytes;  // the 360's tiled 2D layout: 32x32-texel blocks, row by row
++  const uint32_t tiles_x = (width + 31) / 32, tiles_y = (height + 31) / 32;
++  for (const auto& [key, image] : textures_) {
++    const auto [base, key_format, key_width, key_height] = key;
++    if (!image || base >= address || key_format != format || key_width != width || key_height != height) continue;
++    const uint32_t delta = address - base;
++    if (delta % tile_bytes || delta / tile_bytes >= tiles_x * tiles_y) continue;
++    const uint32_t tile = delta / tile_bytes;
++    offset = {int32_t(Host((tile % tiles_x) * 32)), int32_t(Host((tile / tiles_x) * 32))};
++    return base;
++  }
++  return address;
++}
++
+ void Renderer::OnDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, const ShaderLoad& ps, const Draw& draw) {
+   if (!ok_) return;
+   ScopedMicros time(stats_.draw_us);
+@@ -1188,28 +1209,36 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+     // (the depth value) or as 8888 (to restore depth). Keep both.
+     const bool float_depth =
+         regs.Get<rg::reg::RB_DEPTH_INFO>().depth_format == xe::DepthRenderTargetFormat::kD24FS8;
+-    Image* raw = ResolveTexture(dest_address, uint32_t(xe::TextureFormat::k_8_8_8_8), dest_pitch.copy_dest_pitch,
++    VkOffset2D tile_offset;
++    const uint32_t base_address = TiledResolveBase(dest_address, uint32_t(xe::TextureFormat::k_8_8_8_8),
++                                                   dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, tile_offset);
++    Image* raw = ResolveTexture(base_address, uint32_t(xe::TextureFormat::k_8_8_8_8), dest_pitch.copy_dest_pitch,
+                                 dest_pitch.copy_dest_height);
+-    Image* value = ResolveTexture(dest_address, uint32_t(float_depth ? xe::TextureFormat::k_24_8_FLOAT
++    Image* value = ResolveTexture(base_address, uint32_t(float_depth ? xe::TextureFormat::k_24_8_FLOAT
+                                                                      : xe::TextureFormat::k_24_8),
+                                   dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, true);
+     int32_t w, h, dw, dh;
+     if (raw && value && clamp_rect(*source, w, h) && clamp_rect(*raw, dw, dh)) {
+       const VkRect2D rect{{x0, y0}, {uint32_t(std::min(w, dw)), uint32_t(std::min(h, dh))}};
++      // tbc: the same area in the destination's own coordinates (a tile lands at tile_offset).
++      const VkRect2D dest_rect{{x0 + tile_offset.x, y0 + tile_offset.y}, rect.extent};
++      const bool tiled = tile_offset.x || tile_offset.y;
+       // The raw image waits until something samples it (Image::raw_depth_from); one still pending for another
+       // rect is written first, before the value image changes.
+-      if (raw->raw_depth_from && std::memcmp(&raw->raw_depth_rect, &rect, sizeof(rect))) MaterializeRawDepth(*raw);
+-      Transfer(*source, kTransferDepth, *value, kTransferDepthValue, &rect, 1.0f, samples_x, samples_y);
+-      if (lazy_raw_depth_ && !multisampled) {
++      if (raw->raw_depth_from && std::memcmp(&raw->raw_depth_rect, &dest_rect, sizeof(dest_rect))) {
++        MaterializeRawDepth(*raw);
++      }
++      Transfer(*source, kTransferDepth, *value, kTransferDepthValue, &rect, 1.0f, samples_x, samples_y, tile_offset);
++      if (lazy_raw_depth_ && !multisampled && !tiled) {
+         raw->raw_depth_from = value;
+         raw->raw_depth_float = float_depth;
+-        raw->raw_depth_rect = rect;
++        raw->raw_depth_rect = dest_rect;
+       } else {
+         Transfer(*source, float_depth ? kTransferFloatDepth : kTransferDepth, *raw,
+-                 uint32_t(xe::ColorRenderTargetFormat::k_8_8_8_8), &rect, 1.0f, samples_x, samples_y);
++                 uint32_t(xe::ColorRenderTargetFormat::k_8_8_8_8), &rect, 1.0f, samples_x, samples_y, tile_offset);
+       }
+       raw->written = value->written = ++write_clock_;
+-      DumpResolve(*value, dest_address);
++      DumpResolve(*value, base_address);
+     } else {
+       ++stats_.dropped_resolves;
+     }
+@@ -1218,7 +1247,10 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+     const auto number = dest_info.copy_dest_number;
+     const bool is_signed = number == xe::SurfaceNumberFormat::kSignedRepeatingFraction ||
+                            number == xe::SurfaceNumberFormat::kSignedInteger;
+-    Image* dest = ResolveTexture(dest_address, format, dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height,
++    VkOffset2D tile_offset;
++    const uint32_t base_address = TiledResolveBase(dest_address, format | (is_signed ? 0x200 : 0),
++                                                   dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, tile_offset);
++    Image* dest = ResolveTexture(base_address, format, dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height,
+                                  false, is_signed);
+     int32_t w, h, dw, dh;
+     if (dest && clamp_rect(*source, w, h) && clamp_rect(*dest, dw, dh)) {
+@@ -1248,7 +1280,7 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+                             : samples_x * samples_y == 2       ? kTransferResolveMsaa2
+                                                                : kTransferResolve;
+       Transfer(*source, 0, *dest, kind, &rect, std::ldexp(1.0f, int(dest_info.copy_dest_exp_bias) + (fixed ? 5 : 0)),
+-               samples_x, samples_y);
++               samples_x, samples_y, tile_offset);
+       dest->swapped = dest_info.copy_dest_swap;
+       if (dest->width == 128 && dest->height == 128) (dest->format == VK_FORMAT_R8_UNORM ? god_mask_ : god_rays_) = dest;
+       dest->written = ++write_clock_;
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index f1ba273..83049a2 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -529,8 +529,17 @@ class Renderer : public Pm4Sink {
+   bool InitPresent();
+   // samples_x/y: a resolve from an MSAA surface, which the host keeps at sample resolution; each destination texel
+   // reads the samples_x x samples_y block at its position (averaged by kTransferResolveMsaa2/4, else the first).
++  // dest_offset (resolves only): where the rect lands in the destination, relative to the rect's own position
++  // (tbc: a tile of a tiled frame resolving into the middle of the full-size texture, see TiledResolveBase).
+   void Transfer(Image& source, uint32_t source_format, Image& dest, uint32_t dest_format,
+-                const VkRect2D* rect = nullptr, float scale = 1.0f, uint32_t samples_x = 1, uint32_t samples_y = 1);
++                const VkRect2D* rect = nullptr, float scale = 1.0f, uint32_t samples_x = 1, uint32_t samples_y = 1,
++                VkOffset2D dest_offset = {0, 0});
++  // tbc: predicated tiling (Eat Lead's deferred G-buffer: two side-by-side tiles, 704 and 576 wide at 720p). Each
++  // tile is drawn at the top-left of EDRAM and resolved with RB_COPY_DEST_BASE pointing at the tile's place inside
++  // the full texture (the address of its first texel in the 360's tiled layout). If `address` falls inside a
++  // resolve texture made earlier with the same format and size, returns that texture's base address and sets
++  // `offset` to the tile's texel position; otherwise returns `address` and leaves `offset` at 0, 0.
++  uint32_t TiledResolveBase(uint32_t address, uint32_t format, uint32_t width, uint32_t height, VkOffset2D& offset);
+   // Hybrid spike (hybrid_fill.cpp): draws the queued stand-in scene into `target`; false if there was none to draw.
+   bool DrawSceneFill(Image& target);
+   void DestroySceneFill();
+diff --git a/src/gfx/vk/transfer.cpp b/src/gfx/vk/transfer.cpp
+index 33cc0df..1845f8f 100644
+--- a/src/gfx/vk/transfer.cpp
++++ b/src/gfx/vk/transfer.cpp
+@@ -45,7 +45,7 @@ layout(set = 0, binding = 0) uniform sampler2D source;
+ #if SRC == 100 || SRC == 101
+ layout(set = 0, binding = 1) uniform usampler2D stencil;
+ #endif
+-layout(push_constant) uniform Constants { ivec2 dest_size; float scale; };
++layout(push_constant) uniform Constants { ivec2 dest_size; ivec2 dest_offset; float scale; };
+ layout(location = 0) out vec4 result;
+ 
+ uint To7e3(float f) {
+@@ -66,7 +66,7 @@ uint To20e4(float f) {
+ uint ToUnorm(float f, float scale) { return uint(round(clamp(f, 0.0, 1.0) * scale)); }
+ 
+ void main() {
+-  ivec2 p = ivec2(gl_FragCoord.xy) * SOURCE_SIZE / dest_size;
++  ivec2 p = (ivec2(gl_FragCoord.xy) - dest_offset) * SOURCE_SIZE / dest_size;
+   vec4 v = FETCH(p);
+ #if DST == 200
+   result = vec4(v.r, 0.0, 0.0, 0.0);
+@@ -198,7 +198,7 @@ bool Renderer::InitTransfers() {
+       r_ != VK_SUCCESS)
+     return Fail("vkCreateDescriptorSetLayout failed", r_);
+   VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+-  const VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 12};
++  const VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 20};
+   layout_info.setLayoutCount = 1;
+   layout_info.pSetLayouts = &transfer_set_layout_;
+   layout_info.pushConstantRangeCount = 1;
+@@ -282,7 +282,8 @@ VkPipeline Renderer::FullscreenPipeline(VkShaderModule fs, VkFormat format, VkPi
+ }
+ 
+ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint32_t dest_format,
+-                        const VkRect2D* rect, float scale, uint32_t samples_x, uint32_t samples_y) {
++                        const VkRect2D* rect, float scale, uint32_t samples_x, uint32_t samples_y,
++                        VkOffset2D dest_offset) {
+   const VkPipeline pipeline = TransferPipeline(source_format, dest_format, dest.format);
+   if (!pipeline) return;
+   BeginCommands(kGpuTransfer);
+@@ -316,6 +317,15 @@ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint
+                                                           std::min(source.used_height, height)}
+                                             : VkExtent2D{width, height};
+   rendering.renderArea = rect ? *rect : VkRect2D{{0, 0}, used};
++  if (rect) {  // tbc: a tile's resolve lands at its place in the full texture
++    rendering.renderArea.offset.x += dest_offset.x, rendering.renderArea.offset.y += dest_offset.y;
++    rendering.renderArea.extent.width =
++        std::min(rendering.renderArea.extent.width, width - std::min<uint32_t>(width, rendering.renderArea.offset.x));
++    rendering.renderArea.extent.height =
++        std::min(rendering.renderArea.extent.height, height - std::min<uint32_t>(height, rendering.renderArea.offset.y));
++  } else {
++    dest_offset = {0, 0};
++  }
+   if (!rect) dest.Use(used.width, used.height);
+   rendering.layerCount = 1;
+   rendering.colorAttachmentCount = 1;
+@@ -340,8 +350,10 @@ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint
+   vk_.vkCmdSetScissor(cmd_, 0, 1, &rendering.renderArea);
+   struct {
+     int32_t dest_size[2];
++    int32_t dest_offset[2];
+     float scale;
+   } constants{{int32_t(rect ? source.width / samples_x : width), int32_t(rect ? source.height / samples_y : height)},
++              {dest_offset.x, dest_offset.y},
+               scale};
+   vk_.vkCmdPushConstants(cmd_, transfer_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+   vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);

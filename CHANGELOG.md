@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Renderer
+- **Native renderer: tiled frames** (patch `0012-tiled-resolve-offset.patch`, from the Eat Lead port). A game that draws its frame in tiles (predicated tiling) copies each tile into its place in the full texture; the renderer now puts it there instead of into a separate texture, so a tiled frame shows whole. Bourne doesn't tile by default (`--msaa=false`), so nothing changes in its picture; with `--msaa=true` the scene's two strips might now show whole on the native renderer (untested). The `--msaa=false` workarounds stay, and host MSAA (`docs/native-msaa.md`) is still the plan for anti-aliasing.
+
 ### Fixes
 - **Quit Game showed under Replay Chapter's list again** once five chapters were unlocked: the list then fills exactly the main menu's five rows with nothing under them, which is what the 0.3.2 check took for the main menu. Text to the left of the labels in those rows (the chapters' cities) now also means it isn't the main menu.
 

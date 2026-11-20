@@ -7,5 +7,5 @@
   "status": "playable",
   "targets": ["Windows"],
   "toolchain": "Rexglue",
-  "maintainers": "thegh0sts",
+  "maintainers": "thegh0sts"
 }

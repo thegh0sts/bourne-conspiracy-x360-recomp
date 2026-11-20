@@ -327,7 +327,36 @@ struct HudTexture {
   uint32_t check_x = 0, check_y = 0;
   std::string keys;               // the keys drawn, to redo it when binds change
   bool all_keys = false;          // only patched when every badge's key has a glyph
+  // A whole replacement picture (keys/qte/<whole>.png, the texture's size): drawn instead of the badges while every
+  // badge's key is the one the picture shows (whole_keys: bind -> key). The QTE textures' 3D W/A/S/D keys
+  // (assets/kbm-test/make_kbm_diamond.py), used with the default W/A/S/D QTE binds.
+  const char* whole = nullptr;
 };
+
+// The QTE textures' replacement pictures show these keys for these binds.
+const std::unordered_map<std::string, std::string>& QteWholeKeys() {
+  static const std::unordered_map<std::string, std::string> m = {
+      {"keybind_a@qte", "s"}, {"keybind_b@qte", "d"}, {"keybind_x@qte", "a"}, {"keybind_y@qte", "w"}};
+  return m;
+}
+
+// keys/qte/<name>.png, decoded once (empty if missing).
+const Image& WholeImage(const char* name) {
+  static std::unordered_map<std::string, Image> cache;
+  auto it = cache.find(name);
+  if (it != cache.end()) return it->second;
+  Image img;
+  for (const char* dir : {"keys/qte", "assets/keys/qte"}) {
+    std::ifstream f(std::filesystem::path(dir) / (std::string(name) + ".png"), std::ios::binary);
+    if (!f) continue;
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    img.rgba = bytes.empty() ? std::vector<uint8_t>{} : rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), img.w, img.h);
+    if (img.rgba.empty()) img.w = img.h = 0;
+    break;
+  }
+  REXLOG_INFO("key_glyphs: QTE picture {}: {}", name, img.rgba.empty() ? std::string("none") : std::to_string(img.w) + "x" + std::to_string(img.h));
+  return cache.emplace(name, std::move(img)).first->second;
+}
 
 std::vector<HudTexture>& HudTextures() {
   static std::vector<HudTexture> list = [] {
@@ -343,6 +372,7 @@ std::vector<HudTexture>& HudTextures() {
     v.push_back(interact);
     // QTE prompt: "@qte" binds show the W / A / S / D keys while --qte_wasd is on.
     HudTexture presses{"BourneUIPlatformSpecific.ButtonPresses", 128, 512, {}};
+    presses.whole = "ButtonPresses";
     presses.badges.push_back({0, 0, {40, 60, 88, 100}, 64.0f, 80.5f, 46, 34, "keybind_a@qte"});
     presses.badges.push_back({0, 128, {80, 36, 128, 72}, 102.5f, 53.0f, 44, 32, "keybind_b@qte"});
     presses.badges.push_back({0, 256, {0, 36, 48, 72}, 25.5f, 53.0f, 44, 32, "keybind_x@qte"});
@@ -358,6 +388,8 @@ std::vector<HudTexture>& HudTextures() {
     HudTexture diamond{"BourneUIPlatformSpecific.ButtonPressesDiamond", 128, 512, {}};
     HudTexture alone{"BourneUIPlatformSpecific.ButtonPressesDiamondNoOutline", 128, 512, {}};
     diamond.all_keys = alone.all_keys = true;
+    diamond.whole = "ButtonPressesDiamond";
+    alone.whole = "ButtonPressesDiamondNoOutline";
     for (int c = 0; c < 4; ++c) {
       const Spot& lit = spots[c];
       diamond.badges.push_back({0, c * 128, {0, 0, 128, 128}, lit.cx, lit.cy, 44, 34, lit.bind});
@@ -833,10 +865,28 @@ void PatchHud(const PPCContext& ctx, uint8_t* base, const std::function<std::str
       }
       continue;
     }
-    if (t.all_keys && std::find(images.begin(), images.end(), nullptr) != images.end()) {
+    bool whole = false;
+    if (t.whole) {
+      const Image& img = WholeImage(t.whole);
+      bool match = !img.rgba.empty() && img.w == int(t.width) && img.h == int(t.height);
+      for (const Badge& b : t.badges) {
+        const auto k = QteWholeKeys().find(b.bind);
+        if (!match || k == QteWholeKeys().end() || Lower(key_for(b.bind)) != k->second) {
+          match = false;
+          break;
+        }
+      }
+      if (match) {
+        Badge all{0, 0, {0, 0, int(t.width), int(t.height)}, t.width / 2.0f, t.height / 2.0f, float(t.width),
+                  float(t.height), t.badges[0].bind};
+        DrawBadge(base, p, all, &img);
+        whole = true;
+      }
+    }
+    if (!whole && t.all_keys && std::find(images.begin(), images.end(), nullptr) != images.end()) {
       continue;  // a key without a glyph: the whole prompt stays the controller's
     }
-    for (size_t i = 0; i < t.badges.size(); ++i) {
+    for (size_t i = 0; !whole && i < t.badges.size(); ++i) {
       // A key without an image keeps the controller badge: better than an empty space.
       if (images[i]) DrawBadge(base, p, t.badges[i], images[i]);
     }
@@ -847,7 +897,7 @@ void PatchHud(const PPCContext& ctx, uint8_t* base, const std::function<std::str
     t.object = object;
     t.data = p.data;
     t.keys = keys;
-    REXLOG_INFO("key_glyphs: {} badges drawn as keys {}", t.name, keys);
+    REXLOG_INFO("key_glyphs: {} {} keys {}", t.name, whole ? "replaced by its 3D picture for" : "badges drawn as", keys);
   }
 }
 

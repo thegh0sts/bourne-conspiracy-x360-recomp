@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Input
+- **Keyboard and mouse no longer changes the controller config.** The keyboard-and-mouse changes to the game's config (fight attacks moved off X / Y onto the mouse buttons, mouse camera rates, aim assist off) went into the game's own `Coalesced.ini` and stayed there. A later run without the launcher's keyboard-and-mouse flags (`Play.bat`, a build started by hand) then had a controller whose X and Y did nothing in fights. The launcher now writes the keyboard-and-mouse config to its own copy in `game\BourneGame\KeyboardMouse`, and the game reads that copy only when started with `--mnk_mode=true` (`src/kbm_config.cpp`). Everything else stays in the game's own file.
+- **New key glyphs.** Every keyboard and mouse prompt is now a flat, light grey key (`assets/keys`, made by `assets/kbm-test/make_key_glyphs.py`), so only QTEs are in colour.
+- **3D takedown diamond.** With keyboard and mouse, the QTE diamond (ButtonPresses, ButtonPressesDiamond, ButtonPressesDiamondNoOutline) is drawn as coloured 3D W / A / S / D keys, following the original diamond's layout and colours (`assets/keys/qte`, made by `assets/kbm-test/make_kbm_diamond.py`). If any QTE key is rebound away from W / A / S / D, the keys are drawn one by one as before.
+
 ### Renderer
 - **Native renderer: tiled frames** (patch `0012-tiled-resolve-offset.patch`, from the Eat Lead port). A game that draws its frame in tiles (predicated tiling) copies each tile into its place in the full texture; the renderer now puts it there instead of into a separate texture, so a tiled frame shows whole. Bourne doesn't tile by default (`--msaa=false`), so nothing changes in its picture; with `--msaa=true` the scene's two strips might now show whole on the native renderer (untested). The `--msaa=false` workarounds stay, and host MSAA (`docs/native-msaa.md`) is still the plan for anti-aliasing.
 

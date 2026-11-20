@@ -13,7 +13,7 @@ working session. Last updated: 2026-11-18, after the 0.3.3 release.
 | Launcher settings | `%LOCALAPPDATA%\BourneConspiracyPC\settings.json`; `launcher.json` there names the install the launcher uses |
 | Native shader list (pipeline manifest) | `Documents\tbc\cache\native\565507D4.manifest.bin` (3,101 pipelines on 2026-11-18) |
 | SDK build output | `C:\rexglue-src\rexglue-sdk\out\install\win-amd64` (`bin\rexgpu-nativerd.dll` is the RelWithDebInfo native renderer) |
-| SDK bundles | GitHub release `sdk` ("SDK bundles"): `rexglue-sdk-0.10.1-tbc10-win-amd64.zip`, `...-tbc11-...` |
+| SDK bundles | GitHub release `sdk` ("SDK bundles"): `rexglue-sdk-0.10.1-tbc10-win-amd64.zip`, `...-tbc11-...`; next: `...-tbc12-...` (not uploaded yet) |
 | Skullburglar (native renderer) | pinned at `67aacb28670077e839f84931dee9b162526bbdb2`; our patches `native-plugin/patches/0001`-`0012`, applied by `tools/build_sdk.bat` after a hard reset of its checkout |
 
 ## How work is done
@@ -89,6 +89,15 @@ ReGPU and Glue2GPU by zer0ducksgiven (MIT; shelved).
   `C:\rexglue-src`). No change for Bourne by default; a test with `--msaa=true` on the native renderer
   would show whether the game's own 2x MSAA strips now work. Keep the `--msaa=false` workarounds and the
   host MSAA plan either way.
+
+- **SDK patch 0012, texture exponent bias** (2026-11-20, from the 007 port): the SPIR-V translator read
+  exp_adjust from fetch constant word 4 (inside the LOD bias) instead of word 3. In 007 it made the menus
+  invisible on the native renderer. Bourne: SDK tag `tbc12` in `tools/build_sdk.bat` (distinct from Eat
+  Lead's own12/own13 so switching projects re-patches the shared SDK), bundle `tbc12`. **To do:** run
+  `tools\build_native.bat`, delete the files in `Documents\tbc\cache\native` except `565507D4.manifest.bin`
+  (cached pipelines keep the old shader translations; the manifest is only the list to rebuild), and compare
+  the native picture with 0.3.3 (look for textures that change brightness). Then build the
+  installer and `gh release upload sdk installer\payload\sdk\rexglue-sdk-0.10.1-tbc12-win-amd64.zip` with 0.3.4.
 
 ## Open issues and waiting items
 

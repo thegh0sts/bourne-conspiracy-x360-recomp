@@ -5,6 +5,8 @@
 ### Renderer
 - **Native renderer: tiled frames** (patch `0012-tiled-resolve-offset.patch`, from the Eat Lead port). A game that draws its frame in tiles (predicated tiling) copies each tile into its place in the full texture; the renderer now puts it there instead of into a separate texture, so a tiled frame shows whole. Bourne doesn't tile by default (`--msaa=false`), so nothing changes in its picture; with `--msaa=true` the scene's two strips might now show whole on the native renderer (untested). The `--msaa=false` workarounds stay, and host MSAA (`docs/native-msaa.md`) is still the plan for anti-aliasing.
 
+- **Native renderer: texture brightness fix** (SDK patch `tools/sdk-patches/0012-texture-exp-adjust-word.patch`, found porting 007 Quantum of Solace). The shader translator the native renderer uses read a texture's exponent bias (a power-of-two brightness factor) from the wrong field of its fetch constant, inside the mip LOD bias. Textures with a zero LOD bias were unaffected; any with one setting those bits came out too dark or too bright (in 007, menu text and images 1/256 as bright: invisible). New SDK bundle **`tbc12`** (`SDK_BUNDLE` in `installer/build_installer.bat`), which also carries renderer patch 0012: a reinstall replaces the bundle. Not yet compared in Bourne.
+
 ### Fixes
 - **Quit Game showed under Replay Chapter's list again** once five chapters were unlocked: the list then fills exactly the main menu's five rows with nothing under them, which is what the 0.3.2 check took for the main menu. Text to the left of the labels in those rows (the chapters' cities) now also means it isn't the main menu.
 

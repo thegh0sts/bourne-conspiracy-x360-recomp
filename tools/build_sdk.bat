@@ -23,7 +23,8 @@ rem renderer plugin (tools\build_native.bat); they change nothing in a D3D12-onl
 set "PATCHES=0002 0003 0004 0006 0008 0009 0024 0026 0027 0029 0030"
 rem Our own SDK fixes (tools\sdk-patches\*.patch), applied after Skullburglar's. Change this tag
 rem when that folder changes, so an existing SDK checkout is patched again.
-set "OWN_PATCHES=own11"
+rem The tag must differ from the other ports' (Eat Lead: own12/own13), which share C:\rexglue-src.
+set "OWN_PATCHES=tbc12"
 set "PATCH_SET=%PATCHES% %OWN_PATCHES%"
 
 set "WORK=%~1"

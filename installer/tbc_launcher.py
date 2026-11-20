@@ -566,8 +566,17 @@ def _edit_camera_freedom(body, wide_pitch, no_auto_recenter, linear_stick):
     return "\r\n".join(lines)
 
 
+# The keyboard-and-mouse copy of the config (Coalesced.ini and Xbox360TOC.txt), under the game
+# folder. The game reads it instead of its own only when started with --mnk_mode=true
+# (src/kbm_config.cpp), so a run without the launcher's keyboard-and-mouse flags (Play.bat, a
+# build started by hand) gets the controller config: up to 0.3.3 the keyboard-and-mouse changes
+# went into the game's own file and stayed, leaving a controller's X / Y without attacks in fights.
+KBM_CONFIG_DIR = Path("BourneGame") / "KeyboardMouse"
+
+
 def apply_game_config(game: Path, s) -> str:
-    """Rewrite Coalesced.ini from the original with settings applied. Returns a short summary."""
+    """Rewrite Coalesced.ini from the original with settings applied, and with keyboard and mouse
+    ticked, its keyboard-and-mouse copy too. Returns a short summary."""
     conf = game / cfg.CONFIG_REL
     toc = game / cfg.TOC_REL
     conf_bak = conf.with_name(conf.name + ".bak")
@@ -577,6 +586,30 @@ def apply_game_config(game: Path, s) -> str:
     if not toc_bak.exists():
         shutil.copy2(toc, toc_bak)
 
+    files, n = _build_game_config(conf_bak, s, kbm=False)
+    if files is None:
+        # Everything at default: put the original files back.
+        shutil.copy2(conf_bak, conf)
+        shutil.copy2(toc_bak, toc)
+        summary = tr("original game config")
+    else:
+        shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
+        cfg.write(game, files)
+        summary = tr("{n} config change(s)", n=n)
+
+    kbm_dir = game / KBM_CONFIG_DIR
+    if s.get("kbm"):
+        kbm_files, _ = _build_game_config(conf_bak, s, kbm=True)
+        kbm_dir.mkdir(parents=True, exist_ok=True)
+        cfg.write_to(kbm_files, kbm_dir / cfg.CONFIG_REL.name, toc_bak, kbm_dir / cfg.TOC_REL.name)
+    elif kbm_dir.exists():
+        shutil.rmtree(kbm_dir, ignore_errors=True)
+    return summary
+
+
+def _build_game_config(conf_bak: Path, s, kbm: bool):
+    """The config's files with the settings applied, for keyboard and mouse (kbm) or not, and
+    the number of changes; (None, 0) when nothing differs from the original."""
     edits = []  # (file, section, key, value)
     _, cap = FPS_MODE[s["fps"]]
     if cap:
@@ -595,10 +628,10 @@ def apply_game_config(game: Path, s) -> str:
         edits.append(("Xe-BourneInput.ini", "HM_Engine.HmPlayerInput", "DeadZone", f"{int(s['deadzone']) / 100:.2f}"))
     fov = int(s["fov"])
     turn = int(s.get("turn_speed", 100))
-    linear_aim = bool(s.get("kbm"))  # the mouse gets the full turn speed while aiming
+    linear_aim = kbm  # the mouse gets the full turn speed while aiming
     look_edit = turn != 100 or linear_aim
-    fight_mouse = bool(s.get("kbm"))  # with keyboard and mouse, fights are always on the mouse buttons
-    mouse_camera = bool(s.get("kbm")) and bool(s.get("mouse_look", True))
+    fight_mouse = kbm  # with keyboard and mouse, fights are always on the mouse buttons
+    mouse_camera = kbm and bool(s.get("mouse_look", True))
     wide_pitch = bool(s.get("wide_pitch", True))
     no_recenter = bool(s.get("no_auto_recenter"))
     linear_stick = bool(s.get("linear_stick"))
@@ -606,7 +639,7 @@ def apply_game_config(game: Path, s) -> str:
     linear_aim = linear_aim or linear_stick
     look_edit = turn != 100 or linear_aim
 
-    if s.get("kbm") and not s.get("kbm_aim_assist", False):
+    if kbm and not s.get("kbm_aim_assist", False):
         # The game's aim assist, the reticle sticking to a target while either of you strafes
         # (Hm_Engine.HmTargetCirclePositionAdjuster; its own comment on MaxStrafeSticky: "Between
         # zero and one, represents the most assist-y number you could want"), off with keyboard and
@@ -620,10 +653,7 @@ def apply_game_config(game: Path, s) -> str:
         edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
 
     if not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera and not camera_free:
-        # Everything at default: put the original files back.
-        shutil.copy2(conf_bak, conf)
-        shutil.copy2(toc_bak, toc)
-        return tr("original game config")
+        return None, 0
 
     files = cfg.decode(conf_bak.read_bytes())
     for short, section, key, value in edits:
@@ -662,9 +692,7 @@ def apply_game_config(game: Path, s) -> str:
                 continue
             name, body = files[i]
             files[i] = (name, _edit_camera_freedom(body, wide_pitch, no_recenter, linear_stick))
-    shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
-    cfg.write(game, files)
-    return tr("{n} config change(s)", n=len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free)
+    return files, len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:

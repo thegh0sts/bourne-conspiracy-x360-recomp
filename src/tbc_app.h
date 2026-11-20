@@ -19,6 +19,7 @@
 #include "debug_tools.h"
 #include "display_refresh.h"
 #include "fps_overlay.h"
+#include "kbm_config.h"
 
 namespace tbc {
 // The log's first lines: the release, the build time and the launch options (version_log.cpp).
@@ -83,6 +84,10 @@ class TbcApp : public rex::ReXApp {
     tbc::display::MatchDisplayRefreshRate();
   }
 
+  // The file system is set up and the game hasn't started: with --mnk_mode, its config comes
+  // from the keyboard-and-mouse copy the launcher writes (kbm_config.cpp).
+  void OnPostLoadXexImage() override { tbc::kbm_config::Mount(runtime(), game_data_root()); }
+
   void OnPostSetup() override {
     if (REXCVAR_GET(show_fps) && !native_renderer_) {  // the native renderer draws its own
       tbc::overlay::StartFpsOverlay();
@@ -123,7 +128,6 @@ class TbcApp : public rex::ReXApp {
 
   // Other hooks available for customization:
   // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // Folders the game lists at startup. Some disc extractors drop empty folders (the disc's Engine

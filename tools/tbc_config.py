@@ -106,10 +106,15 @@ def write(game: Path, files):
         bak = p.with_name(p.name + ".bak")
         if not bak.exists():
             shutil.copy2(p, bak)
+    write_to(files, cfg, toc, toc)
+
+
+def write_to(files, cfg: Path, toc_src: Path, toc: Path):
+    """Write the config to cfg, and toc_src with its Coalesced.ini entry updated to toc."""
     data = encode(files)
     cfg.write_bytes(data)
     md5 = hashlib.md5(data).hexdigest()
-    lines = toc.read_bytes().decode("latin-1").split("\n")
+    lines = toc_src.read_bytes().decode("latin-1").split("\n")
     for i, line in enumerate(lines):
         parts = line.rstrip("\r").split(" ")
         if len(parts) >= 5 and parts[3].lower() == TOC_NAME.lower():

@@ -39,6 +39,7 @@ set(TBC_SOURCES
     src/achievement_list.cpp
     src/vibration.cpp
     src/menu_quit.cpp
+    src/kbm_config.cpp
 )
 
 if(WIN32)

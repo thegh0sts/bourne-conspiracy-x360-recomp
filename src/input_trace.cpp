@@ -22,6 +22,7 @@
 #include <rex/runtime.h>
 
 #include "kbm_move.h"
+#include "scene_feed.h"
 #include "prompts.h"
 #include "qte.h"
 
@@ -94,6 +95,7 @@ extern "C" REX_FUNC(sub_823213D8) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
   __imp__sub_823213D8(ctx, base);
+  tbc::scenefeed::Poll(base);  // n1 research (--scenefeed); nothing unless asked
   if (!state || user >= 4 || ctx.r3.u32 != 0) {
     return;
   }

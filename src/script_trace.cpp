@@ -173,12 +173,17 @@ void Kismet(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t ob
 
 }  // namespace
 
+namespace tbc::n1probe {
+void OnProcessEvent(const PPCContext& ctx, uint8_t* base);  // n1_probe.cpp
+}
+
 extern "C" REX_FUNC(sub_828B8750) {
   const bool trace = REXCVAR_GET(script_trace);
   const std::string& filter_text = REXCVAR_GET(script_trace_filter);
   const uint32_t object = ctx.r3.u32;
   const uint32_t function = ctx.r4.u32;
   tbc::qte::OnProcessEvent(ctx, base, ctx.r4.u32);
+  tbc::n1probe::OnProcessEvent(ctx, base);
   const std::string& dump_text = REXCVAR_GET(script_trace_dump);
   const bool kismet = REXCVAR_GET(script_trace_kismet);
   if ((!trace && !kismet && filter_text.empty() && dump_text.empty()) || !object || !function) {

@@ -33,6 +33,8 @@ set(TBC_SOURCES
     src/msaa.cpp
     src/ultrawide.cpp
     src/qte.cpp
+    src/n1_probe.cpp
+    src/scene_feed.cpp
     src/glyph_probe.cpp
     src/mouse_look.cpp
     src/key_glyphs.cpp

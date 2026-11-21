@@ -1,0 +1,8 @@
+[package]
+name = "n1probe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ue3 = { path = "../ue3" }
+anyhow = "1"

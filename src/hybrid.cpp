@@ -73,6 +73,16 @@ const bool g_state_published = [] {
 #else
   setenv(bots::kHybridStateEnv, value, 1);
 #endif
+  // n1's lighting defaults are 50 Cent's. Bourne's per-vertex baked light is stored linearly (50 Cent's port raises it
+  // to the power 2.2): vlgamma=1 unless the environment already sets n1's knobs.
+  if (!std::getenv("BOTS_N1_ENVP")) {
+#ifdef _WIN32
+    SetEnvironmentVariableA("BOTS_N1_ENVP", "vlgamma=1");
+    _putenv_s("BOTS_N1_ENVP", "vlgamma=1");
+#else
+    setenv("BOTS_N1_ENVP", "vlgamma=1", 1);
+#endif
+  }
   return true;
 }();
 

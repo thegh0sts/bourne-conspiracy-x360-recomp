@@ -95,6 +95,9 @@
 REXCVAR_DEFINE_STRING(scenefeed, "", "Debug",
                       "Development (n1): a scene feed command, e.g. \"dump 5 30\" (5 frames, every 30th) or \"census\"");
 REXCVAR_DEFINE_INT32(scenefeed_delay, 120, "Debug", "Development (n1): seconds after the first frame to run --scenefeed");
+REXCVAR_DEFINE_STRING(n1_feed, "lights,fog,post", "Debug",
+                      "Development (n1): what fill 4 sends besides meshes: any of lights, fog, post, envs (characters' "
+                      "light environments; Bourne's hold zero-brightness lights, so off by default), or none");
 REXCVAR_DEFINE_STRING(scenefeed_dir, "scenefeed", "Debug", "Development (n1): where --scenefeed writes its files");
 
 namespace tbc::scenefeed {
@@ -1519,6 +1522,322 @@ const char* Intern(const std::string& v) {
   return it->second;
 }
 
+// ---- Lights, fog and post for n1 (skullburglar's LightsBin / FogBin / PostBin, B-188; hybrid_state.h HybridLighting) ----
+// Read from the same guest objects the JSON dump writes, with the renderer's defaults for a missing property.
+// Property records are looked up once per class. Bourne's reflection offsets: Children +0x44, Offset +0x60, the
+// subclass's first field (BitMask / Struct / Enum) +0x80, 4-byte FNames in an enum's names.
+struct FieldEx {
+  uint32_t offset = 0xFFFFFFFF, mask = 0, sub = 0;  // sub: a struct property's struct, a byte property's enum
+  bool ok() const { return offset != 0xFFFFFFFF; }
+};
+
+FieldEx FindEx(uint32_t cls, const char* name) {
+  for (int depth = 0; Readable(cls) && depth < 16; cls = U32(cls + 0x3C), ++depth)
+    for (uint32_t f = U32(cls + kChildren), n = 0; Readable(f) && n < 4096; f = U32(f + 0x40), ++n)
+      if (!std::strcmp(NameText(U32(f + 0x2C)), name)) {
+        FieldEx out{U32(f + kPropOffset), 0, U32(f + kSubFirst)};
+        if (!std::strcmp(ClassName(f), "BoolProperty")) out.mask = out.sub;
+        return out;
+      }
+  return {};
+}
+FieldEx Member(const FieldEx& prop, const char* name) { return prop.ok() ? FindEx(prop.sub, name) : FieldEx{}; }
+float FieldF(uint32_t base, const FieldEx& f, float fallback) { return f.ok() ? F32(base + f.offset) : fallback; }
+bool FieldB(uint32_t base, const FieldEx& f) { return f.ok() && (U32(base + f.offset) & f.mask); }
+
+struct ColorLayout {
+  FieldEx r, g, b;
+  void Init(const FieldEx& prop) { r = Member(prop, "R"), g = Member(prop, "G"), b = Member(prop, "B"); }
+  void Bytes(uint32_t base, const FieldEx& prop, float out[3]) const {
+    const uint32_t at = base + prop.offset;
+    out[0] = r.ok() ? float(*Raw(at + r.offset)) : 0.f;
+    out[1] = g.ok() ? float(*Raw(at + g.offset)) : 0.f;
+    out[2] = b.ok() ? float(*Raw(at + b.offset)) : 0.f;
+  }
+};
+
+constexpr uint32_t kLfEnabled = 1, kLfBaked = 2, kLfCast = 4, kLfStatic = 8, kLfDynamic = 16, kLfCastShadows = 32,
+                   kLfModulated = 64, kLfSkyRaw = 128, kLfUseVolumes = 256;
+
+struct LightLayout {
+  int kind = -1;
+  FieldEx l2w, brightness, color, affects, channels, direct, lower_b, lower_c, wsil, env, enabled, radius, falloff,
+      inner, outer, cast, ch_static, ch_dynamic, use_volumes;
+  FieldEx cast_shadows, shadow_mode, mod_color, mod_r, mod_g, mod_b, mod_fade, shadow_falloff, min_falloff;
+  int modulate = -1;
+  ColorLayout color_l, lower_l;
+  FieldEx sh_r, sh_g, sh_b, sh_rv, sh_gv, sh_bv;
+};
+
+const LightLayout& LayoutFor(uint32_t light) {
+  static std::unordered_map<uint32_t, LightLayout> layouts;
+  const uint32_t cls = U32(light + kClass);
+  auto [it, fresh] = layouts.try_emplace(cls);
+  LightLayout& L = it->second;
+  if (!fresh) return L;
+  const auto is = [&](const char* n) { return ClassChainHas(cls, n); };
+  L.kind = is("SpotLightComponent")                ? 1
+           : is("PointLightComponent")             ? 0
+           : is("DirectionalLightComponent")       ? 2
+           : is("SphericalHarmonicLightComponent") ? 3
+           : is("SkyLightComponent")               ? 4
+                                                   : -1;
+  if (L.kind < 0) return L;
+  L.l2w = FindEx(cls, "LightToWorld"), L.brightness = FindEx(cls, "Brightness"), L.color = FindEx(cls, "LightColor");
+  L.affects = FindEx(cls, "LightAffectsClassification"), L.channels = FindEx(cls, "LightingChannels");
+  L.direct = FindEx(cls, "UseDirectLightMap"), L.lower_b = FindEx(cls, "LowerBrightness");
+  L.lower_c = FindEx(cls, "LowerColor"), L.wsil = FindEx(cls, "WorldSpaceIncidentLighting");
+  L.env = FindEx(cls, "LightEnvironment"), L.enabled = FindEx(cls, "bEnabled"), L.radius = FindEx(cls, "Radius");
+  L.falloff = FindEx(cls, "FalloffExponent"), L.inner = FindEx(cls, "InnerConeAngle");
+  L.outer = FindEx(cls, "OuterConeAngle"), L.cast = FindEx(cls, "CastDynamicShadows");
+  L.ch_static = Member(L.channels, "Static"), L.ch_dynamic = Member(L.channels, "Dynamic");
+  L.use_volumes = FindEx(cls, "bUseVolumes");
+  L.cast_shadows = FindEx(cls, "CastShadows"), L.shadow_mode = FindEx(cls, "LightShadowMode");
+  L.mod_color = FindEx(cls, "ModShadowColor"), L.mod_fade = FindEx(cls, "ModShadowFadeoutExponent");
+  L.shadow_falloff = FindEx(cls, "ShadowFalloffExponent"), L.min_falloff = FindEx(cls, "MinShadowFalloffRadius");
+  L.mod_r = Member(L.mod_color, "R"), L.mod_g = Member(L.mod_color, "G"), L.mod_b = Member(L.mod_color, "B");
+  if (L.shadow_mode.ok() && IsObject(L.shadow_mode.sub)) {
+    const uint32_t names = U32(L.shadow_mode.sub + 0x44), count = U32(L.shadow_mode.sub + 0x48);
+    for (uint32_t k = 0; Readable(names) && k < count && k < 256; ++k)
+      if (!std::strcmp(NameText(U32(names + 4 * k)), "LightShadow_Modulate")) L.modulate = int(k);
+  }
+  L.color_l.Init(L.color), L.lower_l.Init(L.lower_c);
+  L.sh_r = Member(L.wsil, "R"), L.sh_g = Member(L.wsil, "G"), L.sh_b = Member(L.wsil, "B");
+  L.sh_rv = Member(L.sh_r, "V"), L.sh_gv = Member(L.sh_g, "V"), L.sh_bv = Member(L.sh_b, "V");
+  REXLOG_INFO("scenefeed lights: {} kind {}: color +{:X} brightness +{:X} l2w +{:X} env +{:X} enabled +{:X}/{:X} radius +{:X}",
+              ClassName(light), L.kind, L.color.offset, L.brightness.offset, L.l2w.offset, L.env.offset,
+              L.enabled.offset, L.enabled.mask, L.radius.offset);
+  return L;
+}
+
+struct DleInfo {
+  uint32_t name = 0, outer = 0;
+  const char* path = nullptr;
+  uint32_t stamp = 0, index = 0;
+};
+std::unordered_map<uint32_t, DleInfo> g_dle;
+
+uint32_t EnvIndex(bots::HybridLighting& out, uint32_t dle, uint32_t stamp) {
+  DleInfo& d = g_dle[dle];
+  if (!d.path || d.name != U32(dle + 0x2C) || d.outer != U32(dle + 0x28)) {
+    d.name = U32(dle + 0x2C), d.outer = U32(dle + 0x28);
+    d.path = Intern(Path(dle));
+    d.stamp = 0;
+  }
+  if (d.stamp != stamp) {
+    d.stamp = stamp;
+    d.index = uint32_t(out.paths.size());
+    out.paths.push_back(d.path);
+  }
+  return d.index;
+}
+
+// Baked or disabled level point and spot lights are the lightmaps' business and left out.
+void LightsBin(bots::HybridLighting& out, uint32_t stamp, bool envs) {
+  for (uint32_t l : g_extras.lights) {
+    if (!IsObject(l)) continue;
+    const LightLayout& L = LayoutFor(l);
+    if (L.kind < 0) continue;
+    const uint32_t dle = L.env.ok() ? U32(l + L.env.offset) : 0;
+    const bool has_env = IsObject(dle);
+    if (has_env && !envs) continue;
+    const bool baked = FieldB(l, L.direct) || (L.affects.ok() && *Raw(l + L.affects.offset) == 2);
+    if (!has_env && (L.kind == 0 || L.kind == 1) && (!FieldB(l, L.enabled) || baked)) continue;
+    bots::HybridLight& h = out.lights.emplace_back();
+    std::memset(&h, 0, sizeof(h));
+    h.kind = uint32_t(L.kind);
+    h.flags = (FieldB(l, L.enabled) ? kLfEnabled : 0) | (baked ? kLfBaked : 0) | (FieldB(l, L.cast) ? kLfCast : 0) |
+              (!L.channels.ok() || (L.ch_static.ok() && (U32(l + L.channels.offset + L.ch_static.offset) & L.ch_static.mask))
+                   ? kLfStatic
+                   : 0) |
+              (!L.channels.ok() || (L.ch_dynamic.ok() && (U32(l + L.channels.offset + L.ch_dynamic.offset) & L.ch_dynamic.mask))
+                   ? kLfDynamic
+                   : 0);
+    if (FieldB(l, L.cast_shadows)) h.flags |= kLfCastShadows;
+    if (FieldB(l, L.use_volumes)) h.flags |= kLfUseVolumes;
+    if (L.modulate >= 0 && *Raw(l + L.shadow_mode.offset) == L.modulate) h.flags |= kLfModulated;
+    for (int k = 0; k < 3; ++k) {
+      const FieldEx& m = k == 0 ? L.mod_r : k == 1 ? L.mod_g : L.mod_b;
+      h.mod_shadow[k] = L.mod_color.ok() && m.ok() ? F32(l + L.mod_color.offset + m.offset) : 1.f;
+    }
+    h.mod_fade_exp = FieldF(l, L.mod_fade, 3.f), h.shadow_falloff_exp = FieldF(l, L.shadow_falloff, 2.f);
+    h.min_shadow_falloff_radius = FieldF(l, L.min_falloff, 0.f);
+    h.env = has_env ? EnvIndex(out, dle, stamp) : bots::kHybridNone;
+    h.radius = FieldF(l, L.radius, 0.f), h.falloff = FieldF(l, L.falloff, 2.f);
+    h.inner_deg = FieldF(l, L.inner, 0.f), h.outer_deg = FieldF(l, L.outer, 44.f);
+    if (L.l2w.ok()) {
+      const uint32_t m = l + L.l2w.offset;
+      for (int k = 0; k < 3; ++k) h.pos[k] = F32(m + 4 * (12 + k)), h.axis[k] = F32(m + 4 * (8 + k));
+    }
+    const float brightness = FieldF(l, L.brightness, 1.f);
+    float c[3] = {0, 0, 0};
+    if (L.color.ok()) L.color_l.Bytes(l, L.color, c);
+    for (int k = 0; k < 3; ++k) h.color[k] = (c[k] / 255.f) * brightness;
+    const float lower_b = FieldF(l, L.lower_b, 0.f);
+    float lc[3] = {0, 0, 0};
+    if (L.lower_c.ok()) L.lower_l.Bytes(l, L.lower_c, lc);
+    for (int k = 0; k < 3; ++k) h.lower[k] = (lc[k] / 255.f) * lower_b;
+    if (L.kind >= 0 && L.kind <= 3)
+      for (int k = 0; k < 3; ++k) h.lower[k] = c[k] / 255.f;
+    if (L.kind == 4) {
+      for (int k = 0; k < 3; ++k) h.pos[k] = c[k] / 255.f, h.axis[k] = lc[k] / 255.f;
+      h.flags |= kLfSkyRaw;
+    }
+    h.sh = -1;
+    if (L.wsil.ok() && L.sh_rv.ok() && L.sh_gv.ok() && L.sh_bv.ok()) {
+      const uint32_t w = l + L.wsil.offset;
+      h.sh = int32_t(out.sh.size() / 27);
+      for (const auto& [m, v] : {std::pair{&L.sh_r, &L.sh_rv}, {&L.sh_g, &L.sh_gv}, {&L.sh_b, &L.sh_bv}})
+        for (int k = 0; k < 9; ++k) out.sh.push_back(F32(w + m->offset + v->offset + 4 * k));
+    }
+  }
+}
+
+void FogBin(bots::HybridFog& fog) {
+  std::memset(&fog, 0, sizeof(fog));
+  for (uint32_t f : g_extras.fog) {
+    if (!IsObject(f) || std::strcmp(ClassName(f), "HeightFogComponent")) continue;
+    const uint32_t cls = U32(f + kClass);
+    static std::unordered_map<uint32_t, std::array<FieldEx, 7>> layouts;
+    auto [it, fresh] = layouts.try_emplace(cls);
+    auto& L = it->second;
+    if (fresh) {
+      const char* names[7] = {"bEnabled", "LightColor", "LightBrightness", "Density", "Height", "StartDistance",
+                              "ExtinctionDistance"};
+      for (int i = 0; i < 7; ++i) L[i] = FindEx(cls, names[i]);
+    }
+    if (!FieldB(f, L[0])) return;  // the first height fog decides, enabled or not
+    fog.present = 1;
+    float c[3] = {0, 0, 0};
+    if (L[1].ok()) {
+      ColorLayout cl;
+      cl.Init(L[1]);
+      cl.Bytes(f, L[1], c);
+    }
+    const float k = FieldF(f, L[2], 1.f);
+    for (int i = 0; i < 3; ++i) fog.color[i] = (c[i] / 255.f) * k, fog.light_color[i] = c[i] / 255.f;
+    fog.density = FieldF(f, L[3], 0.f), fog.height = FieldF(f, L[4], 0.f), fog.start = FieldF(f, L[5], 0.f);
+    fog.extinction = FieldF(f, L[6], 1e8f);
+    return;
+  }
+}
+
+// Three numbers of a Color (bytes), Vector or LinearColor struct property.
+void Triple(uint32_t base, const FieldEx& prop, float out[3]) {
+  out[0] = out[1] = out[2] = std::nanf("");
+  if (!prop.ok()) return;
+  const std::string_view type = NameText(U32(prop.sub + 0x2C));
+  const uint32_t at = base + prop.offset;
+  if (type == "Color") {
+    const char* m[3] = {"R", "G", "B"};
+    for (int i = 0; i < 3; ++i)
+      if (const FieldEx f = FindEx(prop.sub, m[i]); f.ok()) out[i] = float(*Raw(at + f.offset));
+  } else {
+    const bool vec = type == "Vector";
+    const char* m[3] = {vec ? "X" : "R", vec ? "Y" : "G", vec ? "Z" : "B"};
+    for (int i = 0; i < 3; ++i)
+      if (const FieldEx f = FindEx(prop.sub, m[i]); f.ok()) out[i] = F32(at + f.offset);
+  }
+}
+
+enum : uint32_t { kPfUber = 1, kPfGod = 2, kPfLsBloom = 4, kPfLsBalance = 8, kPfLsScene = 16, kPfLsTone = 32, kPfLast = 64 };
+
+// Bourne's post: the stock UberPostProcessEffect with bUseWorldSettings, so what it draws is the local player's
+// CurrentPPInfo.LastSettings (the world's blended post settings: bloom, scene shadows/midtones/highlights,
+// desaturation). Swordfish's SfUber and god rays (50 Cent) don't exist here; MaterialEffects in the chain are passed
+// on as 50 Cent's are.
+void PostBin(bots::HybridLighting& out) {
+  bots::HybridPost& p = out.post;
+  std::memset(&p, 0, sizeof(p));
+  const float nan = std::nanf("");
+  p.material_effect = bots::kHybridNone;
+  p.uber_bloom_scale = p.uber_bloom_threshold = p.ls_bloom_scale = p.ls_bloom_threshold = nan;
+  p.desaturation = p.tone_min = p.tone_max = p.tone_scale = nan;
+  for (float& v : p.balance) v = 255.f;
+  for (int i = 0; i < 3; ++i) p.shadows[i] = p.midtones[i] = p.highlights[i] = nan;
+  for (float& v : p.god) v = nan;
+  for (float& v : p.uber_dof) v = nan;
+  p.present = 1;
+  out.post_materials.clear();
+  out.post_params.clear();
+  const uint32_t engine = Engine();
+  const uint32_t players = IsObject(engine) ? PropRecord(engine, "GamePlayers") : 0;
+  const uint32_t lp =
+      players && U32(engine + U32(players + kPropOffset) + 4) ? U32(U32(engine + U32(players + kPropOffset))) : 0;
+  if (!IsObject(lp)) return;
+  const uint32_t chain = PropU32(lp, "PlayerPostProcess");
+  if (IsObject(chain)) {
+    const Field effects = Prop(chain, "Effects");
+    const uint32_t data = effects.ok() ? U32(chain + effects.offset) : 0, n = effects.ok() ? U32(chain + effects.offset + 4) : 0;
+    for (uint32_t i = 0; Readable(data) && i < n && i < 32; ++i) {
+      const uint32_t e = U32(data + 4 * i);
+      if (!IsObject(e) || std::strcmp(ClassName(e), "MaterialEffect")) continue;
+      const uint32_t cls = U32(e + kClass);
+      if (!FieldB(e, FindEx(cls, "bShowInGame"))) continue;
+      const FieldEx m = FindEx(cls, "Material");
+      const uint32_t mat = m.ok() ? U32(e + m.offset) : 0;
+      if (IsObject(mat) && out.post_materials.size() < 15)
+        if (const char* path = Intern(Path(mat))) out.post_materials.push_back(path);
+    }
+  }
+  const FieldEx cur = FindEx(U32(lp + kClass), "CurrentPPInfo");
+  const FieldEx last = Member(cur, "LastSettings");
+  if (!last.ok()) return;
+  const uint32_t s = lp + cur.offset + last.offset, sc = last.sub;
+  p.flags |= kPfLast;
+  if (FieldB(s, FindEx(sc, "bEnableBloom"))) p.flags |= kPfLsBloom;
+  p.ls_bloom_scale = FieldF(s, FindEx(sc, "Bloom_Scale"), nan);
+  p.ls_bloom_threshold = FieldF(s, FindEx(sc, "Bloom_Threshold"), nan);
+  if (FieldB(s, FindEx(sc, "bEnableSceneEffect"))) {
+    p.flags |= kPfLsScene;
+    p.desaturation = FieldF(s, FindEx(sc, "Scene_Desaturation"), nan);
+    Triple(s, FindEx(sc, "Scene_Shadows"), p.shadows);
+    Triple(s, FindEx(sc, "Scene_MidTones"), p.midtones);
+    Triple(s, FindEx(sc, "Scene_HighLights"), p.highlights);
+  }
+}
+
+bool SameLights(const bots::HybridLighting& a, const bots::HybridLighting& b) {
+  return a.lights.size() == b.lights.size() && a.sh == b.sh && a.paths == b.paths &&
+         (a.lights.empty() || !std::memcmp(a.lights.data(), b.lights.data(), a.lights.size() * sizeof(bots::HybridLight)));
+}
+
+// n1 finds a component's baked light by the package in its path, matched against the cooked file names exactly. UE3
+// names are case-insensitive and keep the first spelling the game met, which can differ from the file's
+// (MAR_ST_Courtyard_ART_m vs MAR_ST_Courtyard_Art_m.xxx, mar_st_base_m vs MAR_ST_Base_m.xxx): give the path the file's
+// spelling. The files are listed once from BOTS_N1_COOKED.
+std::string FilePackageCase(std::string path) {
+  static const std::unordered_map<std::string, std::string> files = [] {
+    std::unordered_map<std::string, std::string> m;
+    const char* dir = std::getenv("BOTS_N1_COOKED");
+    std::error_code ec;
+    if (dir && *dir)
+      for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (e.path().extension() != ".xxx") continue;
+        std::string stem = e.path().stem().string(), low = stem;
+        for (char& c : low) c = char(std::tolower(uint8_t(c)));
+        m.emplace(low, stem);
+      }
+    REXLOG_INFO("scenefeed: {} cooked package names from {}", m.size(), dir ? dir : "(BOTS_N1_COOKED unset)");
+    return m;
+  }();
+  const size_t dot = path.find('.');
+  if (dot == std::string::npos) return path;
+  std::string low = path.substr(0, dot);
+  for (char& c : low) c = char(std::tolower(uint8_t(c)));
+  if (const auto it = files.find(low); it != files.end()) path.replace(0, dot, it->second);
+  return path;
+}
+
+struct FeedParts {
+  bool lights = false, fog = false, post = false, envs = false;
+};
+FeedParts Parts() {
+  const std::string& v = REXCVAR_GET(n1_feed);
+  return {v.find("lights") != std::string::npos, v.find("fog") != std::string::npos,
+          v.find("post") != std::string::npos, v.find("envs") != std::string::npos};
+}
+
 struct LiveState {
   std::vector<Primitive> prims;
   std::unordered_map<uint32_t, LiveComponent> components;
@@ -1526,6 +1845,13 @@ struct LiveState {
   uint64_t frame = 0;
   bots::HybridScene building;
   bool logged = false;
+  // lighting feed
+  uint32_t env_stamp = 0, lighting_builds = 0;
+  bool have_fog_post = false;
+  bots::HybridLighting next_light, last_light;
+  bots::HybridFog last_fog{};
+  bots::HybridPost last_post{};
+  std::vector<const char*> last_materials;
 };
 LiveState g_live;
 }  // namespace
@@ -1546,6 +1872,7 @@ void Live(uint8_t* base) {
       return !AliveAt(p.component, p.index) || PrimClass(p).kind != p.kind || !U32(p.component + g_off.scene_info.offset);
     });
   }
+  const bool envs = Parts().envs;
   bots::HybridScene& out = st.building;
   out.instances.clear();
   out.skeletal.clear();
@@ -1588,7 +1915,7 @@ void Live(uint8_t* base) {
         lc.mat_count != mat_count) {
       lc.name = U32(c + 0x2C), lc.outer = U32(c + 0x28), lc.mesh = mesh, lc.mats = mats, lc.mat_count = mat_count;
       lc.mesh_path = Intern(Path(mesh));
-      lc.light_path = Intern(Path(c));
+      lc.light_path = Intern(FilePackageCase(Path(c)));
       lc.materials.clear();
       for (uint32_t i = 0; i < mat_count; ++i) lc.materials.push_back(Intern(MaterialPath(U32(mats + 4 * i), true, nullptr)));
     }
@@ -1597,6 +1924,7 @@ void Live(uint8_t* base) {
     const uint32_t dle = info.light_env.ok() ? U32(c + info.light_env.offset) : 0;
     if (dle != lc.dle) lc.dle = dle, lc.env_path = IsObject(dle) ? Intern(Path(dle)) : nullptr;
     if (!lc.mesh_path) continue;
+    const char* env_path = envs ? lc.env_path : nullptr;
     if (skel) {
       bots::HybridScene::Skel& sk = out.skeletal.emplace_back();
       for (int i = 0; i < 16; ++i) sk.transform[i] = F32(c + g_off.local_to_world.offset + 4 * i);
@@ -1618,7 +1946,7 @@ void Live(uint8_t* base) {
       } else {
         sk.bounds[0] = sk.bounds[1] = sk.bounds[2] = 0, sk.bounds[3] = 1e30f;
       }
-      sk.env = lc.env_path;
+      sk.env = env_path;
       sk.mat_offset = uint32_t(out.materials.size());
       sk.mat_count = uint32_t(lc.materials.size());
       out.materials.insert(out.materials.end(), lc.materials.begin(), lc.materials.end());
@@ -1628,21 +1956,66 @@ void Live(uint8_t* base) {
     for (int i = 0; i < 16; ++i) inst.transform[i] = F32(c + g_off.local_to_world.offset + 4 * i);
     inst.mesh = lc.mesh_path;
     inst.light = lc.light_path;
-    inst.env = lc.env_path;
+    inst.env = env_path;
     inst.mat_offset = uint32_t(out.materials.size());
     inst.mat_count = uint32_t(lc.materials.size());
     out.materials.insert(out.materials.end(), lc.materials.begin(), lc.materials.end());
   }
   out.walked = uint32_t(st.prims.size());
+  // Lights every frame (sent only when they changed), fog and post every 16th build.
+  {
+    const auto tl = std::chrono::steady_clock::now();
+    const FeedParts parts = Parts();
+    bots::HybridLighting& nl = st.next_light;
+    nl.Clear();
+    if (parts.lights || parts.envs) LightsBin(nl, ++st.env_stamp, parts.envs);
+    bool post_changed = false;
+    if (st.lighting_builds++ % 16 == 0) {
+      if (parts.fog) FogBin(nl.fog);
+      else std::memset(&nl.fog, 0, sizeof(nl.fog));
+      nl.fogvols.clear();
+      if (parts.post) PostBin(nl);
+      else std::memset(&nl.post, 0, sizeof(nl.post)), nl.post.material_effect = bots::kHybridNone, nl.post_materials.clear();
+      post_changed = !st.have_fog_post || std::memcmp(&nl.fog, &st.last_fog, sizeof(bots::HybridFog)) ||
+                     std::memcmp(&nl.post, &st.last_post, sizeof(bots::HybridPost)) ||
+                     nl.post_materials != st.last_materials;
+    }
+    if (!SameLights(nl, st.last_light) || post_changed) {
+      nl.has_fog_post = post_changed;
+      if (post_changed) st.last_fog = nl.fog, st.last_post = nl.post, st.last_materials = nl.post_materials;
+      st.have_fog_post |= post_changed;
+      st.last_light.lights = nl.lights, st.last_light.sh = nl.sh, st.last_light.paths = nl.paths;
+      out.light = nl;
+      out.light_pending = true;
+    }
+    out.lighting_ms = float(Ms(tl, std::chrono::steady_clock::now()));
+  }
   out.frame = ++st.frame;
   out.cam_seq = hs->published.load(std::memory_order_acquire);
   out.build_ms = float(Ms(t0, std::chrono::steady_clock::now()));
   if (!st.logged || st.frame % 900 == 0) {
     st.logged = true;
-    REXLOG_INFO("scenefeed live: frame {}: {} static, {} skeletal ({} bones) of {} primitives in {:.2f} ms", st.frame,
-                out.instances.size(), out.skeletal.size(), out.bones.size() / 16, out.walked, out.build_ms);
+    REXLOG_INFO("scenefeed live: frame {}: {} static, {} skeletal ({} bones) of {} primitives in {:.2f} ms; {} lights "
+                "({} environments), fog {}, post flags {:X} ({} materials), lighting {:.2f} ms", st.frame,
+                out.instances.size(), out.skeletal.size(), out.bones.size() / 16, out.walked, out.build_ms,
+                st.last_light.lights.size(), st.last_light.paths.size(), st.last_fog.present, st.last_post.flags,
+                st.last_materials.size(), out.lighting_ms);
   }
   std::lock_guard lock(hs->scene_mutex);
+  // Keep a lighting update the renderer hasn't taken yet when this frame brings none, and fold an unconsumed fog and
+  // post update into a newer lights-only one (as skullburglar's Live does).
+  if (hs->scene.light_pending) {
+    if (!out.light_pending) {
+      std::swap(out.light, hs->scene.light);
+      out.light_pending = true;
+    } else if (hs->scene.light.has_fog_post && !out.light.has_fog_post) {
+      out.light.has_fog_post = true;
+      out.light.fog = hs->scene.light.fog, out.light.post = hs->scene.light.post;
+      out.light.post_materials = hs->scene.light.post_materials;
+      out.light.post_params = hs->scene.light.post_params;
+      out.light.fogvols = hs->scene.light.fogvols;
+    }
+  }
   std::swap(hs->scene, out);
   hs->scene_cv.notify_all();
 }

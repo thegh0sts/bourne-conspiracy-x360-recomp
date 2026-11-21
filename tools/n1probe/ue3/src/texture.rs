@@ -303,7 +303,11 @@ pub fn read_texture(pkg: &Package, idx: i32, tfc: &TfcCache) -> Result<Texture> 
         .unwrap_or_else(|| "Textures".into());
     // Bourne (v511): no texture file caches; a mip "in a separate file" is in the texture's source package (the
     // outermost package of its path, e.g. ZUR_AIR_Airside_View_p.Airport_View_Tarmac -> ZUR_AIR_Airside_View_p.xxx).
-    let tfc_name = if pkg.old_layout() {
+    let tfc_name = if pkg.old_layout() && pkg.class_name(idx) == "LightMapTexture2D" {
+        // Bourne: a level package's lightmap mips "in a separate file" are in `<package>_LM.xxx` beside it
+        // (e.g. MAR_ST_Courtyard_ART_m -> MAR_ST_Courtyard_ART_m_LM.xxx), LZO-chunked at the given offset.
+        format!("{}_LM.xxx", pkg.name)
+    } else if pkg.old_layout() {
         let path = pkg.obj_path(idx);
         let top = path.split('.').next().filter(|s| !s.is_empty() && path.contains('.')).unwrap_or(pkg.name.as_str());
         format!("{top}.xxx")

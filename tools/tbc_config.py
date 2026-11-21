@@ -100,6 +100,16 @@ def set_value(body, section, key, value):
     return "\r\n".join(lines)
 
 
+def pad_to(files, size: int):
+    """files with a comment line of spaces added to the last .ini so they encode to size bytes
+    (at least 3 more than now)."""
+    extra = size - len(encode(files))
+    if extra < 3:
+        raise ValueError("can't pad by fewer than 3 bytes")
+    name, body = files[-1]
+    return files[:-1] + [(name, body + ";" + " " * (extra - 3) + "\r\n")]
+
+
 def write(game: Path, files):
     cfg, toc = game / CONFIG_REL, game / TOC_REL
     for p in (cfg, toc):

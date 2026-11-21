@@ -7,11 +7,14 @@
 // build started from Visual Studio): a controller's X and Y then did nothing in fights.
 //
 // Now the launcher writes two configs: the game's own (settings shared by both modes) and,
-// with keyboard and mouse ticked, a second one in game\BourneGame\KeyboardMouse with the
-// keyboard-and-mouse changes on top. This file mounts that folder as its own read-only device
-// and, only with --mnk_mode=true, adds symbolic links so the game's reads of the two files land
-// there. The runtime resolves symbolic links repeatedly, so a path through game:\ or d:\ first
-// becomes \Device\Harddisk0\Partition1\BourneGame\..., which the links below then match.
+// with keyboard and mouse ticked, a second Coalesced.ini in game\BourneGame\KeyboardMouse with
+// the keyboard-and-mouse changes on top, padded to the same size as the game's own since
+// Xbox360TOC.txt lists one size. This file mounts that folder as its own read-only device and,
+// only with --mnk_mode=true, links the game's BourneGame\Config\Xenon\Cooked folder (which
+// holds nothing else the game reads) to it. The link is on the folder, not the file: the
+// runtime opens a file by resolving its folder through the links and then looking the name up
+// in that folder. Links are resolved repeatedly, so a path through game:\ or d:\ first becomes
+// \Device\Harddisk0\Partition1\BourneGame\..., which the link below then matches.
 
 #include "kbm_config.h"
 
@@ -28,15 +31,8 @@
 namespace tbc::kbm_config {
 namespace {
 constexpr const char* kDevice = "\\Device\\TbcKeyboardMouse";
-constexpr const char* kGameDevice = "\\Device\\Harddisk0\\Partition1";
-struct Redirect {
-  const char* game;  // under the game device
-  const char* name;  // in kFolder
-};
-constexpr Redirect kRedirects[] = {
-    {"\\BourneGame\\Config\\Xenon\\Cooked\\Coalesced.ini", "Coalesced.ini"},
-    {"\\BourneGame\\Xbox360TOC.txt", "Xbox360TOC.txt"},
-};
+constexpr const char* kCookedFolder = "\\Device\\Harddisk0\\Partition1\\BourneGame\\Config\\Xenon\\Cooked";
+constexpr const char* kFile = "Coalesced.ini";
 }  // namespace
 
 void Mount(rex::Runtime* runtime, const std::filesystem::path& game_data_root) {
@@ -45,14 +41,12 @@ void Mount(rex::Runtime* runtime, const std::filesystem::path& game_data_root) {
 
   const std::filesystem::path folder = std::filesystem::absolute(game_data_root / kFolder);
   std::error_code ec;
-  for (const auto& r : kRedirects) {
-    if (!std::filesystem::is_regular_file(folder / r.name, ec)) {
-      REXLOG_WARN(
-          "Keyboard and mouse: no {} in {}; the game's own config is used (start the game from "
-          "the launcher with Keyboard and mouse ticked to write it)",
-          r.name, folder.string());
-      return;
-    }
+  if (!std::filesystem::is_regular_file(folder / kFile, ec)) {
+    REXLOG_WARN(
+        "Keyboard and mouse: no {} in {}; the game's own config is used (start the game from "
+        "the launcher with Keyboard and mouse ticked to write it)",
+        kFile, folder.string());
+    return;
   }
 
   auto* fs = runtime->file_system();
@@ -62,10 +56,7 @@ void Mount(rex::Runtime* runtime, const std::filesystem::path& game_data_root) {
                 folder.string());
     return;
   }
-  for (const auto& r : kRedirects) {
-    fs->RegisterSymbolicLink(std::string(kGameDevice) + r.game,
-                             std::string(kDevice) + "\\" + r.name);
-  }
-  REXLOG_INFO("Keyboard and mouse: game config from {}", folder.string());
+  fs->RegisterSymbolicLink(kCookedFolder, kDevice);
+  REXLOG_INFO("Keyboard and mouse: game config from {}", (folder / kFile).string());
 }
 }  // namespace tbc::kbm_config

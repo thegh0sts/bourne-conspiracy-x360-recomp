@@ -8,6 +8,7 @@ button prompts, the key images in the HUD and the quick-time-event prompts are d
 | Key | Action |
 |---|---|
 | W / A / S / D | Move |
+| Scroll wheel | Move speed: up faster, down slower (10% a notch, 20% to 100%; sprinting is always full speed) |
 | Mouse | Look around (mouse look: the camera turns by as much as the mouse moves) |
 | Left mouse | Fire |
 | Right mouse | Aim; in cover with a gun, pop out |

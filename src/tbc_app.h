@@ -12,6 +12,7 @@
 
 #include <rex/cvar.h>
 #include <rex/rex_app.h>
+#include <rex/ui/ui_event.h>
 #include <rex/system/achievement_manager.h>
 #include <rex/ui/overlay/achievement_notification.h>
 
@@ -20,6 +21,7 @@
 #include "display_refresh.h"
 #include "fps_overlay.h"
 #include "kbm_config.h"
+#include "kbm_move.h"
 
 namespace tbc {
 // The log's first lines: the release, the build time and the launch options (version_log.cpp).
@@ -112,6 +114,9 @@ class TbcApp : public rex::ReXApp {
   }
 
   void OnShutdown() override { tbc::overlay::StopFpsOverlay(); }
+
+  // Keyboard and mouse: the scroll wheel sets the move speed (kbm_move.cpp).
+  void OnMouseWheel(rex::ui::MouseEvent& e) override { tbc::kbm_move::OnWheel(e.scroll_y()); }
 
   std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog() override {
     // None (the runtime copes): with --achievement_popups=false, and with the native renderer,

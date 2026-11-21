@@ -34,7 +34,7 @@ from launcher_text import tr, tr_label
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
                            make_root, start_game)
 
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
@@ -44,7 +44,7 @@ SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 # The last launcher version whose changes need the game rebuilt (src/, the SDK, the build). A
 # launcher-only release leaves this alone, so games built with it aren't asked to reinstall.
-GAME_VERSION = "0.3.3"
+GAME_VERSION = "0.3.4"
 # The FPS counter: off, the frame rate, or the frame rate with frame time, GPU, CPU and memory
 # (--show_fps_detail; the native renderer's counter only, Xenos shows the frame rate).
 FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
@@ -229,6 +229,7 @@ KBM_DEFAULT = {name: keys for name, keys, _ in KBM_BINDS}
 CONTROLS = [
     ("On foot", [
         ("W / A / S / D", "Move"),
+        ("Scroll wheel", "Move speed: up faster, down slower"),
         ("Mouse", "Look around"),
         ("Left mouse", "Fire"),
         ("Right mouse", "Aim; in cover with a gun, pop out"),
@@ -566,11 +567,13 @@ def _edit_camera_freedom(body, wide_pitch, no_auto_recenter, linear_stick):
     return "\r\n".join(lines)
 
 
-# The keyboard-and-mouse copy of the config (Coalesced.ini and Xbox360TOC.txt), under the game
-# folder. The game reads it instead of its own only when started with --mnk_mode=true
-# (src/kbm_config.cpp), so a run without the launcher's keyboard-and-mouse flags (Play.bat, a
-# build started by hand) gets the controller config: up to 0.3.3 the keyboard-and-mouse changes
-# went into the game's own file and stayed, leaving a controller's X / Y without attacks in fights.
+# The keyboard-and-mouse copy of the config (Coalesced.ini), under the game folder. The game reads
+# it instead of its own only when started with --mnk_mode=true (src/kbm_config.cpp, which mounts
+# this folder in place of BourneGame\Config\Xenon\Cooked), so a run without the launcher's
+# keyboard-and-mouse flags (Play.bat, a build started by hand) gets the controller config: up to
+# 0.3.3 the keyboard-and-mouse changes went into the game's own file and stayed, leaving a
+# controller's X / Y without attacks in fights. There is one Xbox360TOC.txt, which lists
+# Coalesced.ini's size, so with keyboard and mouse ticked both copies are padded to one size.
 KBM_CONFIG_DIR = Path("BourneGame") / "KeyboardMouse"
 
 
@@ -587,23 +590,28 @@ def apply_game_config(game: Path, s) -> str:
         shutil.copy2(toc, toc_bak)
 
     files, n = _build_game_config(conf_bak, s, kbm=False)
+    summary = tr("{n} config change(s)", n=n) if files is not None else tr("original game config")
+    kbm_dir = game / KBM_CONFIG_DIR
+    if s.get("kbm"):
+        if files is None:
+            files = cfg.decode(conf_bak.read_bytes())
+        kbm_files, _ = _build_game_config(conf_bak, s, kbm=True)
+        size = max(len(cfg.encode(files)), len(cfg.encode(kbm_files))) + 3
+        files, kbm_files = cfg.pad_to(files, size), cfg.pad_to(kbm_files, size)
+        kbm_dir.mkdir(parents=True, exist_ok=True)
+        for old in ("Xbox360TOC.txt",):  # written by an earlier test build; not read
+            (kbm_dir / old).unlink(missing_ok=True)
+        (kbm_dir / cfg.CONFIG_REL.name).write_bytes(cfg.encode(kbm_files))
+    elif kbm_dir.exists():
+        shutil.rmtree(kbm_dir, ignore_errors=True)
+
     if files is None:
         # Everything at default: put the original files back.
         shutil.copy2(conf_bak, conf)
         shutil.copy2(toc_bak, toc)
-        summary = tr("original game config")
     else:
         shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
         cfg.write(game, files)
-        summary = tr("{n} config change(s)", n=n)
-
-    kbm_dir = game / KBM_CONFIG_DIR
-    if s.get("kbm"):
-        kbm_files, _ = _build_game_config(conf_bak, s, kbm=True)
-        kbm_dir.mkdir(parents=True, exist_ok=True)
-        cfg.write_to(kbm_files, kbm_dir / cfg.CONFIG_REL.name, toc_bak, kbm_dir / cfg.TOC_REL.name)
-    elif kbm_dir.exists():
-        shutil.rmtree(kbm_dir, ignore_errors=True)
     return summary
 
 

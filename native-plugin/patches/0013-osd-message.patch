@@ -1,0 +1,212 @@
+diff --git a/src/gfx/host_stats.cpp b/src/gfx/host_stats.cpp
+index bf8863f..2ca996b 100644
+--- a/src/gfx/host_stats.cpp
++++ b/src/gfx/host_stats.cpp
+@@ -21,6 +21,7 @@
+ #include <psapi.h>
+ #else
+ #include <dirent.h>
++#include <dlfcn.h>
+ #include <sys/resource.h>
+ #include <fstream>
+ #endif
+@@ -80,6 +81,14 @@ CpuTimes ProcessCpuTimes() {
+   return t;
+ }
+ 
++void* FindHostExport(const char* name) {
++#if defined(_WIN32)
++  return reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), name));
++#else
++  return dlsym(RTLD_DEFAULT, name);
++#endif
++}
++
+ SystemCpu SystemCpuTimes() {
+   SystemCpu t;
+ #if defined(_WIN32)
+diff --git a/src/gfx/host_stats.h b/src/gfx/host_stats.h
+index 993327e..f057ea2 100644
+--- a/src/gfx/host_stats.h
++++ b/src/gfx/host_stats.h
+@@ -14,6 +14,10 @@ struct CpuTimes {
+ };
+ CpuTimes ProcessCpuTimes();
+ 
++// tbc: a function the game's executable exports by this name (GetProcAddress on the main module; dlsym elsewhere),
++// or null when it has none.
++void* FindHostExport(const char* name);
++
+ // tbc: the whole machine's CPU time so far, busy and in total (busy + idle), summed over the logical CPUs: two samples
+ // give the system's CPU load. Zero where unknown.
+ struct SystemCpu {
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 07f6e3e..1942154 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -531,9 +531,53 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     rex::system::AchievementInfo achievement;
+     std::optional<std::chrono::steady_clock::time_point> since;
+   };
++  // tbc: a short message from the game (the scroll wheel's move speed, say), drawn in the pop-up's place for 1.5 s
++  // (fading out over the last 0.4) when no achievement pop-up is showing. The game's executable exports
++  //   int tbc_osd_message(char* text, int size, uint64_t* serial)
++  // which copies "title\nmessage" (0-terminated) and a number that goes up with each new message; none: no messages.
++  using OsdMessageFn = int (*)(char*, int, uint64_t*);
++  bool UpdateOsd() {
++    static const auto fn = reinterpret_cast<OsdMessageFn>(host::FindHostExport("tbc_osd_message"));
++    if (!fn) return false;
++    char text[128] = {};
++    uint64_t serial = 0;
++    fn(text, int(sizeof(text)), &serial);
++    const auto now = std::chrono::steady_clock::now();
++    if (serial != osd_serial_) {
++      const bool first = osd_serial_ == ~0ull;
++      osd_serial_ = serial;
++      if (!first && text[0]) {  // a message left from before this renderer started isn't shown
++        const std::string all(text);
++        const size_t nl = all.find('\n');
++        osd_title_ = nl == std::string::npos ? std::string() : all.substr(0, nl);
++        osd_text_ = nl == std::string::npos ? all : all.substr(nl + 1);
++        osd_since_ = now;
++      }
++    }
++    if (!osd_since_) return false;
++    const float age = std::chrono::duration<float>(now - *osd_since_).count();
++    if (age >= 1.5f) {
++      osd_since_.reset();
++      return false;
++    }
++    const float alpha = std::clamp(age > 1.1f ? (1.5f - age) / 0.4f : 1.0f, 0.001f, 1.0f);
++    renderer_->SetToast(alpha, osd_text_, {}, nullptr, osd_title_, true);
++    toast_showing_ = true;
++    return true;
++  }
+   void UpdateToast() {
+     static const bool on = rex::cvar::Query<bool>("achievement_popups");
+-    if (!on || !kernel_state_) return;
++    bool achievement = false;
++    {
++      std::lock_guard<std::mutex> lock(toast_mutex_);
++      achievement = !toasts_.empty();
++    }
++    if (!achievement && UpdateOsd()) return;
++    if (!on || !kernel_state_) {
++      if (toast_showing_) renderer_->SetToast(0.0f, {}, {}, nullptr);
++      toast_showing_ = false;
++      return;
++    }
+     if (!toast_listener_) {
+       toast_listener_ = kernel_state_->achievements().RegisterNotificationCallback(
+           [this](const rex::system::AchievementEvent& event) {
+@@ -626,6 +670,9 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   bool toast_showing_ = false, toast_has_icon_ = false;
+   std::string toast_name_, toast_suffix_;
+   std::vector<uint32_t> toast_icon_ = std::vector<uint32_t>(44 * 44);
++  uint64_t osd_serial_ = ~0ull;
++  std::optional<std::chrono::steady_clock::time_point> osd_since_;
++  std::string osd_title_, osd_text_;
+ 
+   uint64_t GpuNs() const {
+     uint64_t ns = 0;
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index 07cd388..3d1f620 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -31,7 +31,7 @@ layout(set = 0, binding = 1) uniform Gamma {
+   uvec4 text[10];  // 5 lines of 32 characters
+   uvec4 text_layout;
+   uvec4 graph[8];
+-  uvec4 toast;           // x: opacity (float bits, 0 = none), y: name length, z: suffix length, w: has an icon
++  uvec4 toast;           // x: opacity (float bits, 0 = none), y: name length, z: suffix length, w: 1 an icon, 2 info
+   uvec4 toast_text[5];   // "Achievement Unlocked", the name, the suffix: ASCII, a byte each
+   uvec4 toast_font[48];  // ProggyTiny at 10 px, ASCII 32-126: 6x10 bits each (bit y * 6 + x), 2 uints
+   uvec4 toast_icon[484]; // 44x44 RGBA8
+@@ -187,22 +187,28 @@ vec4 Toast(vec2 pixel, vec4 color) {
+   float a = uintBitsToFloat(toast.x);
+   vec2 out_size = vec2(textureSize(source, 0).xy) / render_scale.xx;
+   float s = max(1.0, round(out_size.y / 1080.0));
+-  vec2 p = (pixel - (out_size - vec2(336.0, 96.0) * s)) / s;  // ImGui pixels in the window
+-  if (p.x < 0.0 || p.y < 0.0 || p.x >= 320.0 || p.y >= 70.0) return color;
+-  vec2 q = min(p, vec2(320.0, 70.0) - p);  // distance to the nearest edges
++  bool info = (toast.w & 2u) != 0u;  // a message from the game: low in the middle, grey, 44 high
++  float h = info ? 44.0 : 70.0;
++  vec2 origin = info ? vec2(floor((out_size.x - 320.0 * s) * 0.5), out_size.y - 140.0 * s)
++                     : out_size - vec2(336.0, 96.0) * s;
++  vec2 p = (pixel - origin) / s;  // ImGui pixels in the window
++  if (p.x < 0.0 || p.y < 0.0 || p.x >= 320.0 || p.y >= h) return color;
++  vec2 q = min(p, vec2(320.0, h) - p);  // distance to the nearest edges
+   float corner = (q.x < 6.0 && q.y < 6.0) ? length(vec2(6.0) - q) : 0.0;
+   if (corner > 6.0) return color;
+-  if (q.x < 1.0 || q.y < 1.0 || corner > 5.0) return vec4(mix(color.rgb, vec3(0.0, 0.35, 0.0), a), color.a);
+-  vec3 c = mix(color.rgb, vec3(0.0, 0.06, 0.0), 0.88 * a);
+-  if (toast.w != 0u && p.x >= 8.0 && p.y >= 8.0 && p.x < 52.0 && p.y < 52.0) {
++  vec3 border = info ? vec3(0.35) : vec3(0.0, 0.35, 0.0), fill = info ? vec3(0.06) : vec3(0.0, 0.06, 0.0);
++  if (q.x < 1.0 || q.y < 1.0 || corner > 5.0) return vec4(mix(color.rgb, border, a), color.a);
++  vec3 c = mix(color.rgb, fill, 0.88 * a);
++  if ((toast.w & 1u) != 0u && p.x >= 8.0 && p.y >= 8.0 && p.x < 52.0 && p.y < 52.0) {
+     uvec2 ip = uvec2(p - 8.0);
+     uint i = ip.y * 44u + ip.x;
+     vec4 icon = unpackUnorm4x8(toast_icon[i >> 2u][i & 3u]);
+     return vec4(mix(c, icon.rgb, icon.a * a), color.a);
+   }
+   uvec2 t = uvec2(p);
+-  if (t.x < 60u || t.x >= 316u) return vec4(c, color.a);
+-  uint x = t.x - 60u;
++  uint left = (toast.w & 1u) != 0u ? 60u : 12u;  // the text after the icon, or from the left edge
++  if (t.x < left || t.x >= 316u) return vec4(c, color.a);
++  uint x = t.x - left;
+   vec3 ink;
+   uint ch;
+   if (t.y >= 8u && t.y < 18u) {
+@@ -361,10 +367,13 @@ const uint32_t Renderer::kToastFont[192] = {
+     0x08104102u, 0x00021041u, 0x66000000u, 0x00000006u,
+     0u, 0u};
+ 
+-void Renderer::SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon) {
++void Renderer::SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon,
++                        const std::string& title, bool info) {
+   toast_alpha_ = alpha;
++  toast_info_ = info;
+   std::memset(toast_text_, 0, sizeof(toast_text_));
+-  static constexpr char kTitle[] = "Achievement Unlocked";
++  char kTitle[20] = {};  // 20 characters, space-padded (the shader stops at 20)
++  for (size_t i = 0; i < 20; ++i) kTitle[i] = i < title.size() ? title[i] : ' ';
+   const uint32_t name_length = uint32_t(std::min<size_t>(name.size(), 48));
+   const uint32_t suffix_length = uint32_t(std::min<size_t>(suffix.size(), 12));
+   auto put = [&](uint32_t i, char c) { toast_text_[i / 4] |= uint32_t(uint8_t(c)) << (8 * (i % 4)); };
+@@ -481,7 +490,7 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+   std::memcpy(ramp + 256 * 4 + 16 + sizeof(overlay_text_) + sizeof(text_layout), graph, sizeof(graph));
+   uint8_t* toast = ramp + 256 * 4 + 16 + kOverlayBytes;
+   const uint32_t toast_header[4] = {std::bit_cast<uint32_t>(toast_alpha_), toast_name_length_, toast_suffix_length_,
+-                                    toast_has_icon_ ? 1u : 0u};
++                                    (toast_has_icon_ ? 1u : 0u) | (toast_info_ ? 2u : 0u)};
+   std::memcpy(toast, toast_header, 16);
+   std::memcpy(toast + 16, toast_text_, sizeof(toast_text_));
+   std::memcpy(toast + 16 + sizeof(toast_text_), kToastFont, sizeof(kToastFont));
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 83049a2..4902c66 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -348,7 +348,7 @@ class Renderer : public Pm4Sink {
+   float toast_alpha_ = 0.0f;
+   uint32_t toast_text_[20] = {};
+   uint32_t toast_name_length_ = 0, toast_suffix_length_ = 0;
+-  bool toast_has_icon_ = false;
++  bool toast_has_icon_ = false, toast_info_ = false;
+   uint32_t toast_icon_[44 * 44] = {};
+   uint32_t Host(uint32_t v) const { return scale_ == 1.0f ? v : uint32_t(float(v) * scale_ + 0.5f); }
+   int32_t Host(int32_t v) const { return int32_t(Host(uint32_t(std::max(v, 0)))); }
+@@ -403,8 +403,10 @@ class Renderer : public Pm4Sink {
+   // tbc: picture brightness for the present pass, a gamma curve (1: the game's).
+   void set_brightness(float brightness) { brightness_ = brightness; }
+   // tbc: the achievement pop-up the present pass draws in the bottom-right corner, at opacity alpha (0: none): its name, the
+-  // grey text after it (" (20G)") and its icon (44x44 RGBA8, or null).
+-  void SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon);
++  // grey text after it (" (20G)") and its icon (44x44 RGBA8, or null). With info set, a message from the game instead
++  // (tbc_osd_message): its title in place of "Achievement Unlocked", in a dark grey box low in the middle, no icon.
++  void SetToast(float alpha, const std::string& name, const std::string& suffix, const uint32_t* icon,
++                const std::string& title = "Achievement Unlocked", bool info = false);
+   enum GpuCat : uint8_t { kGpuDraw, kGpuResolve, kGpuUpload, kGpuTexture, kGpuTransfer, kGpuPresent, kGpuOther };
+   static constexpr const char* kGpuCatNames[] = {"draw", "resolve", "upload", "texture", "transfer", "present",
+                                                  "other"};

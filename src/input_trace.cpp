@@ -21,6 +21,7 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
+#include "kbm_move.h"
 #include "prompts.h"
 #include "qte.h"
 
@@ -97,6 +98,7 @@ extern "C" REX_FUNC(sub_823213D8) {
     return;
   }
   tbc::qte::OnControllerState(base, state);
+  tbc::kbm_move::OnControllerState(base, state);  // after the QTEs, which want the full push
   tbc::prompts::PatchHudTextures(ctx, base);
   tbc::camera::MouseLook(ctx, base, state);
   tbc::menu_quit::OnControllerState(ctx, base, state);  // Quit Game on the main menu

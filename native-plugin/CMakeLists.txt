@@ -128,6 +128,22 @@ if(WIN32)
     target_link_libraries(rexgpu-native PRIVATE powrprof)  # host_stats.cpp: CPU clocks, power plan
 endif()
 
+# The n1 renderer (Skullburglar's n1/, Rust): hybrid_fill.cpp's fill 4, behind the C ABI in n1/n1ffi/include/n1ffi.h.
+# Off unless TBC_N1FFI_LIBRARY names the static library (tools\build_n1.bat builds it, from Skullburglar's n1 at the
+# pinned commit with Bourne's asset-reader changes; tools\build_native.bat passes it on).
+set(TBC_N1FFI_LIBRARY "" CACHE FILEPATH "n1ffi.lib (tools\\build_n1.bat); empty: the plugin without n1")
+if(TBC_N1FFI_LIBRARY)
+    if(NOT EXISTS "${TBC_N1FFI_LIBRARY}")
+        message(FATAL_ERROR "TBC_N1FFI_LIBRARY (${TBC_N1FFI_LIBRARY}) doesn't exist: run tools\\build_n1.bat first")
+    endif()
+    message(STATUS "rexgpu-native: with n1 (${TBC_N1FFI_LIBRARY})")
+    target_compile_definitions(rexgpu-native PRIVATE BOTS_N1FFI=1)
+    target_include_directories(rexgpu-native PRIVATE ${K}/n1/n1ffi/include)
+    # What rustc reports for the staticlib (--print native-static-libs); its CRT is the dynamic one, as here.
+    target_link_libraries(rexgpu-native PRIVATE ${TBC_N1FFI_LIBRARY} kernel32 ntdll userenv ws2_32 dbghelp)
+    set_property(TARGET rexgpu-native APPEND PROPERTY LINK_DEPENDS ${TBC_N1FFI_LIBRARY})
+endif()
+
 install(TARGETS rexgpu-native
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib)

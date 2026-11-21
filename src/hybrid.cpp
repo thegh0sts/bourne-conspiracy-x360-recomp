@@ -39,6 +39,7 @@
 #include <rex/logging.h>
 
 #include "hybrid_state.h"
+#include "scene_feed.h"
 
 REXCVAR_DEFINE_INT32(hybrid_suppress, 0, "Debug",
                      "Development (n1): 1 = skip the game's 3D scene rendering (FSceneRenderer::Render); HUD, menus "
@@ -49,7 +50,8 @@ REXCVAR_DEFINE_INT32(hybrid_report, 0, "Debug",
                      "Development (n1): log scene timings every N seconds (0 = off unless suppress/ab is set: 10)");
 REXCVAR_DEFINE_INT32(hybrid_fill, 0, "Debug",
                      "Development (n1): what the native renderer draws where the scene was skipped: 0 nothing, 1 a "
-                     "test colour, 2 a test grid through the game's camera");
+                     "test colour, 2 a test grid through the game's camera, 4 the n1 renderer (needs the plugin built "
+                     "with n1; BOTS_N1_COOKED names the CookedXenon folder)");
 
 REX_EXTERN(__imp__sub_82E63C88);
 REX_EXTERN(__imp__sub_82E63B80);
@@ -134,11 +136,11 @@ void MaybeReport(Clock::time_point now) {
   REXLOG_INFO(
       "hybrid: {:.1f} s, suppress {}, fill {}: {:.1f} fps (view families), game thread BeginRenderingViewFamily "
       "{:.2f} ms, render thread {:.2f} ms/frame, Render {:.2f} ms ({} run, {} skipped, {} captures); cameras {}, "
-      "markers {} written {} seen {} filled; sites {}/{}/{}/{}/{}",
+      "markers {} written {} seen {} filled; n1 ready {}; sites {}/{}/{}/{}/{}",
       secs, s.suppressed > s.renders ? 1 : 0, REXCVAR_GET(hybrid_fill), double(s.families) / secs,
       s.families ? s.gt_ms / double(s.families) : 0.0, s.rt_frames ? s.rt_ms / double(s.rt_frames) : 0.0,
       s.renders ? s.render_ms / double(s.renders) : 0.0, s.renders, s.suppressed, s.captures, s.cameras, s.markers,
-      g_state.markers_seen.exchange(0), g_state.fills_drawn.exchange(0), s.by_site[0], s.by_site[1], s.by_site[2],
+      g_state.markers_seen.exchange(0), g_state.fills_drawn.exchange(0), g_state.n1_ready.load(), s.by_site[0], s.by_site[1], s.by_site[2],
       s.by_site[3], s.by_site[4]);
   g_stats = {};
   g_report = now;
@@ -294,9 +296,14 @@ extern "C" REX_FUNC(sub_82E63C88) {
         cam.seq = seq;
         g_state.published.store(seq, std::memory_order_release);
         camera = true;
-        std::lock_guard lock(g_fifo_mutex);
-        g_fifo.push_back(seq);
-        if (g_fifo.size() > 16) g_fifo.pop_front();
+        {
+          std::lock_guard lock(g_fifo_mutex);
+          g_fifo.push_back(seq);
+          if (g_fifo.size() > 16) g_fifo.pop_front();
+        }
+        // The frame's scene, published before the render command that draws it exists (as skullburglar does), so
+        // the render thread can't reach this camera's marker first and draw the previous frame's scene.
+        if (REXCVAR_GET(hybrid_fill) == 4) tbc::scenefeed::Live(base);
       }
     }
   }
@@ -333,7 +340,9 @@ extern "C" REX_FUNC(sub_82E639B0) {
   if (!Enabled()) return __imp__sub_82E639B0(ctx, base);
   const bool main_view = uint32_t(ctx.lr) == kRenderFromRenderThread;
   const auto t0 = Clock::now();
-  if (main_view && g_started.load(std::memory_order_relaxed) && Suppressing(t0)) {
+  // Fill 4: until n1 has built its shaders and pipelines (its startup step), the game draws its own scene.
+  const bool n1_waiting = REXCVAR_GET(hybrid_fill) == 4 && !g_state.n1_ready.load(std::memory_order_acquire);
+  if (main_view && !n1_waiting && g_started.load(std::memory_order_relaxed) && Suppressing(t0)) {
     const bool marker = REXCVAR_GET(hybrid_fill) != 0 && t_render_seq != 0;
     if (marker) EmitMarker(ctx, base, t_render_seq);
     std::lock_guard lock(g_mutex);

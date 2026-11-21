@@ -175,6 +175,21 @@ impl Resolver<'_> {
 ///
 /// `path` may carry runtime parameter overrides after a `?` (see [`split_overrides`]): a material instance the game
 /// made at run time (no cooked package holds it) is fed as its first cooked parent plus its own parameter values.
+/// Bourne (High Moon, v511): a "Bourne Awareness" material has no expression graph of its own. It names the material
+/// drawn normally (`PrimaryMaterial`) and the Bourne Instinct look (`SecondaryMaterial`, BournePostProcess_p); the game
+/// switches between them. The renderer draws the primary one. `None` for an ordinary material.
+fn awareness_primary(p: &Package, ei: i32) -> Option<String> {
+    if p.class_name(ei) != "Material" {
+        return None;
+    }
+    let (props, _) = object_props(p, ei).ok()?;
+    if props.get("DiffuseColor").is_some() || props.get("EmissiveColor").is_some() || props.get("Expressions").is_some() {
+        return None;
+    }
+    let prim = props.get("PrimaryMaterial").map(|x| x.as_obj()).filter(|&o| o != 0)?;
+    Some(p.obj_path(prim))
+}
+
 pub fn build_by<P: std::ops::Deref<Target = Package>>(path: &str, lookup: impl Fn(&str) -> Option<(P, i32)>) -> Option<MatDef> {
     {
         let (base, mut params) = split_overrides(path);
@@ -193,6 +208,10 @@ pub fn build_by<P: std::ops::Deref<Target = Package>>(path: &str, lookup: impl F
                 let parent = props.get("Parent").map(|x| x.as_obj()).filter(|&o| o != 0)?;
                 cur_path = p.obj_path(parent);
                 let _ = depth;
+                continue;
+            }
+            if let Some(primary) = awareness_primary(p, ei) {
+                cur_path = primary;
                 continue;
             }
             let g = read_material(p, ei).ok()?;
@@ -221,6 +240,10 @@ pub fn params_by<P: std::ops::Deref<Target = Package>>(path: &str, lookup: impl 
             let (props, _) = object_props(p, ei).ok()?;
             let parent = props.get("Parent").map(|x| x.as_obj()).filter(|&o| o != 0)?;
             cur_path = p.obj_path(parent);
+            continue;
+        }
+        if let Some(primary) = awareness_primary(p, ei) {
+            cur_path = primary;
             continue;
         }
         let g = read_material(p, ei).ok()?;
@@ -327,6 +350,14 @@ impl Comp<'_> {
                 self.push(Node::Const { v, n: 3 })
             }
             "TextureSample" | "TextureSampleParameter2D" => {
+                // Bourne: the character eye/teeth material samples a TextureCube (its reflection) with a plain
+                // TextureSample. n1 has no cube textures: the 2D lookup of a cube came back as the white stand-in, and
+                // as emissive that made the eyes glow. Draw no reflection instead (logged as unsupported).
+                if cls == "TextureSample"
+                    && e.objs.get("Texture").is_some_and(|&o| o != 0 && self.pkg.class_name(o) == "TextureCube")
+                {
+                    return self.unsup("TextureSample(TextureCube)");
+                }
                 let mut tp = e.objs.get("Texture").filter(|&&o| o != 0).map(|&o| self.pkg.obj_path(o));
                 if cls == "TextureSampleParameter2D" {
                     if let Some(t) = self.params.texture.get(&pname) {

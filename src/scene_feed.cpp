@@ -62,6 +62,7 @@
 #include "generated/default/tbc_pch.h"
 
 #include "scene_feed.h"
+#include "hybrid_state.h"
 
 #include <algorithm>
 #include <array>
@@ -615,7 +616,7 @@ void Skeleton(std::string& s, uint32_t mesh) {
   if (!Readable(data) || !count || count > 1024) return;
   const uint32_t name_count = U32(kNames + 4);
   static bool searched = false;
-  if (!g_bone_stride && searched) return;
+  if (!g_bone_stride && (searched || count < 16)) return;  // small rigs (props) can have every bone on the root
   if (!g_bone_stride) {
     searched = true;
     // Raw dump of the first bones, so the layout can be read off the log if the search fails.
@@ -1488,6 +1489,163 @@ std::string MaterialPath(uint32_t m, bool params, bool* runtime) {
 }
 
 }  // namespace
+
+// ---- Hybrid fill 4: this frame's static and skeletal meshes for the n1 renderer (hybrid_state.h HybridScene) ----
+// The first cut of skullburglar's Live(): meshes, transforms, materials, bones and light environments only (no
+// lights/fog/post feed, particles, trees or decals yet). A cached primitive list, re-walked every 16 frames (the walk
+// costs ~1.5 ms); each entry is checked every frame. Paths are interned per component and rebuilt when its mesh or
+// materials change.
+namespace {
+struct LiveComponent {
+  uint32_t name = 0, outer = 0, mesh = 0, mats = 0, mat_count = 0, dle = 0;
+  const char* mesh_path = nullptr;
+  const char* light_path = nullptr;
+  const char* env_path = nullptr;
+  std::vector<const char*> materials;
+};
+
+// Interned strings live for the process (the renderer keys its caches on the pointers).
+const char* Intern(const std::string& v) {
+  if (v.empty()) return nullptr;
+  static std::mutex mutex;
+  static std::unordered_map<std::string, const char*> table;
+  std::lock_guard lock(mutex);
+  auto [it, added] = table.try_emplace(v, nullptr);
+  if (added) {
+    char* copy = new char[v.size() + 1];
+    std::memcpy(copy, v.c_str(), v.size() + 1);
+    it->second = copy;
+  }
+  return it->second;
+}
+
+struct LiveState {
+  std::vector<Primitive> prims;
+  std::unordered_map<uint32_t, LiveComponent> components;
+  uint32_t age = 1u << 30;
+  uint64_t frame = 0;
+  bots::HybridScene building;
+  bool logged = false;
+};
+LiveState g_live;
+}  // namespace
+
+void Live(uint8_t* base) {
+  bots::HybridState* hs = bots::FindHybridState();
+  if (!hs || hs->fill.load(std::memory_order_relaxed) != 4) return;
+  g_base = base;
+  LiveState& st = g_live;
+  const auto t0 = std::chrono::steady_clock::now();
+  if (++st.age >= 16) {
+    Times unused;
+    Enumerate(st.prims, unused);
+    std::erase_if(st.prims, [](const Primitive& p) { return p.kind != Kind::kStatic && p.kind != Kind::kSkeletal; });
+    st.age = 0;
+  } else {
+    DropIf(st.prims, [](Primitive& p) {
+      return !AliveAt(p.component, p.index) || PrimClass(p).kind != p.kind || !U32(p.component + g_off.scene_info.offset);
+    });
+  }
+  bots::HybridScene& out = st.building;
+  out.instances.clear();
+  out.skeletal.clear();
+  out.bones.clear();
+  out.materials.clear();
+  out.live_materials.clear();
+  out.decals.clear();
+  out.decal_receivers.clear();
+  out.trees.clear();
+  out.emitters.clear();
+  out.particle_rows.clear();
+  out.lighting.clear();
+  out.light_pending = false;
+  for (Primitive& p : st.prims) {
+    const uint32_t c = p.component;
+    const bool skel = p.kind == Kind::kSkeletal;
+    const Field& ref = skel ? g_off.skeletal_mesh_ref : g_off.static_mesh_ref;
+    if (!ref.ok() || !g_off.local_to_world.ok()) continue;
+    const uint32_t mesh = U32(c + ref.offset);
+    if (!Readable(mesh)) continue;
+    bool hidden = g_off.hidden_game.ok() && (U32(c + g_off.hidden_game.offset) & g_off.hidden_game.mask);
+    const uint32_t owner = g_off.owner.ok() ? U32(c + g_off.owner.offset) : 0;
+    if (Readable(owner)) {
+      if (!g_off.actor) {
+        g_off.actor = true;
+        g_off.actor_hidden = FindProp(U32(owner + kClass), "bHidden");
+      }
+      if (g_off.actor_hidden.ok()) hidden |= (U32(owner + g_off.actor_hidden.offset) & g_off.actor_hidden.mask) != 0;
+    }
+    if (hidden) continue;
+    uint32_t mats = 0, mat_count = 0;
+    if (g_off.materials.ok()) {
+      mats = U32(c + g_off.materials.offset);
+      mat_count = std::min<uint32_t>(U32(c + g_off.materials.offset + 4), 64);
+      if (!Readable(mats)) mats = 0, mat_count = 0;
+    }
+    if (!p.live) p.live = &st.components[c];
+    LiveComponent& lc = *p.live;
+    if (lc.name != U32(c + 0x2C) || lc.outer != U32(c + 0x28) || lc.mesh != mesh || lc.mats != mats ||
+        lc.mat_count != mat_count) {
+      lc.name = U32(c + 0x2C), lc.outer = U32(c + 0x28), lc.mesh = mesh, lc.mats = mats, lc.mat_count = mat_count;
+      lc.mesh_path = Intern(Path(mesh));
+      lc.light_path = Intern(Path(c));
+      lc.materials.clear();
+      for (uint32_t i = 0; i < mat_count; ++i) lc.materials.push_back(Intern(MaterialPath(U32(mats + 4 * i), true, nullptr)));
+    }
+    const ClassInfo& info = PrimClass(p);
+    if (!info.light_env_done) info.light_env_done = true, info.light_env = FindProp(p.cls, "LightEnvironment");
+    const uint32_t dle = info.light_env.ok() ? U32(c + info.light_env.offset) : 0;
+    if (dle != lc.dle) lc.dle = dle, lc.env_path = IsObject(dle) ? Intern(Path(dle)) : nullptr;
+    if (!lc.mesh_path) continue;
+    if (skel) {
+      bots::HybridScene::Skel& sk = out.skeletal.emplace_back();
+      for (int i = 0; i < 16; ++i) sk.transform[i] = F32(c + g_off.local_to_world.offset + 4 * i);
+      sk.mesh = lc.mesh_path;
+      sk.bone_offset = uint32_t(out.bones.size() / 16);
+      sk.bone_count = 0;
+      if (g_off.space_bases.ok()) {
+        const uint32_t data = U32(c + g_off.space_bases.offset), n = U32(c + g_off.space_bases.offset + 4);
+        if (Readable(data) && n <= 1024) {
+          for (uint32_t i = 0; i < 16 * n; ++i) out.bones.push_back(F32(data + 4 * i));
+          sk.bone_count = n;
+        }
+      }
+      sk.lod = g_off.predicted_lod.ok() ? uint32_t(std::max(0, int32_t(U32(c + g_off.predicted_lod.offset)))) : 0;
+      sk.flags = 0;
+      if (g_off.bounds.ok()) {  // FBoxSphereBounds {Origin, BoxExtent, SphereRadius}
+        const uint32_t b = c + g_off.bounds.offset;
+        sk.bounds[0] = F32(b), sk.bounds[1] = F32(b + 4), sk.bounds[2] = F32(b + 8), sk.bounds[3] = F32(b + 24);
+      } else {
+        sk.bounds[0] = sk.bounds[1] = sk.bounds[2] = 0, sk.bounds[3] = 1e30f;
+      }
+      sk.env = lc.env_path;
+      sk.mat_offset = uint32_t(out.materials.size());
+      sk.mat_count = uint32_t(lc.materials.size());
+      out.materials.insert(out.materials.end(), lc.materials.begin(), lc.materials.end());
+      continue;
+    }
+    bots::HybridScene::Instance& inst = out.instances.emplace_back();
+    for (int i = 0; i < 16; ++i) inst.transform[i] = F32(c + g_off.local_to_world.offset + 4 * i);
+    inst.mesh = lc.mesh_path;
+    inst.light = lc.light_path;
+    inst.env = lc.env_path;
+    inst.mat_offset = uint32_t(out.materials.size());
+    inst.mat_count = uint32_t(lc.materials.size());
+    out.materials.insert(out.materials.end(), lc.materials.begin(), lc.materials.end());
+  }
+  out.walked = uint32_t(st.prims.size());
+  out.frame = ++st.frame;
+  out.cam_seq = hs->published.load(std::memory_order_acquire);
+  out.build_ms = float(Ms(t0, std::chrono::steady_clock::now()));
+  if (!st.logged || st.frame % 900 == 0) {
+    st.logged = true;
+    REXLOG_INFO("scenefeed live: frame {}: {} static, {} skeletal ({} bones) of {} primitives in {:.2f} ms", st.frame,
+                out.instances.size(), out.skeletal.size(), out.bones.size() / 16, out.walked, out.build_ms);
+  }
+  std::lock_guard lock(hs->scene_mutex);
+  std::swap(hs->scene, out);
+  hs->scene_cv.notify_all();
+}
 
 void Poll(uint8_t* base) {
   const std::string& cmd = REXCVAR_GET(scenefeed);

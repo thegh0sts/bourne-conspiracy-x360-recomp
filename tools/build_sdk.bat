@@ -103,7 +103,10 @@ set "NATIVE_DIR=%NATIVE_DIR:\=/%"
 set "SKULL_FWD=%SKULL:\=/%"
 if "%TBC_NATIVE%"=="1" (
   echo Including the native renderer plugin from %NATIVE_DIR%
-  set "EXTRA=-DREXGLUE_USE_VULKAN=ON -DREXGLUE_EXTRA_GPU_PLUGINS=%NATIVE_DIR% -DTBC_SKULL_DIR=%SKULL_FWD%"
+  set "N1LIB="
+  if exist "%~dp0n1\target\release\n1ffi.lib" set "N1LIB=%~dp0n1\target\release\n1ffi.lib"
+  if defined N1LIB (set "N1LIB=!N1LIB:\=/!" & echo Including n1 from !N1LIB!)
+  set "EXTRA=-DREXGLUE_USE_VULKAN=ON -DREXGLUE_EXTRA_GPU_PLUGINS=%NATIVE_DIR% -DTBC_SKULL_DIR=%SKULL_FWD% -DTBC_N1FFI_LIBRARY=!N1LIB!"
 ) else (
   set "EXTRA=-DREXGLUE_USE_VULKAN=OFF -DREXGLUE_EXTRA_GPU_PLUGINS="
 )

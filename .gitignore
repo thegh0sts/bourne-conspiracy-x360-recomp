@@ -32,3 +32,4 @@ __pycache__/
 tbc.toml
 logs/
 *.dmp
+tools/n1/

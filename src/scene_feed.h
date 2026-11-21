@@ -15,4 +15,8 @@ void Poll(uint8_t* base);
 bool Command(uint8_t* base, const std::string& cmd);
 void Tick(uint8_t* base);
 
+// Game thread, from BeginRenderingViewFamily (hybrid.cpp): with --hybrid_fill=4, publish this frame's meshes to the
+// n1 renderer (HybridState::scene).
+void Live(uint8_t* base);
+
 }  // namespace tbc::scenefeed

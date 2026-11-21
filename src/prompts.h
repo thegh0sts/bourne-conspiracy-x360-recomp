@@ -16,6 +16,10 @@ std::string ObjectPathName(const PPCContext& ctx, uint8_t* base, uint32_t object
 bool TitleScreenUp();
 // Whether a menu's button bar (" Accept", " Back"...) was drawn in the last half second.
 bool MenuUp();
+// The first mission's movement tutorial ("Use ... to move and ... to look around"): shown at
+// some point this session, and on screen now.
+bool NavigationTutorialSeen();
+bool NavigationTutorialUp();
 // Key glyphs into the HUD textures' button badges (keyboard_prompts.cpp, key_glyphs.cpp);
 // called on each controller poll.
 void PatchHudTextures(const PPCContext& ctx, uint8_t* base);

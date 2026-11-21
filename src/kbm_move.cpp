@@ -14,7 +14,10 @@
 // (Shift, the right shoulder) is always full speed. Left alone: a controller's stick (anything
 // between 0 and full), menus and the title screen (the menus step on the stick), and the
 // quick-time events, which qte.cpp reads before this. Keyboard and mouse only (--mnk_mode).
-// Each notch shows the speed on screen for a moment (osd.cpp; native renderer).
+// Each notch shows the speed on screen for a moment (osd.cpp; native renderer). In the first
+// mission, once the game's movement tutorial ("Use ... to move and ... to look around") has gone,
+// a hint says the wheel sets the speed, for about five seconds (the renderer shows a message for
+// 1.5 s, so it's sent again each second); once a session, and not if the wheel's been used.
 
 #include "generated/default/tbc_pch.h"
 
@@ -50,6 +53,11 @@ constexpr uint16_t kRightShoulder = 0x0200;  // sprint
 
 std::atomic<int> g_speed{-1};  // percent; -1 until first used
 std::atomic<int> g_wheel{0};   // scroll left over, under one notch
+std::atomic<bool> g_wheel_used{false};
+bool g_hinted = false;                         // the hint has started (input thread only)
+Clock::time_point g_hint_until{}, g_hint_next{};
+constexpr const char* kHintTitle = "Keyboard and mouse";
+constexpr const char* kHint = "Use scroll wheel to control speed";
 
 bool KeyboardOn() {
   static Clock::time_point next{};
@@ -86,6 +94,7 @@ void OnWheel(int32_t scroll_y) {
   const int notches = total / 120;  // rex::ui::MouseEvent::kScrollPerDetent
   if (notches == 0) return;
   g_wheel.fetch_sub(notches * 120);
+  g_wheel_used.store(true);
   const int lo = std::clamp(REXCVAR_GET(kbm_move_min), 10, 100);
   const int before = Speed();
   const int after = std::clamp(before + notches * REXCVAR_GET(kbm_move_step), lo, 100);
@@ -97,7 +106,19 @@ void OnWheel(int32_t scroll_y) {
 void OnControllerState(uint8_t* base, uint32_t state) {
   if (!KeyboardOn() || prompts::MenuUp() || prompts::TitleScreenUp()) return;
   const int16_t lx = Load16(base, state + 8), ly = Load16(base, state + 10);
-  if ((lx == 0 && ly == 0) || !KeyValue(lx) || !KeyValue(ly)) return;  // still, or a real stick
+  const bool keys = !(lx == 0 && ly == 0) && KeyValue(lx) && KeyValue(ly);  // not still, not a real stick
+  const auto now = Clock::now();
+  if (!g_hinted && !g_wheel_used.load() && prompts::NavigationTutorialSeen() &&
+      !prompts::NavigationTutorialUp()) {  // the movement tutorial has been and gone: the hint
+    g_hinted = true;
+    g_hint_until = now + std::chrono::seconds(5);
+    g_hint_next = now;
+  }
+  if (now < g_hint_until && now >= g_hint_next && !g_wheel_used.load()) {
+    osd::Show(kHintTitle, kHint);
+    g_hint_next = now + std::chrono::seconds(1);
+  }
+  if (!keys) return;
   const uint16_t buttons = uint16_t(base[state + 4] << 8 | base[state + 5]);
   const double speed = (buttons & kRightShoulder) ? 1.0 : Speed() / 100.0;
   const double x = lx / double(kFull), y = ly / double(kFull);

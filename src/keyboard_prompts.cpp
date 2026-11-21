@@ -289,6 +289,24 @@ uint32_t GuestString(State& s, uint8_t* base, const std::string& text) {
 
 constexpr auto kRecent = std::chrono::milliseconds(500);
 std::atomic<int64_t> g_title_until{0};  // steady_clock ticks: PRESS START on screen until then
+std::atomic<int64_t> g_nav_until{0};    // steady_clock ticks: the movement tutorial on screen until then
+std::atomic<bool> g_nav_seen{false};
+
+// The first mission's movement tutorial (BourneTutorials Navigation, "Use (stick) to move and (stick)
+// to look around"), by the words after its first button in each of the game's languages, as
+// Ascii gives them (other characters as '?').
+constexpr const char* kNavTexts[] = {" to move and", "um sich zu bewegen", "pour vous d?placer",
+                                     "para moverte", "per muoverti"};
+void NoteNavigation(const uint8_t* base, uint32_t text) {
+  const std::string ascii = Ascii(base, text);
+  for (const char* t : kNavTexts) {
+    if (ascii.find(t) != std::string::npos) {
+      g_nav_until.store((std::chrono::steady_clock::now() + kRecent).time_since_epoch().count());
+      g_nav_seen.store(true);
+      return;
+    }
+  }
+}
 std::atomic<int64_t> g_menu_until{0};   // steady_clock ticks: a menu's button bar on screen until then
 
 // Binds and --mnk_mode are read again every half second, so a change made while the game
@@ -406,6 +424,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
 
   const uint32_t text = ctx.r6.u32;
   const uint32_t font = ctx.r7.u32;
+  if (text) NoteNavigation(base, text);
   if (!text || !font || !REXCVAR_GET(keyboard_prompts)) {
     __imp__sub_82C49D88(ctx, base);
     return;
@@ -552,6 +571,11 @@ void PatchHudTextures(const PPCContext& ctx, uint8_t* base) {
     }
     return KeyFor(s, name.c_str(), false, false);
   });
+}
+
+bool NavigationTutorialSeen() { return g_nav_seen.load(); }
+bool NavigationTutorialUp() {
+  return std::chrono::steady_clock::now().time_since_epoch().count() < g_nav_until.load();
 }
 
 bool MenuUp() {

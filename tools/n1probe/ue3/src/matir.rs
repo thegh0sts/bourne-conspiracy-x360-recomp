@@ -514,6 +514,13 @@ impl Comp<'_> {
                 self.push(Node::SoftAlpha { alpha, bias, scale: f("BiasScale", 1.0) })
             }
             "DepthBiasedAlpha" => self.input(&e, "Alpha").unwrap_or_else(|| self.cst(1.0)),
+            // Bourne (v511): DepthBiasedBlend blends RGB over what is behind by Alpha with a depth-biased soft edge (the
+            // light beams and volumetric lamp glows). The translucent material's own blend already does the blending:
+            // pass RGB through (no soft edge).
+            "DepthBiasedBlend" => self.input(&e, "RGB").unwrap_or_else(|| self.cst(0.0)),
+            // No screen coordinates in n1's IR: the screen centre, so a multiply by it doesn't zero the material.
+            "ScreenPosition" => self.push(Node::Const { v: [0.5, 0.5, 0.0, 1.0], n: 0 }),
+            "Constant4Vector" => self.push(Node::Const { v: [f("R", 0.0), f("G", 0.0), f("B", 0.0), f("A", 0.0)], n: 0 }),
             _ => {
                 let _ = out;
                 self.unsup(&e.class)

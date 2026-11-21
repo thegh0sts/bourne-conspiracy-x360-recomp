@@ -95,9 +95,10 @@
 REXCVAR_DEFINE_STRING(scenefeed, "", "Debug",
                       "Development (n1): a scene feed command, e.g. \"dump 5 30\" (5 frames, every 30th) or \"census\"");
 REXCVAR_DEFINE_INT32(scenefeed_delay, 120, "Debug", "Development (n1): seconds after the first frame to run --scenefeed");
-REXCVAR_DEFINE_STRING(n1_feed, "lights,fog,post", "Debug",
-                      "Development (n1): what fill 4 sends besides meshes: any of lights, fog, post, envs (characters' "
-                      "light environments; Bourne's hold zero-brightness lights, so off by default), or none");
+REXCVAR_DEFINE_STRING(n1_feed, "lights,fog,post,chars", "Debug",
+                      "Development (n1): what fill 4 sends besides meshes: any of lights, fog, post, chars (each "
+                      "character lit by the level lights near it), envs (the game's own light environments; Bourne's "
+                      "hold zero-brightness lights, so off by default), or none");
 REXCVAR_DEFINE_STRING(scenefeed_dir, "scenefeed", "Debug", "Development (n1): where --scenefeed writes its files");
 
 namespace tbc::scenefeed {
@@ -1830,12 +1831,121 @@ std::string FilePackageCase(std::string path) {
 }
 
 struct FeedParts {
-  bool lights = false, fog = false, post = false, envs = false;
+  bool lights = false, fog = false, post = false, envs = false, chars = false;
 };
 FeedParts Parts() {
   const std::string& v = REXCVAR_GET(n1_feed);
   return {v.find("lights") != std::string::npos, v.find("fog") != std::string::npos,
-          v.find("post") != std::string::npos, v.find("envs") != std::string::npos};
+          v.find("post") != std::string::npos, v.find("envs") != std::string::npos,
+          v.find("chars") != std::string::npos};
+}
+
+// Character lighting (n1_feed "chars"). Bourne's DynamicLightEnvironments keep their lighting inside the engine (their
+// light components are zero-brightness shadow lights), so each character's environment is built here from the level
+// lights near it, in the shape n1 expects (UE3's composite: one directional, one point, one SH light per environment):
+// the strongest light reaching the character becomes the directional (from that light towards the character), the
+// next one the point light, and the sky light plus a share of the rest the SH ambient (band 0 only).
+struct CharEnv {
+  uint32_t dle;
+  float center[3];
+};
+struct LevelLight {
+  float pos[3], axis[3], raw[3];
+  float radius, falloff, brightness, cos_outer;
+  bool spot;
+};
+
+void CharLightsBin(bots::HybridLighting& out, uint32_t stamp, const std::vector<CharEnv>& chars) {
+  if (chars.empty()) return;
+  std::vector<LevelLight> lights;
+  float sky[3] = {0, 0, 0};
+  for (uint32_t l : g_extras.lights) {
+    if (!IsObject(l)) continue;
+    const LightLayout& L = LayoutFor(l);
+    if (L.kind < 0 || (L.env.ok() && IsObject(U32(l + L.env.offset))) || !FieldB(l, L.enabled)) continue;
+    float c[3] = {0, 0, 0};
+    if (L.color.ok()) L.color_l.Bytes(l, L.color, c);
+    const float b = FieldF(l, L.brightness, 1.f);
+    if (L.kind == 4) {  // sky: UE3's pow(c / 255, 2.2) * brightness
+      for (int k = 0; k < 3; ++k) sky[k] += std::pow(c[k] / 255.f, 2.2f) * b;
+      continue;
+    }
+    if (L.kind > 1 || b <= 0 || !L.l2w.ok()) continue;
+    LevelLight& x = lights.emplace_back();
+    const uint32_t m = l + L.l2w.offset;
+    for (int k = 0; k < 3; ++k) x.pos[k] = F32(m + 4 * (12 + k)), x.axis[k] = F32(m + 4 * (8 + k)), x.raw[k] = c[k] / 255.f;
+    x.radius = FieldF(l, L.radius, 0.f), x.falloff = FieldF(l, L.falloff, 2.f), x.brightness = b;
+    x.spot = L.kind == 1;
+    x.cos_outer = std::cos(FieldF(l, L.outer, 44.f) * 3.14159265f / 180.f);
+    const float n = std::sqrt(x.axis[0] * x.axis[0] + x.axis[1] * x.axis[1] + x.axis[2] * x.axis[2]);
+    if (n > 0) for (float& a : x.axis) a /= n;
+  }
+  struct Hit {
+    float weight;
+    const LevelLight* l;
+    float att;
+  };
+  std::vector<Hit> hits;
+  for (const CharEnv& ce : chars) {
+    hits.clear();
+    for (const LevelLight& x : lights) {
+      const float d[3] = {ce.center[0] - x.pos[0], ce.center[1] - x.pos[1], ce.center[2] - x.pos[2]};
+      const float d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+      if (x.radius <= 0 || d2 >= x.radius * x.radius) continue;
+      float att = std::pow(std::max(0.f, 1.f - d2 / (x.radius * x.radius)), x.falloff);  // UE3 radial attenuation
+      if (x.spot) {
+        const float len = std::sqrt(d2);
+        const float cosang = len > 0 ? (d[0] * x.axis[0] + d[1] * x.axis[1] + d[2] * x.axis[2]) / len : 1.f;
+        if (cosang < x.cos_outer) continue;
+      }
+      const float luma = 0.3f * x.raw[0] + 0.59f * x.raw[1] + 0.11f * x.raw[2];
+      hits.push_back({att * x.brightness * luma, &x, att});
+    }
+    std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.weight > b.weight; });
+    const uint32_t env = EnvIndex(out, ce.dle, stamp);
+    auto base = [&](uint32_t kind) -> bots::HybridLight& {
+      bots::HybridLight& h = out.lights.emplace_back();
+      std::memset(&h, 0, sizeof(h));
+      h.kind = kind;
+      h.flags = kLfEnabled | kLfDynamic | kLfStatic;
+      h.env = env;
+      h.sh = -1;
+      h.radius = 0, h.falloff = 2, h.outer_deg = 44;
+      for (float& v : h.mod_shadow) v = 1;
+      h.mod_fade_exp = 3, h.shadow_falloff_exp = 2;
+      return h;
+    };
+    if (!hits.empty()) {  // key: directional from the strongest light towards the character
+      const Hit& k = hits[0];
+      bots::HybridLight& h = base(2);
+      float dir[3] = {ce.center[0] - k.l->pos[0], ce.center[1] - k.l->pos[1], ce.center[2] - k.l->pos[2]};
+      const float n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+      for (int i = 0; i < 3; ++i) {
+        h.axis[i] = n > 0 ? dir[i] / n : (i == 2 ? -1.f : 0.f);
+        h.color[i] = k.l->raw[i] * k.l->brightness * k.att;
+        h.lower[i] = k.l->raw[i];
+      }
+    }
+    if (hits.size() > 1) {  // the second light as the environment's point light, where it is
+      const Hit& p = hits[1];
+      bots::HybridLight& h = base(0);
+      for (int i = 0; i < 3; ++i) {
+        h.pos[i] = p.l->pos[i];
+        h.color[i] = p.l->raw[i] * p.l->brightness;
+        h.lower[i] = p.l->raw[i];
+      }
+      h.radius = p.l->radius, h.falloff = p.l->falloff;
+    }
+    // Ambient: the sky plus a quarter of the other lights (UE3 folds the lights it doesn't pick into the SH).
+    float amb[3] = {sky[0], sky[1], sky[2]};
+    for (size_t i = 2; i < hits.size() && i < 16; ++i)
+      for (int k = 0; k < 3; ++k) amb[k] += 0.25f * std::pow(hits[i].l->raw[k], 2.2f) * hits[i].l->brightness * hits[i].att;
+    bots::HybridLight& h = base(3);
+    for (int k = 0; k < 3; ++k) h.color[k] = 1.f, h.lower[k] = 1.f;
+    h.sh = int32_t(out.sh.size() / 27);
+    for (int ch = 0; ch < 3; ++ch)
+      for (int i = 0; i < 9; ++i) out.sh.push_back(i == 0 ? amb[ch] / 0.886228f : 0.f);  // band 0: irradiance = c0 * 0.886
+  }
 }
 
 struct LiveState {
@@ -1852,6 +1962,7 @@ struct LiveState {
   bots::HybridFog last_fog{};
   bots::HybridPost last_post{};
   std::vector<const char*> last_materials;
+  std::vector<CharEnv> char_envs;
 };
 LiveState g_live;
 }  // namespace
@@ -1872,7 +1983,9 @@ void Live(uint8_t* base) {
       return !AliveAt(p.component, p.index) || PrimClass(p).kind != p.kind || !U32(p.component + g_off.scene_info.offset);
     });
   }
-  const bool envs = Parts().envs;
+  const FeedParts walk_parts = Parts();
+  const bool envs = walk_parts.envs, chars = walk_parts.chars && !walk_parts.envs;
+  st.char_envs.clear();
   bots::HybridScene& out = st.building;
   out.instances.clear();
   out.skeletal.clear();
@@ -1926,6 +2039,14 @@ void Live(uint8_t* base) {
     if (!lc.mesh_path) continue;
     const char* env_path = envs ? lc.env_path : nullptr;
     if (skel) {
+      if (chars && lc.env_path) {
+        env_path = lc.env_path;
+        CharEnv& ce = st.char_envs.emplace_back();
+        ce.dle = lc.dle;
+        const uint32_t b = c + g_off.bounds.offset;
+        for (int i = 0; i < 3; ++i)
+          ce.center[i] = g_off.bounds.ok() ? F32(b + 4 * i) : F32(c + g_off.local_to_world.offset + 4 * (12 + i));
+      }
       bots::HybridScene::Skel& sk = out.skeletal.emplace_back();
       for (int i = 0; i < 16; ++i) sk.transform[i] = F32(c + g_off.local_to_world.offset + 4 * i);
       sk.mesh = lc.mesh_path;
@@ -1968,7 +2089,9 @@ void Live(uint8_t* base) {
     const FeedParts parts = Parts();
     bots::HybridLighting& nl = st.next_light;
     nl.Clear();
-    if (parts.lights || parts.envs) LightsBin(nl, ++st.env_stamp, parts.envs);
+    ++st.env_stamp;
+    if (parts.lights || parts.envs) LightsBin(nl, st.env_stamp, parts.envs);
+    if (parts.chars && !parts.envs) CharLightsBin(nl, st.env_stamp, st.char_envs);
     bool post_changed = false;
     if (st.lighting_builds++ % 16 == 0) {
       if (parts.fog) FogBin(nl.fog);

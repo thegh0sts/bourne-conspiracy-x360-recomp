@@ -2,6 +2,12 @@
 //! Conspiracy's cooked packages and reports what parses. Offline: no game, no GPU.
 //!
 //!   n1probe <CookedXenon dir> [package names or globs...] [--all] [--out report.txt]
+//!   n1probe <CookedXenon dir> --placements <text> [package prefix]
+//!     lists every static mesh placement whose actor, component, mesh or material path contains <text>
+//!     (case ignored), with its location and baked lighting (lightmap type, lightmap textures, scales).
+//!   n1probe <CookedXenon dir> --mips <text> <package file>
+//!     where each mip of the package's textures whose path contains <text> is stored (inline or another file, offset,
+//!     sizes), and which textures share a stored offset.
 //!
 //! With no package names it probes a fixed sample (a map, a cutscene, characters); --all probes every .xxx file.
 
@@ -75,6 +81,18 @@ fn main() -> anyhow::Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--out") {
         out_path = PathBuf::from(args.get(i + 1).cloned().unwrap_or_default());
         args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--placements") {
+        let filter = args.get(i + 1).cloned().unwrap_or_default().to_lowercase();
+        args.drain(i..(i + 2).min(args.len()));
+        anyhow::ensure!(!args.is_empty() && !filter.is_empty(), "usage: n1probe <CookedXenon dir> --placements <text> [package prefix]");
+        return find_placements(Path::new(&args[0]), &filter, args.get(1).map(|s| s.to_lowercase()), &out_path);
+    }
+    if let Some(i) = args.iter().position(|a| a == "--mips") {
+        let filter = args.get(i + 1).cloned().unwrap_or_default();
+        args.drain(i..(i + 2).min(args.len()));
+        anyhow::ensure!(args.len() >= 2, "usage: n1probe <CookedXenon dir> --mips <texture name text> <package file>");
+        return texture_mips(&PathBuf::from(&args[0]).join(&args[1]), &filter, &out_path);
     }
     let all = args.iter().any(|a| a == "--all");
     args.retain(|a| a != "--all");
@@ -253,4 +271,188 @@ fn summary(t: &Totals, out: &mut String) {
                      classes.iter().take(40).map(|(c, n)| format!("{c} {n}")).collect::<Vec<_>>().join(", "));
     let customs: Vec<String> = classes.iter().filter(|(c, _)| c.starts_with("Hm")).map(|(c, n)| format!("{c} {n}")).collect();
     let _ = writeln!(out, "High Moon classes (Hm*): {}", customs.join(", "));
+}
+
+fn find_placements(dir: &Path, filter: &str, prefix: Option<String>, out_path: &Path) -> anyhow::Result<()> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(dir)? {
+        let p = e?.path();
+        let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if name.ends_with(".xxx") && prefix.as_ref().is_none_or(|x| name.starts_with(x.as_str())) {
+            files.push(p);
+        }
+    }
+    files.sort();
+    let mut report = String::new();
+    let mut hits = 0usize;
+    let mut mesh_pkgs: HashMap<String, Option<Package>> = HashMap::new();
+    for (n, f) in files.iter().enumerate() {
+        if n % 100 == 0 {
+            eprintln!("{n}/{} {}", files.len(), f.display());
+        }
+        let Ok(pkg) = Package::open(f) else { continue };
+        if pkg.exports_of_class("StaticMeshComponent").next().is_none() {
+            continue;
+        }
+        for (p, err) in ue3::level::placements(&pkg) {
+            let hay = format!("{} {} {} {}", p.actor, p.component, p.mesh, p.materials.join(" ")).to_lowercase();
+            if !hay.contains(filter) {
+                continue;
+            }
+            hits += 1;
+            let t = &p.transform;
+            let _ = writeln!(report, "{} | actor {} ({}) | comp {}", p.package, p.actor, p.actor_class, p.component);
+            let _ = writeln!(report, "   mesh {} | at ({:.0}, {:.0}, {:.0}) | materials {:?}", p.mesh, t[3][0], t[3][1], t[3][2],
+                             p.materials);
+            if let Some(e) = err {
+                let _ = writeln!(report, "   ERROR {e}");
+                continue;
+            }
+            let kind = match p.lightmap_kind {
+                0 => "none".to_string(),
+                1 => "per-vertex".to_string(),
+                2 => "texture".to_string(),
+                99 => "FAILED TO READ (run with BOTS_LEVEL_LIGHT_LOG=1 for why)".to_string(),
+                k => format!("unknown type {k}"),
+            };
+            let lod_data = (1..=pkg.exports.len() as i32)
+                .find(|&i| pkg.class_name(i) == "StaticMeshComponent" && pkg.obj_path(i) == p.component)
+                .and_then(|ci| ue3::props::object_props(&pkg, ci).ok())
+                .and_then(|(_, mut r)| r.i32().ok());
+            let _ = write!(report, "   component LODData entries: {} | baked light (LOD0): {kind}",
+                           lod_data.map_or("?".to_string(), |n| n.to_string()));
+            if let Some(v) = &p.vertex_light {
+                let n = v.len().max(1) as f32;
+                let avg: Vec<f32> = (0..3).map(|c| v.iter().map(|x| x[c]).sum::<f32>() / n).collect();
+                let _ = write!(report, ", {} vertices, average rgb ({:.3}, {:.3}, {:.3})", v.len(), avg[0], avg[1], avg[2]);
+            }
+            let _ = writeln!(report);
+            let _ = writeln!(report, "   mesh uv: {}", if p.mesh_idx > 0 { mesh_uv_at(&pkg, p.mesh_idx) } else { mesh_uv_info(dir, &p.mesh, &mut mesh_pkgs) });
+            if let Some(lm) = &p.lightmap2d {
+                for i in 0..4 {
+                    if let Some(tex) = &lm.textures[i] {
+                        let _ = writeln!(report, "   lightmap {i}: {tex} scale {:?}", lm.scale[i]);
+                    }
+                }
+                let _ = writeln!(report, "   lightmap uv scale {:?} bias {:?}", lm.coord_scale, lm.coord_bias);
+            }
+        }
+    }
+    let _ = writeln!(report, "\n{hits} placements matched \"{filter}\" in {} packages", files.len());
+    print!("{report}");
+    std::fs::write(out_path, &report)?;
+    eprintln!("report written to {}", out_path.display());
+    Ok(())
+}
+
+/// A static mesh's LightMapCoordinateIndex (the UV set its lightmap uses; n1 always uses set 1) and its LOD0 UV sets.
+fn mesh_uv_info(dir: &Path, mesh: &str, pkgs: &mut HashMap<String, Option<Package>>) -> String {
+    let Some((pname, rest)) = mesh.split_once('.') else { return format!("? (path {mesh})") };
+    let pkg = pkgs.entry(pname.to_lowercase()).or_insert_with(|| {
+        let want = format!("{}.xxx", pname.to_lowercase());
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase() == want))
+            .and_then(|p| Package::open(&p).ok())
+    });
+    let Some(pkg) = pkg.as_ref() else { return format!("? (package {pname} not opened)") };
+    let Some(idx) = (1..=pkg.exports.len() as i32)
+        .find(|&i| pkg.class_name(i) == "StaticMesh" && pkg.obj_path(i).eq_ignore_ascii_case(rest))
+    else {
+        return format!("? ({rest} not found in {pname})");
+    };
+    mesh_uv_at(pkg, idx)
+}
+
+/// The same for a StaticMesh export of an open package (cooked levels carry their own copies of the meshes they place).
+fn mesh_uv_at(pkg: &Package, idx: i32) -> String {
+    let lmci = ue3::props::object_props(pkg, idx)
+        .ok()
+        .and_then(|(p, _)| p.get("LightMapCoordinateIndex").map(|x| x.as_i32()));
+    let sets = match ue3::mesh::read_static_mesh(pkg, idx) {
+        Ok(m) => {
+            let per: Vec<String> = m.lods.iter().map(|l| format!("{} verts", l.uvs.first().map_or(0, |u| u.len()))).collect();
+            m.lods.first().map_or("no LODs".to_string(), |l| {
+                // Each UV set's range: a lightmap set spans about 0..1 without overlaps; texture sets tile past it.
+                let ranges: Vec<String> = l
+                    .uvs
+                    .iter()
+                    .enumerate()
+                    .map(|(k, set)| {
+                        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                        for u in set {
+                            for c in 0..2 {
+                                lo[c] = lo[c].min(u[c]);
+                                hi[c] = hi[c].max(u[c]);
+                            }
+                        }
+                        format!("set {k} ({:.3}, {:.3})-({:.3}, {:.3})", lo[0], lo[1], hi[0], hi[1])
+                    })
+                    .collect();
+                format!("{} uv sets [{}] | {} LODs ({})", l.uvs.len(), ranges.join("; "), m.lods.len(), per.join(", "))
+            })
+        }
+        Err(e) => format!("mesh read failed: {e:#}"),
+    };
+    format!("LightMapCoordinateIndex {} | {sets}", lmci.map_or("not set (default)".to_string(), |v| v.to_string()))
+}
+
+fn texture_mips(file: &Path, filter: &str, out_path: &Path) -> anyhow::Result<()> {
+    let pkg = Package::open(file)?;
+    let mut report = String::new();
+    // (offset of each mip stored in another file) -> textures using it
+    let mut by_off: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+    let mut lines: Vec<(String, String)> = Vec::new();
+    for i in 1..=pkg.exports.len() as i32 {
+        let class = pkg.class_name(i);
+        if class != "LightMapTexture2D" && class != "Texture2D" && class != "ShadowMapTexture2D" {
+            continue;
+        }
+        let path = pkg.obj_path(i);
+        let Ok((props, mut r)) = ue3::props::object_props(&pkg, i) else { continue };
+        let abs = pkg.exports[i as usize - 1].serial_offset;
+        let mut text = String::new();
+        let res = (|| -> anyhow::Result<()> {
+            ue3::mesh::skip_bulk(&mut r, abs)?; // SourceArt
+            let n = r.i32()?;
+            anyhow::ensure!((0..20).contains(&n), "bad mip count {n}");
+            let tail = props.get("MipTailBaseIdx").map(|p| p.as_i32());
+            text += &format!("  export #{i} {class} {path}: {n} mips, MipTailBaseIdx {tail:?}\n");
+            for level in 0..n {
+                let (flags, count, size, off) = ue3::mesh::skip_bulk(&mut r, abs)?;
+                let sx = r.i32()?;
+                let sy = r.i32()?;
+                let place = if flags & 0x20 != 0 {
+                    "unused".to_string()
+                } else if flags & 0x01 != 0 {
+                    by_off.entry(off).or_default().push(format!("#{i} mip {level}"));
+                    format!("other file @{off}")
+                } else {
+                    "inline".to_string()
+                };
+                text += &format!("    mip {level} {sx}x{sy}: flags {flags:#x} count {count} size {size} {place}\n");
+            }
+            Ok(())
+        })();
+        if let Err(e) = res {
+            text += &format!("  export #{i} {path}: {e:#}\n");
+        }
+        lines.push((path, text));
+    }
+    let f = filter.to_lowercase();
+    for (path, text) in &lines {
+        if path.to_lowercase().contains(&f) || text.contains(&format!("#{} ", filter)) {
+            report += text;
+        }
+    }
+    let shared: Vec<_> = by_off.iter().filter(|(_, v)| v.len() > 1).collect();
+    report += &format!("\n{} offsets in other files, {} of them used by more than one mip\n", by_off.len(), shared.len());
+    for (off, v) in shared.iter().take(20) {
+        report += &format!("  @{off}: {}\n", v.join(", "));
+    }
+    print!("{report}");
+    std::fs::write(out_path, &report)?;
+    eprintln!("report written to {}", out_path.display());
+    Ok(())
 }

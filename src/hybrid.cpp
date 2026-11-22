@@ -68,21 +68,17 @@ HybridState g_state;
 const bool g_state_published = [] {
   char value[32];
   std::snprintf(value, sizeof(value), "%llx", static_cast<unsigned long long>(uintptr_t(&g_state)));
+  // Both the process environment and the C runtime's copy (the plugin reads it with getenv; SetEnvironmentVariable
+  // alone does not reach a runtime environment that already exists).
 #ifdef _WIN32
   SetEnvironmentVariableA(bots::kHybridStateEnv, value);
+  _putenv_s(bots::kHybridStateEnv, value);
 #else
   setenv(bots::kHybridStateEnv, value, 1);
 #endif
-  // n1's lighting defaults are 50 Cent's. Bourne's per-vertex baked light is stored linearly (50 Cent's port raises it
-  // to the power 2.2): vlgamma=1 unless the environment already sets n1's knobs.
-  if (!std::getenv("BOTS_N1_ENVP")) {
-#ifdef _WIN32
-    SetEnvironmentVariableA("BOTS_N1_ENVP", "vlgamma=1");
-    _putenv_s("BOTS_N1_ENVP", "vlgamma=1");
-#else
-    setenv("BOTS_N1_ENVP", "vlgamma=1", 1);
-#endif
-  }
+  // n1's per-vertex baked light keeps its default gamma (2.2, as 50 Cent's port applies it; it matches the game's
+  // look). vlgamma=1 made every vertex-lit surface 3-5x too bright (the Marseilles hotel); the world that looked too dark
+  // before had other causes (lightmap mips in <level>_LM.xxx, package-name case).
   return true;
 }();
 

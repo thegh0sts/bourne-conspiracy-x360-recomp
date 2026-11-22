@@ -1,0 +1,42 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index e6df923..1c58145 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1075,6 +1075,37 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   Views vview_storage, pview_storage;
+   const std::span<const VkImageView> vviews = texture_views(vtextures, vview_storage),
+                                      pviews = texture_views(ptextures, pview_storage);
++  // BOTS_DUMP_PS=<dir> (Bourne): each pixel shader once, as <dir>/<microcode hash>.txt: the textures the first draw
++  // using it binds (fetch constant, size, format), that draw's non-zero pixel shader constants, and the microcode.
++  if (pshader) {
++    static const char* const ps_dir = [] {
++      const char* v = std::getenv("BOTS_DUMP_PS");
++      return v && *v ? v : nullptr;
++    }();
++    static std::unordered_set<uint64_t> ps_dumped;
++    if (ps_dir && ps_dumped.insert(pshader->ucode_data_hash()).second) {
++      char path[512];
++      std::snprintf(path, sizeof(path), "%s/%016llX.txt", ps_dir, (unsigned long long)pshader->ucode_data_hash());
++      if (std::FILE* f = std::fopen(path, "w")) {
++        std::fprintf(f, "draw %lld\n", (long long)stats_.draws + 1);
++        for (const auto& b : ptextures) {
++          const auto fetch = regs.GetTextureFetch(b.fetch_constant);
++          std::fprintf(f, "t%u %ux%u format %u dimension %u signed %d\n", uint32_t(b.fetch_constant),
++                       uint32_t(fetch.size_2d.width) + 1, uint32_t(fetch.size_2d.height) + 1, uint32_t(fetch.format),
++                       uint32_t(fetch.dimension), int(b.is_signed));
++        }
++        for (uint32_t c = 0; c < 256; ++c) {
++          const uint32_t* v = &regs.values[rg::XE_GPU_REG_SHADER_CONSTANT_256_X + 4 * c];
++          if (!(v[0] | v[1] | v[2] | v[3])) continue;
++          float fv[4];
++          std::memcpy(fv, v, sizeof(fv));
++          std::fprintf(f, "c%u = %g %g %g %g\n", c, fv[0], fv[1], fv[2], fv[3]);
++        }
++        std::fprintf(f, "%s", pshader->ucode_disassembly().c_str());
++        std::fclose(f);
++      }
++    }
++  }
+ 
+   profile.Mark(kPhaseRing);
+   // B-218: a scene queued for this frame does what flushes (the n1 preload hold) here, not inside DrawSceneFill below.

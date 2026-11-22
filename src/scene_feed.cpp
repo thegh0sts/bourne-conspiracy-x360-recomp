@@ -99,6 +99,15 @@ REXCVAR_DEFINE_STRING(n1_feed, "lights,fog,post,chars", "Debug",
                       "Development (n1): what fill 4 sends besides meshes: any of lights, fog, post, chars (each "
                       "character lit by the level lights near it), envs (the game's own light environments; Bourne's "
                       "hold zero-brightness lights, so off by default), or none");
+REXCVAR_DEFINE_DOUBLE(n1_fog_density, 1.5, "Debug",
+                      "Development (n1): scale on the height fog's Density sent to n1 (n1's formula is 50 Cent's)");
+REXCVAR_DEFINE_INT32(n1_fog_color, 2, "Debug",
+                     "Development (n1): the fog colour n1 draws: 0 as 50 Cent (pow(LightColor / 255, 2.2)), 1 LightColor / "
+                     "255, 2 LightColor / 255 * LightBrightness");
+REXCVAR_DEFINE_STRING(n1_trace, "", "Debug",
+                      "Development (n1): log once what the scene feed sends for each static mesh whose mesh or "
+                      "baked-light path contains this text (case ignored; * for all): mesh, baked-light path, "
+                      "materials, position");
 REXCVAR_DEFINE_STRING(scenefeed_dir, "scenefeed", "Debug", "Development (n1): where --scenefeed writes its files");
 
 namespace tbc::scenefeed {
@@ -1716,8 +1725,16 @@ void FogBin(bots::HybridFog& fog) {
       cl.Bytes(f, L[1], c);
     }
     const float k = FieldF(f, L[2], 1.f);
-    for (int i = 0; i < 3; ++i) fog.color[i] = (c[i] / 255.f) * k, fog.light_color[i] = c[i] / 255.f;
-    fog.density = FieldF(f, L[3], 0.f), fog.height = FieldF(f, L[4], 0.f), fog.start = FieldF(f, L[5], 0.f);
+    // n1 draws the fog in pow(light_color, 2.2) (50 Cent's port). Bourne's haze is lighter: send the colour so that
+    // n1's curve gives the chosen one (--n1_fog_color).
+    const int mode = REXCVAR_GET(n1_fog_color);
+    for (int i = 0; i < 3; ++i) {
+      fog.color[i] = (c[i] / 255.f) * k;
+      const float want = mode == 1 ? c[i] / 255.f : mode == 2 ? c[i] / 255.f * k : -1.f;
+      fog.light_color[i] = want < 0 ? c[i] / 255.f : std::pow(std::max(want, 0.f), 1.f / 2.2f);
+    }
+    fog.density = FieldF(f, L[3], 0.f) * float(REXCVAR_GET(n1_fog_density));
+    fog.height = FieldF(f, L[4], 0.f), fog.start = FieldF(f, L[5], 0.f);
     fog.extinction = FieldF(f, L[6], 1e8f);
     return;
   }
@@ -1828,6 +1845,28 @@ std::string FilePackageCase(std::string path) {
   for (char& c : low) c = char(std::tolower(uint8_t(c)));
   if (const auto it = files.find(low); it != files.end()) path.replace(0, dot, it->second);
   return path;
+}
+
+// --n1_trace=<text>: one log line per traced component (the first time it is fed).
+void TraceInstance(uint32_t c, const bots::HybridScene::Instance& inst, const std::vector<const char*>& mats) {
+  const std::string& want = REXCVAR_GET(n1_trace);
+  if (want.empty() || !inst.mesh) return;
+  static std::unordered_set<uint32_t> seen;
+  auto lower = [](std::string v) {
+    for (char& ch : v) ch = char(std::tolower(uint8_t(ch)));
+    return v;
+  };
+  const std::string w = lower(want);
+  const bool all = w == "*";
+  if (!all && lower(inst.mesh).find(w) == std::string::npos &&
+      (!inst.light || lower(inst.light).find(w) == std::string::npos))
+    return;
+  if (!seen.insert(c).second) return;
+  std::string m;
+  for (const char* x : mats) m += std::string(m.empty() ? "" : ", ") + (x ? x : "(none)");
+  REXLOG_INFO("n1_trace: component {:08X} mesh {} light {} env {} at ({:.0f}, {:.0f}, {:.0f}) materials [{}]", c,
+              inst.mesh, inst.light ? inst.light : "(none)", inst.env ? inst.env : "(none)", inst.transform[12],
+              inst.transform[13], inst.transform[14], m);
 }
 
 struct FeedParts {
@@ -2081,6 +2120,7 @@ void Live(uint8_t* base) {
     inst.mat_offset = uint32_t(out.materials.size());
     inst.mat_count = uint32_t(lc.materials.size());
     out.materials.insert(out.materials.end(), lc.materials.begin(), lc.materials.end());
+    TraceInstance(c, inst, lc.materials);
   }
   out.walked = uint32_t(st.prims.size());
   // Lights every frame (sent only when they changed), fog and post every 16th build.

@@ -138,6 +138,9 @@ pub struct MeshAsset {
     pub colors: Vec<[u8; 4]>,
     /// Second UV set (lightmap coordinates); zeros when absent.
     pub uv1: Vec<[f32; 2]>,
+    /// Bourne: UV set 1 as stored, what a material's TexCoord 1 reads. Differs from `uv1` when the mesh's
+    /// LightMapCoordinateIndex is not 1; empty = same as `uv1`.
+    pub uvm1: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -262,9 +265,11 @@ const INDEX_CLASSES: &[&str] = &[
     // W2: the startup step finds every particle material through its emitters.
     "ParticleSpriteEmitter",
     "ParticleMeshEmitter",
+    // Bourne: cube maps (reflections), drawn as a 2D strip of their six faces (`cube_texture`).
+    "TextureCube",
 ];
 /// Bump when `INDEX_CLASSES` changes.
-const INDEX_REV: u32 = 3;
+const INDEX_REV: u32 = 4;
 
 impl AssetDb {
     /// Opens (or builds) the index. `cooked` is `game/C1Game/CookedXenon`.
@@ -643,11 +648,22 @@ impl AssetDb {
         colors.resize(nv, [255; 4]);
         let mut uv1 = l.uvs.get(lm_set).or_else(|| l.uvs.get(1)).cloned().unwrap_or_default();
         uv1.resize(nv, [0.0, 0.0]);
+        // The material's TexCoord 1 is the mesh's UV set 1 whatever set the lightmap uses (main_MC_CLR_Mat's wet mask
+        // on the Marseille plaza floor: lightmap on set 2, mask on set 1).
+        let uvm1 = match l.uvs.get(1) {
+            Some(u) if lm_set != 1 => {
+                let mut u = u.clone();
+                u.resize(nv, [0.0, 0.0]);
+                u
+            }
+            _ => Vec::new(),
+        };
         let m = MeshAsset {
             name: path.to_string(),
             tangents: fit(l.tangents.clone()),
             colors,
             uv1,
+            uvm1,
             uvs: l
                 .uvs
                 .first()
@@ -811,7 +827,11 @@ impl AssetDb {
     /// What a texture's shader needs to know about it, from the export's properties alone (no mips are read):
     /// `None` when the path is unknown, the format is unsupported or the header doesn't parse.
     pub fn texture_meta(&self, path: &str) -> Option<TexMeta> {
-        let (pkg, idx) = self.locate(path, true, None).ok().flatten()?;
+        let Some((pkg, idx)) = self.locate(path, true, None).ok().flatten() else {
+            // Bourne: a TextureCube answers with its first face's header (the strip has the faces' format).
+            let faces = self.cube_face_paths(path)?;
+            return self.texture_meta(&faces[0]);
+        };
         let (props, _) = ue3::props::object_props(&pkg, idx).ok()?;
         let name = |n: &str| -> String {
             props
@@ -895,11 +915,82 @@ impl AssetDb {
             }
         }
         let Some((pkg, idx)) = self.locate(path, true, None)? else {
-            return Ok(None);
+            return self.cube_texture(path);
         };
         let ta = convert_texture(path, ue3::texture::read_texture(&pkg, idx, &self.tfc)?)?;
         let _ = std::fs::write(&file, encode_texture(&ta));
         Ok(Some(Arc::new(self.trim(ta))))
+    }
+
+    /// Bourne: a TextureCube's six face textures (FacePosX, FaceNegX, FacePosY, FaceNegY, FacePosZ, FaceNegZ).
+    pub fn cube_face_paths(&self, path: &str) -> Option<[String; 6]> {
+        let (pkg, idx) = self.locate(path, false, Some("TextureCube")).ok().flatten()?;
+        if pkg.class_name(idx) != "TextureCube" {
+            return None;
+        }
+        let (props, _) = ue3::props::object_props(&pkg, idx).ok()?;
+        // An export's path with its package in front when it sits at the package's top (as the index has it).
+        let face = |n: &str| {
+            props.get(n).map(|p| p.as_obj()).filter(|&o| o != 0).map(|o| {
+                if o > 0 { export_paths(&pkg, o).swap_remove(0) } else { pkg.obj_path(o) }
+            })
+        };
+        Some([
+            face("FacePosX")?,
+            face("FaceNegX")?,
+            face("FacePosY")?,
+            face("FaceNegY")?,
+            face("FacePosZ")?,
+            face("FaceNegZ")?,
+        ])
+    }
+
+    /// Bourne: a TextureCube as one 2D texture, its faces side by side in the order +X, -X, +Y, -Y, +Z, -Z (6w x h,
+    /// mip by mip). The material compiler samples it with `n1_cube_uv` (codegen), so the renderer needs no cube
+    /// images. Faces of differing size or format: none.
+    fn cube_texture(&self, path: &str) -> Result<Option<Arc<TextureAsset>>> {
+        let Some(paths) = self.cube_face_paths(path) else { return Ok(None) };
+        let mut faces = Vec::with_capacity(6);
+        for p in &paths {
+            let Some(f) = self.texture(p) else { bail!("cube face {p} did not load") };
+            faces.push(f);
+        }
+        let f0 = &faces[0];
+        if faces.iter().any(|f| f.fmt != f0.fmt || f.width != f0.width || f.height != f0.height) {
+            bail!("cube faces differ in size or format");
+        }
+        let levels = faces.iter().map(|f| f.mips.len()).min().unwrap_or(0);
+        let (bw, bpb) = f0.fmt.block();
+        let mut mips = Vec::with_capacity(levels);
+        for l in 0..levels {
+            let (w, h) = ((f0.width >> l).max(1), (f0.height >> l).max(1));
+            let rows = h.div_ceil(bw) as usize;
+            let row = (w.div_ceil(bw) * bpb) as usize;
+            if faces.iter().any(|f| f.mips[l].len() < rows * row) {
+                break;
+            }
+            let mut out = Vec::with_capacity(rows * row * 6);
+            for r in 0..rows {
+                for f in &faces {
+                    out.extend_from_slice(&f.mips[l][r * row..(r + 1) * row]);
+                }
+            }
+            mips.push(out);
+        }
+        if mips.is_empty() {
+            bail!("cube faces have no usable mips");
+        }
+        Ok(Some(Arc::new(TextureAsset {
+            name: path.to_string(),
+            fmt: f0.fmt,
+            srgb: f0.srgb,
+            width: f0.width * 6,
+            height: f0.height,
+            mips,
+            normal: false,
+            unpack: None,
+            addr: f0.addr,
+        })))
     }
 
     /// Drops mips above `max_tex` (BOTS_N1_MAXTEX, default 2048) for small GPUs.
@@ -1366,7 +1457,7 @@ impl<'a> R<'a> {
     }
 }
 
-const MESH_MAGIC: u32 = 0x4853_4D33; // "3MSH": + tangents, colours, uv1 (Bourne: uv1 is the lightmap's UV set)
+const MESH_MAGIC: u32 = 0x4853_4D34; // "4MSH": + tangents, colours, uv1 (Bourne: the lightmap's UV set), uvm1 (set 1)
 const TEX_MAGIC: u32 = 0x5845_5432; // + normal, unpack
 const TEX_MAGIC2: u32 = 0x5845_5433; // same layout; small packed-mip textures decoded from the right place (B-292)
 const TEX_MAGIC3: u32 = 0x5845_5434; // + AddressX/AddressY after the unpack range (B-324)
@@ -1543,6 +1634,8 @@ fn encode_mesh(m: &MeshAsset) -> Vec<u8> {
     for i in 0..m.positions.len() {
         m.uv1.get(i).copied().unwrap_or([0.0; 2]).iter().for_each(|&v| w.f32(v));
     }
+    w.u32(m.uvm1.len() as u32);
+    m.uvm1.iter().flatten().for_each(|&v| w.f32(v));
     w.0
 }
 
@@ -1578,11 +1671,14 @@ fn decode_mesh(name: &str, b: &[u8]) -> Result<MeshAsset> {
     let tangents = (0..nv).map(|_| Ok([r.f32()?, r.f32()?, r.f32()?, r.f32()?])).collect::<Result<Vec<_>>>()?;
     let colors = (0..nv).map(|_| Ok(<[u8; 4]>::try_from(r.take(4)?)?)).collect::<Result<Vec<_>>>()?;
     let uv1 = (0..nv).map(|_| Ok([r.f32()?, r.f32()?])).collect::<Result<Vec<_>>>()?;
+    let nm = r.u32()? as usize;
+    let uvm1 = (0..nm).map(|_| Ok([r.f32()?, r.f32()?])).collect::<Result<Vec<_>>>()?;
     Ok(MeshAsset {
         name: name.to_string(),
         tangents,
         colors,
         uv1,
+        uvm1,
         positions,
         normals,
         uvs,

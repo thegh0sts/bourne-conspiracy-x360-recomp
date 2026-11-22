@@ -87,6 +87,10 @@ pub struct MatDef {
     pub uses_vcolor: bool,
     /// Uses the second UV set (TexCoord set >= 1).
     pub uses_uv1: bool,
+    /// Bourne: texture slots holding a TextureCube, loaded as a 2D strip of its six faces (+X, -X, +Y, -Y, +Z, -Z) and
+    /// sampled by direction (`n1_cube_uv` in the generated code).
+    #[serde(default)]
+    pub cubes: Vec<u32>,
 }
 
 

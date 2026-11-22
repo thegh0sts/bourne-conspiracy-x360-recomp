@@ -127,6 +127,23 @@ pub fn compile_addr(
                 };
                 (format!("mp.c[{k}]"), cnt)
             }
+            Node::Tex { tex, uv } if def.cubes.contains(tex) => {
+                // Bourne: a cube map. The material's coordinate (its ReflectionVector, about the normal map) is used
+                // as the direction the way UE3 passes it: tangent space when n1 computes ReflectionVector there
+                // (`refl_ts`, the default), else n1's Y-up world turned back into UE3's axes. No coordinate: the
+                // world reflection about the vertex normal. Mip from the direction's screen derivatives (the game's
+                // texCUBE picks a blurrier level where the normal map bends the reflection).
+                let t = *tex as usize;
+                let dir = match uv {
+                    Some(j) => format!("select(n1_ue(n{j}.xyz), n{j}.xyz, fi.refl_ts)"),
+                    None => "n1_ue(reflect(-fi.view, fi.nrm))".to_string(),
+                };
+                let mut e = format!("n1_cube(t{t}, {dir})");
+                if gamma.get(t).copied().unwrap_or(false) {
+                    e = format!("xe_pwl({e})");
+                }
+                (e, 4)
+            }
             Node::Tex { tex, uv } => {
                 let t = *tex as usize;
                 let mut e = match clamp.get(t).copied().unwrap_or(0) & 3 {
@@ -281,6 +298,13 @@ pub fn compile_addr(
     let ntex = def.textures.len();
     for t in 0..ntex {
         let _ = writeln!(body, "@group(1) @binding({}) var t{t}: texture_2d<f32>;", 2 + t);
+    }
+    if def.cubes.iter().any(|&t| (t as usize) < ntex) {
+        // n1's world is UE3's with Y and Z swapped (Y up); cube faces are UE3's (D3D's cube addressing). Faces sit
+        // side by side in the strip: +X, -X, +Y, -Y, +Z, -Z; the coordinate keeps clear of the neighbours' edges.
+        body.push_str(
+            "fn n1_ue(v: vec3<f32>) -> vec3<f32> {\n    return vec3<f32>(v.x, v.z, v.y);\n}\nfn n1_cube(t: texture_2d<f32>, w: vec3<f32>) -> vec4<f32> {\n    let d = normalize(w + vec3<f32>(0.0, 0.0, 1e-7));\n    let s = f32(textureDimensions(t, 0).y);\n    let nl = f32(textureNumLevels(t));\n    let fp = max(length(dpdx(d)), length(dpdy(d))) * s * 0.5;\n    let lod = clamp(log2(max(fp, 1e-6)), 0.0, nl - 1.0);\n    let a = abs(d);\n    var face = 0.0;\n    var sc = 0.0;\n    var tc = 0.0;\n    var ma = 1.0;\n    if (a.x >= a.y && a.x >= a.z) {\n        ma = a.x;\n        if (d.x > 0.0) { face = 0.0; sc = -d.z; } else { face = 1.0; sc = d.z; }\n        tc = -d.y;\n    } else if (a.y >= a.z) {\n        ma = a.y;\n        if (d.y > 0.0) { face = 2.0; tc = d.z; } else { face = 3.0; tc = -d.z; }\n        sc = d.x;\n    } else {\n        ma = a.z;\n        if (d.z > 0.0) { face = 4.0; sc = d.x; } else { face = 5.0; sc = -d.x; }\n        tc = -d.y;\n    }\n    let m = clamp(0.5 * exp2(ceil(lod)) / s, 0.002, 0.25);\n    let st = clamp(vec2<f32>(sc, tc) / max(ma, 1e-6) * 0.5 + 0.5, vec2<f32>(m), vec2<f32>(1.0 - m));\n    return textureSampleLevel(t, smp, vec2<f32>((face + st.x) / 6.0, st.y), lod);\n}\n",
+        );
     }
     body.push_str("fn eval_material(fi: FragIn) -> MatOut {\n    var o: MatOut;\n");
     body.push_str(&code);

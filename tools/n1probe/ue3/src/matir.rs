@@ -275,6 +275,12 @@ struct Comp<'a> {
 
 const DEFAULT_COL: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
+/// Bourne: cube maps as cube samples (default on; `BOTS_N1_CUBES=0` keeps them unsupported, constant 0).
+fn cubes_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BOTS_N1_CUBES").map_or(true, |v| v != "0"))
+}
+
 impl Comp<'_> {
     fn push(&mut self, n: Node) -> u32 {
         // Dedupe identical nodes, except constants: merging two that happen to hold the same value (two parameters both
@@ -349,15 +355,29 @@ impl Comp<'_> {
                 let v = self.params.vector.get(&pname).copied().unwrap_or(d);
                 self.push(Node::Const { v, n: 3 })
             }
-            "TextureSample" | "TextureSampleParameter2D" => {
-                // Bourne: the character eye/teeth material samples a TextureCube (its reflection) with a plain
-                // TextureSample. n1 has no cube textures: the 2D lookup of a cube came back as the white stand-in, and
-                // as emissive that made the eyes glow. Draw no reflection instead (logged as unsupported).
-                if cls == "TextureSample"
-                    && e.objs.get("Texture").is_some_and(|&o| o != 0 && self.pkg.class_name(o) == "TextureCube")
-                {
+            "TextureSample" | "TextureSampleParameterCube"
+                if e.objs.get("Texture").is_some_and(|&o| o != 0 && self.pkg.class_name(o) == "TextureCube") =>
+            {
+                // Bourne: a TextureCube (reflections: glass, metal, wet floors, the eye glint), through a plain
+                // TextureSample or a cube parameter. n1 loads it as a 2D strip of its faces; the slot is marked so the
+                // shader samples it by direction (`MatDef::cubes`). BOTS_N1_CUBES=0: unsupported (constant 0) as before.
+                if !cubes_on() {
                     return self.unsup("TextureSample(TextureCube)");
                 }
+                let mut tp = e.objs.get("Texture").map(|&o| self.pkg.obj_path(o)).unwrap_or_default();
+                if cls == "TextureSampleParameterCube" {
+                    if let Some(t) = self.params.texture.get(&pname) {
+                        tp = t.clone();
+                    }
+                }
+                let uv = self.input(&e, "Coordinates");
+                let tex = self.tex_slot(tp);
+                if !self.def.cubes.contains(&tex) {
+                    self.def.cubes.push(tex);
+                }
+                self.push(Node::Tex { tex, uv })
+            }
+            "TextureSample" | "TextureSampleParameter2D" => {
                 let mut tp = e.objs.get("Texture").filter(|&&o| o != 0).map(|&o| self.pkg.obj_path(o));
                 if cls == "TextureSampleParameter2D" {
                     if let Some(t) = self.params.texture.get(&pname) {

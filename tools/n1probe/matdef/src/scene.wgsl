@@ -62,6 +62,8 @@ struct VOut {
     @location(6) l1: vec3<f32>,
     @location(7) l2: vec3<f32>,
     @location(8) @interpolate(flat) inst: u32,
+    // Bourne: the material's TexCoord 1 (mesh UV set 1, untransformed); uv.zw is the lightmap coordinate.
+    @location(9) uvm: vec2<f32>,
 };
 
 // B-235: Xenos's piecewise-linear gamma-to-linear curve (the SDK's PWLGammaToLinear) on a raw (UNORM) sample, for
@@ -100,7 +102,7 @@ fn light_at(idx: u32) -> vec3<f32> {
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>, @location(2) tan: vec4<f32>,
       @location(3) uv0: vec2<f32>, @location(4) uv1: vec2<f32>, @location(5) col: vec4<f32>,
-      @builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+      @location(6) uvm1: vec2<f32>, @builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     let inst = instances[ii];
     var o: VOut;
     let wp = inst.model * vec4<f32>(pos, 1.0);
@@ -112,6 +114,7 @@ fn vs(@location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>, @location(2) tan
     var uv1v = uv1;
     if (inst.flags == 2u) { uv1v = uv1 * inst.lm_xf.xy + inst.lm_xf.zw; }
     o.uv = vec4<f32>(uv0, uv1v);
+    o.uvm = uvm1;
     o.vcol = vcol_map(col);
     o.l0 = vec3<f32>(0.0); o.l1 = vec3<f32>(0.0); o.l2 = vec3<f32>(0.0);
     if (LM_ON && inst.flags == 1u) {
@@ -237,7 +240,7 @@ fn fs(i: VOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
     let V = normalize(g.cam_pos.xyz - i.wpos);
     var fi: FragIn;
     fi.uv0 = i.uv.xy;
-    fi.uv1 = i.uv.zw;
+    fi.uv1 = i.uvm;
     fi.vcol = i.vcol;
     fi.view = V;
     fi.nrm = N;

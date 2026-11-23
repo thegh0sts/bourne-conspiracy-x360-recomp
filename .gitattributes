@@ -4,3 +4,5 @@
 # Patches applied to other repos with git apply: keep them byte-exact.
 tools/sdk-patches/*.patch -text
 native-plugin/patches/*.patch -text
+# The Linux build image: Docker reads it as it is (no CRLF).
+tools/linux/Dockerfile text eol=lf

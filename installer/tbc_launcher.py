@@ -31,10 +31,10 @@ import launcher_text
 import tbc_config as cfg
 import xex_achievements
 from launcher_text import tr, tr_label
-from tbc_installer import (ACCENT, APP_NAME, BG, DIM, FG, LAUNCHER_HOME, InstallView, install_info_path,
-                           make_root, start_game)
+from tbc_installer import (ACCENT, APP_NAME, BG, DIM, EXE_NAME, FG, IS_WINDOWS, LAUNCHER_HOME, InstallView,
+                           data_home, desktop_dir, install_info_path, make_root, open_path, start_game)
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
@@ -44,7 +44,7 @@ SETTINGS_PATH = LAUNCHER_HOME / "settings.json"
 PANEL = "#1c2029"
 # The last launcher version whose changes need the game rebuilt (src/, the SDK, the build). A
 # launcher-only release leaves this alone, so games built with it aren't asked to reinstall.
-GAME_VERSION = "0.3.4"
+GAME_VERSION = "0.3.5"
 # The FPS counter: off, the frame rate, or the frame rate with frame time, GPU, CPU and memory
 # (--show_fps_detail; the native renderer's counter only, Xenos shows the frame rate).
 FPS_COUNTER = ["Off", "FPS", "Detailed (GPU, CPU, memory)"]
@@ -65,6 +65,9 @@ TABS = ("Game files", "Display", "Graphics", "Camera", "Controls", "Saves", "Ach
 # shaders too). The graphics path is a Xenos (Direct3D 12) setting; FXAA works with both.
 RENDERERS = ["Native (Vulkan, recommended)", "Xenos (Direct3D 12)"]
 RENDERER_PLUGIN = {RENDERERS[0]: "native", RENDERERS[1]: "xenos"}
+# Linux: the native renderer only (Xenos is the Direct3D 12 renderer here), and no FidelityFX filters (FSR / CAS
+# are built for Direct3D 12 only), so the Display tab leaves those choices out.
+RENDERER_CHOICES = RENDERERS if IS_WINDOWS else RENDERERS[:1]
 # Output resolutions. The ultrawide ones (experimental, native renderer only) also set the
 # picture's shape: the game draws a wider 720-line picture (--aspect_ratio, src/ultrawide.cpp)
 # with a wider view, and the render resolutions offered are that shape too (render_scales), so
@@ -278,6 +281,10 @@ def version_key(tag):
     return tuple(nums[:3]) + (int(digits) if digits else 0,)
 
 
+# The launcher in a GitHub release: the Windows exe, or the Linux build (installer/build_installer.sh).
+LAUNCHER_ASSET = "BourneConspiracy.exe" if IS_WINDOWS else "BourneConspiracy-linux-x86_64"
+
+
 def latest_release(timeout=5):
     """(tag, page URL, BourneConspiracy.exe download URL or None) of the newest GitHub release,
     or None if it can't be had."""
@@ -286,8 +293,9 @@ def latest_release(timeout=5):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
+        want = LAUNCHER_ASSET.lower()
         exe = next((a.get("browser_download_url") for a in data.get("assets", [])
-                    if a.get("name", "").lower() == "bourneconspiracy.exe"), None)
+                    if a.get("name", "").lower() == want), None)
         return data["tag_name"], data.get("html_url") or RELEASES_URL, exe
     except Exception:  # offline, rate-limited, blocked: no update notice, nothing else
         return None
@@ -338,6 +346,8 @@ DEFAULTS = {
     "language": "English",
     "brightness": 100,
     "texture_filtering": "Anisotropic 16x",
+    # The native renderer records its Vulkan commands on a second thread (renderer patch 0022).
+    "render_thread": True,
     "fps": "30 (original)",
     "motion_blur": True,
     "depth_of_field": True,
@@ -385,6 +395,9 @@ def load_settings():
     s.pop("show_fps", None)
     if s.get("fps") not in FPS:  # labels from older launcher versions
         s["fps"] = DEFAULTS["fps"]
+    if not IS_WINDOWS:
+        s["renderer"] = RENDERERS[0]  # Linux: native only
+        s["upscale"] = UPSCALE[0]     # no FidelityFX filters
     if s.pop("vibration", True) is False:  # earlier test builds: an on/off checkbox
         s["vibration_strength"] = 0
     s["vibration_strength"] = min(100, max(0, int(s.get("vibration_strength", 100))))
@@ -794,6 +807,8 @@ def user_data_dir(info) -> Path:
             return Path(m.group(1))
     except OSError:
         pass
+    if not IS_WINDOWS:
+        return data_home() / "tbc"  # the runtime's default on Linux: $XDG_DATA_HOME/tbc
     docs = documents_dir() or Path.home() / "Documents"
     return docs / "tbc"
 
@@ -878,16 +893,14 @@ def save_crash_report(info) -> Path:
     root = logs_dir(info)
     exe_logs = Path(info["exe"]).parent / "logs"
     files = []
-    for p in (root / "game.log", SETTINGS_PATH, install_info_path()):
+    for p in (root / "game.log", root / "install.log", SETTINGS_PATH, install_info_path()):
         if p.is_file():
             files.append(p)
     crash = sorted(exe_logs.glob("crash-*.*"), key=lambda p: p.stat().st_mtime, reverse=True) if exe_logs.is_dir() else []
     if crash:
         stem = crash[0].stem  # crash-<pid>: the newest crash's .txt and .dmp
         files += [p for p in crash if p.stem == stem]
-    desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
-    if not desktop.is_dir():
-        desktop = Path.home()
+    desktop = desktop_dir()
     out = desktop / f"BourneConspiracy-report-{time.strftime('%Y%m%d-%H%M%S')}.zip"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for p in files:
@@ -936,17 +949,18 @@ def game_args(s, screen=None):
     scale = math.ceil(scale_factor(s["render_scale"]) - 1e-6)  # Xenos: whole numbers only
     args += ["--resolution_scale", str(scale)]
     path = RENDER_PATH_FLAG.get(s.get("render_path"), "rov" if scale > 1 else None)
-    if path:
+    if path and IS_WINDOWS:
         args += ["--render_target_path_d3d12", path]
     args += ["--swap_post_effect", AA_FLAG.get(s["aa"], "none")]
-    if s.get("upscale") in UPSCALE_FLAG:
+    if s.get("upscale") in UPSCALE_FLAG and IS_WINDOWS:
         args += ["--present_effect", UPSCALE_FLAG[s["upscale"]]]
     # Guest vsync (the plugin's imitation of the Xbox 360 vblank): off, with tbc.exe's own
     # frame limiter holding the frame rate, unless "original frame pacing" is ticked.
     args.append("--vsync=true" if s.get("original_pacing") else "--vsync=false")
     # Display VSync: unticked lets presents tear instead of waiting for the display, which
     # also stops a present from stalling the graphics queue the emulation uses.
-    args.append("--d3d12_allow_variable_refresh_rate_and_tearing=" + ("false" if s["vsync"] else "true"))
+    if IS_WINDOWS:
+        args.append("--d3d12_allow_variable_refresh_rate_and_tearing=" + ("false" if s["vsync"] else "true"))
     rate, _ = FPS_MODE[s["fps"]]
     args.append(f"--frame_rate={rate}")
     counter = s.get("fps_counter", "Off")
@@ -1019,6 +1033,10 @@ def game_env(s):
         aniso = ANISOTROPY.get(s.get("texture_filtering"), 0)
         if aniso:
             env["BOTS_GFX_FORCE_ANISO"] = str(aniso)
+        # Second render thread (native-plugin/patches/0022-record-thread, from the 007 port): the
+        # renderer hands its Vulkan recording to a worker thread. Always set, 1 or 0, so a value
+        # left in the environment can't override the launcher.
+        env["BOTS_GFX_RECORD_THREAD"] = "1" if s.get("render_thread", True) else "0"
     return env
 
 
@@ -1118,7 +1136,7 @@ class SettingsView(tk.Frame):
                  ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         box = self._page("Display")
-        self._combo(box, 0, "renderer", "Renderer", RENDERERS)
+        self._combo(box, 0, "renderer", "Renderer", RENDERER_CHOICES)
         self._check(box, 1, "fullscreen", "Fullscreen")
         self._combo(box, 2, "resolution", "Output resolution", self._resolutions())
         self._combo(box, 4, "render_scale", "Render resolution (sharper, slower)",
@@ -1131,7 +1149,7 @@ class SettingsView(tk.Frame):
         # language "Same as game", the whole launcher follows it too.
         self.vars["language"].trace_add("write", lambda *_: self._game_language_changed())
         self._combo(box, 5, "render_path", "Graphics path", RENDER_PATHS)
-        self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE)
+        self._combo(box, 6, "upscale", "Upscaling filter", UPSCALE if IS_WINDOWS else UPSCALE[:1])
         self._combo(box, 7, "aa", "Anti-aliasing", AA)
         self._display_changed()  # hide the Xenos-only settings for the native renderer
         self._combo(box, 8, "fps", "Frame rate", FPS)
@@ -1164,6 +1182,12 @@ class SettingsView(tk.Frame):
                               "angle. The HUD and text keep the game's own filtering."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
                  ).grid(row=8, column=0, columnspan=2, sticky="w")
+        self._check(box, 9, "render_thread", "Second render thread")
+        tk.Label(box, text=tr("Second render thread is for the native renderer: it records the GPU's work on another "
+                              "CPU thread, for a higher frame rate in busy scenes. Untick it if the picture shows "
+                              "glitches."),
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", justify="left", wraplength=640
+                 ).grid(row=10, column=0, columnspan=2, sticky="w")
 
         box = self._page("Camera")
         self._slider(box, 0, "fov", "Field of view (%)", 80, 140, 5)
@@ -1374,6 +1398,9 @@ class SettingsView(tk.Frame):
                         widget.grid()
                     else:
                         widget.grid_remove()
+        if not IS_WINDOWS and "upscale" in self.combos:  # Linux: no FidelityFX filters to choose from
+            for widget in (self.combos["upscale"], self.combo_labels["upscale"]):
+                widget.grid_remove()
         resolutions = self._resolutions()
         self._set_combo_values("resolution", resolutions)
         if self.vars["resolution"].get() not in resolutions:
@@ -1497,7 +1524,8 @@ class SettingsView(tk.Frame):
         """Downloads the new release's exe beside the launcher's settings, then offers to start it.
         The new launcher opens on the same install and asks for the reinstall (the rebuild
         notice), which also makes it the launcher the desktop shortcut starts."""
-        dest = LAUNCHER_HOME / "updates" / f"BourneConspiracy-{version}.exe"
+        dest = LAUNCHER_HOME / "updates" / (f"BourneConspiracy-{version}.exe" if IS_WINDOWS
+                                             else f"BourneConspiracy-{version}")
         state = {"frac": None, "done": False, "error": None}
 
         def work():
@@ -1529,7 +1557,9 @@ class SettingsView(tk.Frame):
                                                     "image) so the game is rebuilt with the update.",
                                                     version=version)):
                 try:
-                    subprocess.Popen([str(dest)], cwd=str(dest.parent))
+                    if not IS_WINDOWS:
+                        dest.chmod(0o755)
+                    start_game([str(dest)], dest.parent)
                 except OSError as e:
                     messagebox.showerror(tr("Update"), tr("Couldn't start {file}: {error}", file=dest, error=e))
                     return
@@ -1573,7 +1603,7 @@ class SettingsView(tk.Frame):
     def open_logs(self):
         folder = logs_dir(self.info)
         try:
-            os.startfile(str(folder))
+            open_path(str(folder))
         except OSError as e:
             messagebox.showerror(tr("Open logs"), tr("Couldn't open {folder}: {error}", folder=folder, error=e))
 
@@ -1581,7 +1611,7 @@ class SettingsView(tk.Frame):
         folder = user_data_dir(self.info)
         try:
             folder.mkdir(parents=True, exist_ok=True)
-            os.startfile(str(folder))
+            open_path(str(folder))
         except OSError as e:
             messagebox.showerror(tr("Saves"), tr("Couldn't open {folder}: {error}", folder=folder, error=e))
 
@@ -1596,7 +1626,7 @@ class SettingsView(tk.Frame):
                             .replace("{file}", out.name).replace("{folder}", str(out.parent))
                             .replace("{saves folder}", str(out.parent.parent)))
         try:
-            os.startfile(str(out.parent))
+            open_path(str(out.parent))
         except OSError:
             pass
 
@@ -1628,7 +1658,7 @@ class SettingsView(tk.Frame):
         sel = self.saves_tree.selection()
         if sel and sel[0] in self.save_paths:
             try:
-                os.startfile(str(self.save_paths[sel[0]]))
+                open_path(str(self.save_paths[sel[0]]))
             except OSError as e:
                 messagebox.showerror(tr("Saves"), tr("Couldn't open the folder: {error}", error=e))
 
@@ -1771,7 +1801,8 @@ class SettingsView(tk.Frame):
         args = [str(exe), "--game_data_root", str(game)] + game_args(s, (self.winfo_screenwidth(), self.winfo_screenheight())) + ["--log_file", str(log)]
         args += user_data_args(self.info, exe)
         try:
-            if RENDERER_PLUGIN.get(s.get("renderer")) == "native" and not any(exe.parent.glob("rexgpu-native*.dll")):
+            if RENDERER_PLUGIN.get(s.get("renderer")) == "native" and not (
+                    any(exe.parent.glob("rexgpu-native*.dll")) or any(exe.parent.glob("librexgpu-native*.so"))):
                 messagebox.showwarning(tr("Play"), tr("The native renderer isn't installed (this build's SDK wasn't "
                                                       "made with it). Starting with Xenos instead."))
                 args[args.index("native")] = "xenos"
@@ -1850,8 +1881,9 @@ class Launcher:
         self.show_settings(save_install(exe, game, root))
 
     def locate(self):
-        exe = filedialog.askopenfilename(title=tr("Locate tbc.exe"), filetypes=[("tbc.exe", "tbc.exe"),
-                                                                                (tr("Programs"), "*.exe")])
+        exe = filedialog.askopenfilename(title=tr("Locate tbc.exe"),
+                                         filetypes=[("tbc.exe", "tbc.exe"), (tr("Programs"), "*.exe")] if IS_WINDOWS
+                                         else [(EXE_NAME, EXE_NAME), (tr("All files"), "*")])
         if not exe:
             return
         game = filedialog.askdirectory(title=tr("Choose the extracted game folder (the one with default.xex)"))

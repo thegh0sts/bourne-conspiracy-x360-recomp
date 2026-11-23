@@ -510,6 +510,41 @@ TEXT = {
         'Attaques au corps à corps sur les gâchettes (RT légère, LT lourde ; manette)',
         'Ataques cuerpo a cuerpo en los gatillos (RT ligero, LT fuerte; mando)',
         'Attacchi corpo a corpo sui grilletti (RT leggero, LT pesante; controller)'),
+    'Second render thread': (
+        'Zweiter Render-Thread',
+        'Second thread de rendu',
+        'Segundo hilo de renderizado',
+        'Secondo thread di rendering'),
+    'Second render thread is for the native renderer: it records the GPU\'s work on another CPU thread, for a higher frame rate in busy scenes. Untick it if the picture shows glitches.': (
+        'Der zweite Render-Thread ist für den nativen Renderer: Er zeichnet die Arbeit der GPU auf einem anderen CPU-Thread auf, für eine höhere Bildrate in aufwendigen Szenen. Deaktiviere ihn, wenn das Bild Fehler zeigt.',
+        'Le second thread de rendu concerne le moteur de rendu natif : il enregistre le travail du GPU sur un autre thread du processeur, pour une fréquence d\'images plus élevée dans les scènes chargées. Décochez-le si l\'image présente des défauts.',
+        'El segundo hilo de renderizado es para el renderizador nativo: graba el trabajo de la GPU en otro hilo de la CPU, para una mayor tasa de fotogramas en escenas exigentes. Desactívalo si la imagen muestra fallos.',
+        'Il secondo thread di rendering è per il renderer nativo: registra il lavoro della GPU su un altro thread della CPU, per un frame rate più alto nelle scene complesse. Disattivalo se l\'immagine mostra difetti.'),
+    'Looking for Podman or Docker (the build runs in a container)...': (
+        'Suche nach Podman oder Docker (der Build läuft in einem Container)...',
+        'Recherche de Podman ou Docker (la compilation se fait dans un conteneur)...',
+        'Buscando Podman o Docker (la compilación se hace en un contenedor)...',
+        'Ricerca di Podman o Docker (la compilazione avviene in un container)...'),
+    'Downloading the build container (about 2 GB, first install only)...': (
+        'Build-Container wird heruntergeladen (etwa 2 GB, nur bei der ersten Installation)...',
+        'Téléchargement du conteneur de compilation (environ 2 Go, première installation seulement)...',
+        'Descargando el contenedor de compilación (unos 2 GB, solo la primera instalación)...',
+        'Download del container di compilazione (circa 2 GB, solo alla prima installazione)...'),
+    'Podman wasn\'t found. SteamOS 3.5 and newer include it: update SteamOS (Settings, System), then run the installer again.': (
+        'Podman wurde nicht gefunden. SteamOS 3.5 und neuer enthalten es: Aktualisiere SteamOS (Einstellungen, System) und starte den Installer dann erneut.',
+        'Podman est introuvable. SteamOS 3.5 et plus récent l\'incluent : mettez SteamOS à jour (Paramètres, Système), puis relancez l\'installateur.',
+        'No se encontró Podman. SteamOS 3.5 y posteriores lo incluyen: actualiza SteamOS (Ajustes, Sistema) y vuelve a ejecutar el instalador.',
+        'Podman non trovato. SteamOS 3.5 e successivi lo includono: aggiorna SteamOS (Impostazioni, Sistema), poi riavvia il programma di installazione.'),
+    'The game is built in a container, and neither Podman nor Docker was found.\nInstall Podman with your package manager{command}, then run the installer again.': (
+        'Das Spiel wird in einem Container gebaut, aber weder Podman noch Docker wurde gefunden.\nInstalliere Podman mit deinem Paketmanager{command} und starte den Installer dann erneut.',
+        'Le jeu est compilé dans un conteneur, et ni Podman ni Docker n\'a été trouvé.\nInstallez Podman avec votre gestionnaire de paquets{command}, puis relancez l\'installateur.',
+        'El juego se compila en un contenedor y no se encontró ni Podman ni Docker.\nInstala Podman con tu gestor de paquetes{command} y vuelve a ejecutar el instalador.',
+        'Il gioco viene compilato in un container, ma non sono stati trovati né Podman né Docker.\nInstalla Podman con il tuo gestore di pacchetti{command}, poi riavvia il programma di installazione.'),
+    'The installer reads your ISO and builds the game on this PC, inside a container (Podman or Docker), so nothing else needs installing. The first install downloads the build container (about 2 GB) and can take a while. The Linux version is an experimental beta.': (
+        'Der Installer liest deine ISO und baut das Spiel auf diesem PC in einem Container (Podman oder Docker), sodass sonst nichts installiert werden muss. Die erste Installation lädt den Build-Container herunter (etwa 2 GB) und kann eine Weile dauern. Die Linux-Version ist eine experimentelle Beta.',
+        'L\'installateur lit votre ISO et compile le jeu sur ce PC, dans un conteneur (Podman ou Docker) : rien d\'autre à installer. La première installation télécharge le conteneur de compilation (environ 2 Go) et peut prendre un moment. La version Linux est une bêta expérimentale.',
+        'El instalador lee tu ISO y compila el juego en este PC, dentro de un contenedor (Podman o Docker), así que no hace falta instalar nada más. La primera instalación descarga el contenedor de compilación (unos 2 GB) y puede tardar un rato. La versión para Linux es una beta experimental.',
+        'Il programma di installazione legge la tua ISO e compila il gioco su questo PC, dentro un container (Podman o Docker), quindi non serve installare altro. La prima installazione scarica il container di compilazione (circa 2 GB) e può richiedere un po\' di tempo. La versione Linux è una beta sperimentale.'),
     'Keyboard and mouse': (
         'Tastatur und Maus',
         'Clavier et souris',

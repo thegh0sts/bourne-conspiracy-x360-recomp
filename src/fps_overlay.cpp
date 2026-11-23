@@ -13,6 +13,15 @@
 
 #include "fps_overlay.h"
 
+#ifndef _WIN32
+// Other systems: no separate window. Only Xenos used it, and there the native renderer (the
+// only one on Linux) draws its own counter into the picture.
+namespace tbc::overlay {
+void StartFpsOverlay() {}
+void StopFpsOverlay() {}
+}  // namespace tbc::overlay
+#else
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -171,3 +180,5 @@ void StopFpsOverlay() {
 }
 
 }  // namespace tbc::overlay
+
+#endif  // _WIN32

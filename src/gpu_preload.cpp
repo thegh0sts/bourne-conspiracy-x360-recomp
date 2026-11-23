@@ -78,3 +78,65 @@ const HMODULE g_gpu_plugin = PreloadGpuPlugin();
 
 }  // namespace
 #endif  // _WIN32
+
+#if defined(__linux__)
+// Linux: the same, with dlopen. The command line from /proc/self/cmdline; the plugin is
+// librexgpu-<name>[rd|d].so next to the executable (the SDK's loader looks there too, and gets
+// this same handle back).
+#include <dlfcn.h>
+#include <unistd.h>
+
+#include <cctype>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <sys/stat.h>
+#include <vector>
+
+namespace {
+
+std::string PluginName() {
+  std::string name = "native";
+  std::ifstream f("/proc/self/cmdline", std::ios::binary);
+  const std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  std::vector<std::string> argv;
+  for (size_t start = 0; start < all.size();) {
+    const size_t end = all.find('\0', start);
+    argv.emplace_back(all.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  const std::string flag = "--gpu_plugin";
+  for (size_t i = 1; i < argv.size(); ++i) {
+    const std::string& arg = argv[i];
+    if (arg == flag && i + 1 < argv.size()) {
+      name = argv[++i];
+    } else if (arg.size() > flag.size() && arg.compare(0, flag.size(), flag) == 0 && arg[flag.size()] == '=') {
+      name = arg.substr(flag.size() + 1);
+    }
+  }
+  for (char c : name) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') return "native";
+  }
+  return name.empty() ? "native" : name;
+}
+
+void* PreloadGpuPlugin() {
+  char buf[4096];
+  const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n <= 0) return nullptr;
+  std::string dir(buf, size_t(n));
+  dir.resize(dir.find_last_of('/') + 1);
+  const std::string base = dir + "librexgpu-" + PluginName();
+  for (const char* suffix : {"rd.so", ".so", "d.so"}) {
+    const std::string path = base + suffix;
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  }
+  return nullptr;
+}
+
+void* const g_gpu_plugin = PreloadGpuPlugin();
+
+}  // namespace
+#endif  // __linux__

@@ -5,9 +5,9 @@
 cmake_minimum_required(VERSION 3.25)
 # The release number. Shown in the log's first line (version_log.cpp); keep it the same as VERSION in
 # installer/tbc_launcher.py.
-project(tbc VERSION 0.3.4 LANGUAGES CXX)
+project(tbc VERSION 0.3.5 LANGUAGES CXX)
 # The release name, which can carry a suffix CMake's VERSION can't (0.2.4-1).
-set(TBC_RELEASE "0.3.4")
+set(TBC_RELEASE "0.3.5")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,12 +73,32 @@ endif()
 # project (src and CMakeLists only, no native-plugin/) builds too.
 file(WRITE ${CMAKE_BINARY_DIR}/copy_if_exists.cmake
     "if(EXISTS \"\${SRC}\")\n  file(COPY \"\${SRC}\" DESTINATION \"\${DST}\")\nendif()\n")
+if(WIN32)
+    set(TBC_NATIVE_PLUGIN "${TBC_SDK_BIN}/rexgpu-native$<$<CONFIG:RelWithDebInfo>:rd>$<$<CONFIG:Debug>:d>.dll")
+else()
+    # Linux: shared libraries are installed to the SDK's lib/ (librexgpu-native[rd].so).
+    get_filename_component(TBC_SDK_LIB "${rexglue_DIR}/../.." ABSOLUTE)
+    set(TBC_NATIVE_PLUGIN "${TBC_SDK_LIB}/librexgpu-native$<$<CONFIG:RelWithDebInfo>:rd>$<$<CONFIG:Debug>:d>.so")
+endif()
 add_custom_command(TARGET tbc POST_BUILD
     COMMAND ${CMAKE_COMMAND}
-        "-DSRC=${TBC_SDK_BIN}/rexgpu-native$<$<CONFIG:RelWithDebInfo>:rd>$<$<CONFIG:Debug>:d>.dll"
+        "-DSRC=${TBC_NATIVE_PLUGIN}"
         "-DDST=$<TARGET_FILE_DIR:tbc>"
         -P ${CMAKE_BINARY_DIR}/copy_if_exists.cmake
     VERBATIM)
+
+# Linux: the game finds its shared libraries next to itself (the SDK sets the RPATH to $ORIGIN),
+# but the SDK's setup only copies them there on Windows and macOS. Copy the runtime (and Tracy,
+# when the SDK has it as a shared library) next to tbc, as on Windows.
+if(UNIX AND NOT APPLE)
+    foreach(_tbc_lib rex::runtime rexruntime rex::TracyClient TracyClient)
+        if(TARGET ${_tbc_lib})
+            add_custom_command(TARGET tbc POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${_tbc_lib}> $<TARGET_FILE_DIR:tbc>
+                VERBATIM)
+        endif()
+    endforeach()
+endif()
 
 # Key glyphs (assets/keys/*.png, key_glyphs.cpp) go beside the game as keys/.
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/keys")

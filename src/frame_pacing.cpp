@@ -10,9 +10,13 @@
 // a high-resolution waitable timer plus a short spin) follows the frame pacer of the
 // Table Tennis PC port, https://github.com/davidptrssvea/Table-Tennis-Rockstar-PC
 // (MIT licence, Copyright (c) 2026 davidptrssvea).
+//
+// Linux: clock_nanosleep on CLOCK_MONOTONIC (the clock steady_clock reads) to an absolute
+// time, which is already high resolution, then the same short spin.
 
 #include "frame_pacing.h"
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -20,12 +24,23 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <cerrno>
+#include <time.h>
+#endif
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #include <immintrin.h>
+#define TBC_SPIN_PAUSE() _mm_pause()
+#elif defined(__aarch64__)
+#define TBC_SPIN_PAUSE() __asm__ __volatile__("yield")
+#else
+#define TBC_SPIN_PAUSE() ((void)0)
+#endif
 
 #include <atomic>
 #include <chrono>
 
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#if defined(_WIN32) && !defined(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
@@ -41,6 +56,7 @@ int64_t NowNs() {
 // Wake this long before the deadline and spin the rest.
 constexpr int64_t kSpinMarginNs = 600'000;
 
+#ifdef _WIN32
 struct Timer {
   HANDLE handle = nullptr;
   bool high_resolution = false;
@@ -51,8 +67,25 @@ struct Timer {
     if (!handle) handle = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
   }
 };
+#else
+struct Timer {};
+#endif
 
 void SleepUntil(const Timer& timer, int64_t deadline_ns) {
+#ifndef _WIN32
+  (void)timer;
+  // steady_clock is CLOCK_MONOTONIC on Linux (libstdc++ and libc++), so its nanoseconds are
+  // an absolute time on that clock.
+  const int64_t wake = deadline_ns - kSpinMarginNs;
+  if (wake > NowNs()) {
+    timespec ts;
+    ts.tv_sec = time_t(wake / 1'000'000'000);
+    ts.tv_nsec = long(wake % 1'000'000'000);
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+    }
+  }
+  while (NowNs() < deadline_ns) TBC_SPIN_PAUSE();
+#else
   const int64_t margin = timer.high_resolution ? kSpinMarginNs : 2'000'000;
   const int64_t coarse = deadline_ns - NowNs() - margin;
   if (coarse > 0) {
@@ -66,7 +99,8 @@ void SleepUntil(const Timer& timer, int64_t deadline_ns) {
       ::Sleep(DWORD(coarse / 1'000'000));
     }
   }
-  while (NowNs() < deadline_ns) _mm_pause();
+  while (NowNs() < deadline_ns) TBC_SPIN_PAUSE();
+#endif
 }
 
 // Absolute deadlines. A frame that missed its deadline goes out at once and the next

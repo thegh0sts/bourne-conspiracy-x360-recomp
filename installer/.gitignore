@@ -1,7 +1,9 @@
-# PyInstaller build output (rebuilt by build_installer.bat)
+# PyInstaller build output (rebuilt by build_installer.bat / build_installer.sh)
 build/
 dist/
 payload/
+# the Linux SDK bundle (tools/linux/build_sdk.sh)
+payload-linux/
 *.spec
 __pycache__/
 # copied in from ../tools by build_installer.bat

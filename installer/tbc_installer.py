@@ -4,10 +4,11 @@ The Bourne Conspiracy (Xbox 360) - PC recompilation installer.
 Builds the game on the player's own PC from their own disc image:
   1. reads the Xbox 360 ISO (XDVDFS) and extracts the game files
   2. checks default.xex is the right game (title ID 565507D4)
-  3. finds or installs Visual Studio Build Tools (C++, Clang, CMake)
+  3. Windows: finds or installs Visual Studio Build Tools (C++, Clang, CMake).
+     Linux: pulls the build container (Podman or Docker; see LINUX_BUILD_IMAGE)
   4. downloads the ReXGlue SDK
-  5. copies in the bundled project files and builds tbc.exe
-  6. creates a desktop shortcut
+  5. copies in the bundled project files and builds tbc.exe (Linux: tbc)
+  6. creates a desktop shortcut (Linux: a .desktop entry)
 
 No game code or data ships with this installer.
 Only the Python standard library is used, so it packages with PyInstaller.
@@ -17,6 +18,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -38,10 +40,28 @@ TITLE_ID = 0x565507D4
 SDK_VERSION = "0.10.1"
 SDK_REPO = "rexglue/rexglue-sdk"
 VS_BOOTSTRAPPER = "https://aka.ms/vs/17/release/vs_buildtools.exe"
-PRESET = "win-amd64-relwithdebinfo"
+IS_WINDOWS = os.name == "nt"
+IS_LINUX = sys.platform.startswith("linux")
+PRESET = "win-amd64-relwithdebinfo" if IS_WINDOWS else "linux-amd64-relwithdebinfo"
+EXE_NAME = "tbc.exe" if IS_WINDOWS else "tbc"
 MIN_FREE_GB = 25
-DEFAULT_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "BourneConspiracyPC"
+
+
+def data_home() -> Path:
+    """Where per-user data goes: %LOCALAPPDATA% on Windows, $XDG_DATA_HOME (~/.local/share) on Linux."""
+    if IS_WINDOWS:
+        return Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+
+
+DEFAULT_DIR = data_home() / "BourneConspiracyPC"
 LAUNCHER_EXE_NAME = "BourneConspiracy"
+
+# Linux: the game is built inside this container image (Podman, or Docker), the same Steam Runtime 3
+# "sniper" environment the Linux SDK bundle is built in (tools/linux/Dockerfile, made and pushed by
+# tools/linux/publish_image.sh). The game then runs on the host itself, on any distro with glibc 2.31
+# or newer and on the Steam Deck, and nothing has to be installed on the system but Podman/Docker.
+LINUX_BUILD_IMAGE = os.environ.get("TBC_BUILD_IMAGE", "ghcr.io/thegh0sts/tbc-build:sniper-1")
 
 VS_COMPONENTS = [
     "Microsoft.VisualStudio.Workload.VCTools",
@@ -58,6 +78,79 @@ VS_REQUIRED = [
 ]
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def host_env(extra=None) -> dict:
+    """The environment for programs we start (the game, the build tools), without what PyInstaller's
+    one-file program set up for itself: on Linux its LD_LIBRARY_PATH points at its own unpacked libraries,
+    which the game or Podman would otherwise load instead of the system's."""
+    env = dict(os.environ)
+    if IS_LINUX and getattr(sys, "frozen", False):
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if orig is not None:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    env.update(extra or {})
+    return env
+
+
+def open_path(path):
+    """Opens a file or folder with the system's default program."""
+    if IS_WINDOWS:
+        os.startfile(str(path))
+    else:
+        subprocess.Popen(["xdg-open", str(path)], env=host_env(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def desktop_dir() -> Path:
+    """The desktop folder (Linux: XDG_DESKTOP_DIR from user-dirs.dirs, else ~/Desktop); home if there's none."""
+    if IS_WINDOWS:
+        d = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+    else:
+        d = Path.home() / "Desktop"
+        try:
+            cfg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "user-dirs.dirs"
+            m = re.search(r'^XDG_DESKTOP_DIR="([^"]+)"', cfg.read_text(encoding="utf-8"), re.M)
+            if m:
+                d = Path(m.group(1).replace("$HOME", str(Path.home())))
+        except OSError:
+            pass
+    return d if d.is_dir() else Path.home()
+
+
+def extract_zip(zip_path: Path, dest: Path):
+    """Unzips keeping the files' Unix permissions (the SDK's bin/rexglue must stay executable on Linux)."""
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            out = zf.extract(info, dest)
+            mode = info.external_attr >> 16
+            if not IS_WINDOWS and mode & 0o777:
+                os.chmod(out, mode & 0o777)
+
+
+def linux_distro() -> str:
+    """The distro family from /etc/os-release: steamos, debian, fedora, arch, suse or ''."""
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8").lower()
+    except OSError:
+        return ""
+    ids = " ".join(m.group(1).strip('"') for m in re.finditer(r"^(?:id|id_like)=(.*)$", text, re.M))
+    for name, keys in (("steamos", ("steamos",)), ("debian", ("debian", "ubuntu")), ("fedora", ("fedora", "rhel")),
+                       ("arch", ("arch",)), ("suse", ("suse",))):
+        if any(k in ids for k in keys):
+            return name
+    return ""
+
+
+def container_engine():
+    """Podman (preferred: rootless, and on SteamOS) or Docker: (path, name), or None."""
+    for name in ("podman", "docker"):
+        exe = shutil.which(name)
+        if exe:
+            return exe, name
+    return None
 
 
 class InstallError(Exception):
@@ -263,7 +356,8 @@ def find_sdk_asset():
     for rel in releases:
         for a in rel.get("assets", []):
             n = a["name"].lower()
-            if n.endswith(".zip") and "win" in n and ("amd64" in n or "x64" in n):
+            system = "win" if IS_WINDOWS else "linux"
+            if (n.endswith(".zip") or n.endswith(".tar.gz")) and system in n and ("amd64" in n or "x64" in n):
                 return a["browser_download_url"], a["name"]
     raise InstallError(tr("Couldn't find the ReXGlue SDK {version} for Windows on GitHub.", version=SDK_VERSION))
 
@@ -299,7 +393,7 @@ class Installer:
         self.project = root / "project"
         self.sdk_dir = root / "rexglue-sdk"
         self.log_path = root / "install.log"
-        self.exe = self.project / "out" / "build" / PRESET / "tbc.exe"
+        self.exe = self.project / "out" / "build" / PRESET / EXE_NAME
 
     # helpers ------------------------------------------------------------
     def log(self, msg):
@@ -316,7 +410,7 @@ class Installer:
 
     def run_logged(self, cmd, progress=None, cwd=None):
         self.log("> " + cmd)
-        env = dict(os.environ)
+        env = host_env()
         env.pop("REXSDK_DIR", None)
         # Tool folders go first on PATH here, in the environment the command starts with, never as
         # `set "PATH=...;%PATH%"` in the command: cmd expands %PATH% when it reads the whole line,
@@ -502,8 +596,7 @@ class Installer:
             if self.sdk_dir.exists():
                 shutil.rmtree(self.sdk_dir)
             self.sdk_dir.mkdir(parents=True)
-            with zipfile.ZipFile(bundled) as zf:
-                zf.extractall(self.sdk_dir)
+            extract_zip(bundled, self.sdk_dir)
             marker.write_text(bundled.name, encoding="utf-8")
             root = find_sdk_root(self.sdk_dir)
             if not root:
@@ -518,8 +611,12 @@ class Installer:
         self.log(f"SDK download: {url}")
         z = self.root / name
         download(url, z, self.stage(0.40, 0.45))
-        with zipfile.ZipFile(z) as zf:
-            zf.extractall(self.sdk_dir)
+        if name.lower().endswith(".zip"):
+            extract_zip(z, self.sdk_dir)
+        else:
+            import tarfile
+            with tarfile.open(z) as tf:
+                tf.extractall(self.sdk_dir)
         z.unlink(missing_ok=True)
         root = find_sdk_root(self.sdk_dir)
         if not root:
@@ -610,9 +707,13 @@ class Installer:
         self.run_logged(base + f'cmake --build out\\build\\{PRESET}', p)
         if not self.exe.exists():
             raise InstallError(tr("The build finished but tbc.exe wasn't produced. Click \"Open log\" for details."))
+        self.copy_plugins_and_licences(sdk)
+
+    def copy_plugins_and_licences(self, sdk: Path):
         # Graphics plugins: Skullburglar's native Vulkan renderer (the default) and ReXGlue's
         # Xenos. The game's build copies them from the SDK; this catches a build that didn't.
-        for name in ("rexgpu-nativerd.dll", "rexgpu-xenosrd.dll"):
+        for name in (("rexgpu-nativerd.dll", "rexgpu-xenosrd.dll") if IS_WINDOWS
+                     else ("librexgpu-nativerd.so", "librexgpu-xenosrd.so")):
             plugin = self.exe.parent / name
             if not plugin.exists():
                 for cand in sdk.rglob(name):
@@ -628,6 +729,127 @@ class Installer:
             dest.mkdir(parents=True, exist_ok=True)
             for f in lic.glob("*.txt"):
                 shutil.copy2(f, dest / f.name)
+
+    # Linux ---------------------------------------------------------------
+    def ensure_container(self):
+        """Podman or Docker, and the build image pulled. Returns (engine path, engine name)."""
+        self.status(tr("Looking for Podman or Docker (the build runs in a container)..."))
+        engine = container_engine()
+        if not engine:
+            distro = linux_distro()
+            command = {
+                "debian": "sudo apt install podman",
+                "fedora": "sudo dnf install podman",
+                "arch": "sudo pacman -S podman",
+                "suse": "sudo zypper install podman",
+            }.get(distro, "")
+            if distro == "steamos":
+                raise InstallError(tr("Podman wasn't found. SteamOS 3.5 and newer include it: update SteamOS "
+                                      "(Settings, System), then run the installer again."))
+            raise InstallError(tr("The game is built in a container, and neither Podman nor Docker was found.\n"
+                                  "Install Podman with your package manager{command}, then run the installer again.",
+                                  command=f" ({command})" if command else ""))
+        exe, name = engine
+        self.log(f"Container engine: {exe}")
+        self.status(tr("Downloading the build container (about 2 GB, first install only)..."))
+        self.run_logged(f"{shlex.quote(exe)} pull {shlex.quote(LINUX_BUILD_IMAGE)}")
+        return engine
+
+    def container_command(self, engine, command: str) -> str:
+        """`command` (a shell command) in the build container, with the install folder mounted at the same path,
+        run as this user so the files it makes are ours."""
+        exe, name = engine
+        root = str(self.root.resolve())
+        args = [exe, "run", "--rm", "-v", f"{root}:{root}", "-w", str(self.project.resolve()),
+                "-e", "HOME=/tmp", "--security-opt", "label=disable"]
+        if name == "podman":
+            args += ["--userns=keep-id"]
+        else:
+            args += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        args += [LINUX_BUILD_IMAGE, "bash", "-c", command]
+        return " ".join(shlex.quote(a) for a in args)
+
+    def build_linux(self, engine, sdk: Path):
+        prefix = str(sdk.resolve())
+        rexglue = sdk / "bin" / "rexglue"
+        if not rexglue.exists():
+            raise InstallError(tr("The ReXGlue SDK is missing bin\\rexglue.exe."))
+        q = shlex.quote
+        self.status(tr("Recompiling the game code (a few minutes, the bar won't move much)..."))
+        self.ui.put(("progress", 0.49))
+        self.run_logged(self.container_command(engine, f"{q(str(rexglue.resolve()))} codegen tbc_manifest.toml"))
+        if not (self.project / "generated" / "default" / "sources.cmake").exists():
+            raise InstallError(tr("Code generation finished but produced no sources. Click \"Open log\" for details."))
+        self.ui.put(("progress", 0.55))
+        self.status(tr("Configuring the build..."))
+        # The image's clang / clang++ wrappers (gcc-14's C++ headers, libstdc++ linked statically, lld), as the
+        # SDK bundle was built with; the preset names clang-20, which the image doesn't have.
+        self.run_logged(self.container_command(
+            engine, f"cmake --fresh --preset {PRESET} -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "
+                    f"-DCMAKE_PREFIX_PATH={q(prefix)} -Drexglue_DIR={q(prefix + '/lib/cmake/rexglue')}"))
+        self.status(tr("Building the game (compiling: this takes a while)..."))
+        prog = self.stage(0.56, 0.98)
+
+        def p(frac):
+            prog(frac)
+            self.status(tr("Building the game... {percent}%", percent=f"{frac * 100:.0f}"))
+        self.run_logged(self.container_command(engine, f"cmake --build out/build/{PRESET}"), p)
+        if not self.exe.exists():
+            raise InstallError(tr("The build finished but tbc.exe wasn't produced. Click \"Open log\" for details."))
+        # Shared libraries the game loads from beside itself ($ORIGIN): the build copies them; this catches one
+        # that didn't.
+        for lib in (sdk / "lib").glob("librexruntime*.so*"):
+            if not (self.exe.parent / lib.name).exists():
+                shutil.copy2(lib, self.exe.parent / lib.name)
+                self.log(f"Copied {lib.name} from the SDK")
+        self.copy_plugins_and_licences(sdk)
+
+    def make_launchers_linux(self):
+        sh = self.root / "Play.sh"
+        q = shlex.quote
+        sh.write_text("#!/bin/sh\n"
+                      f"cd {q(str(self.exe.parent))} && exec {q(str(self.exe))} --game_data_root {q(str(self.game))} "
+                      f"--gpu_plugin {default_plugin(self.exe)} --log_file {q(str(self.root / 'game.log'))} \"$@\"\n",
+                      encoding="utf-8")
+        sh.chmod(0o755)
+        icon = self.root / "icon.png"
+        for name in ("icon.png", "icon.ico"):
+            if (resource_dir() / name).exists():
+                icon = self.root / name
+                shutil.copy2(resource_dir() / name, icon)
+                break
+        info = {"root": str(self.root), "exe": str(self.exe), "game": str(self.game)}
+        LAUNCHER_HOME.mkdir(parents=True, exist_ok=True)
+        (LAUNCHER_HOME / "launcher.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+        # The packaged launcher keeps a copy next to the game, and the menu entry starts it (settings are applied
+        # every time); run from source, the entry starts the game directly.
+        target = sh
+        if getattr(sys, "frozen", False):
+            launcher = self.root / LAUNCHER_EXE_NAME
+            try:
+                if Path(sys.executable).resolve() != launcher.resolve():
+                    shutil.copy2(sys.executable, launcher)
+                launcher.chmod(0o755)
+                target = launcher
+            except OSError as e:
+                self.log(f"Couldn't copy the launcher next to the game: {e}")
+        entry = ("[Desktop Entry]\nType=Application\n"
+                 f"Name={APP_NAME}\n"
+                 "Comment=Xbox 360 recompilation (built from your own disc)\n"
+                 f"Exec={q(str(target))}\n"
+                 f"Path={self.root}\n"
+                 + (f"Icon={icon}\n" if icon.exists() else "")
+                 + "Terminal=false\nCategories=Game;ActionGame;\n")
+        apps = data_home() / "applications"
+        for folder in (apps, desktop_dir()):
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / "bourne-conspiracy.desktop"
+                path.write_text(entry, encoding="utf-8")
+                path.chmod(0o755)
+            except OSError as e:
+                self.log(f"Couldn't write {folder}/bourne-conspiracy.desktop: {e}")
+        self.log("Menu entry and desktop shortcut created.")
 
     def make_launchers(self):
         bat = self.root / "Play.bat"
@@ -671,13 +893,20 @@ class Installer:
             self.log(f"--- Install started. ISO: {self.iso}  Location: {self.root}")
             self.check_space()
             self.extract_game()
-            vcvars = self.ensure_vs()
+            if IS_WINDOWS:
+                tools = self.ensure_vs()
+            else:
+                tools = self.ensure_container()
             self.ui.put(("progress", 0.40))
             sdk = self.ensure_sdk()
             self.setup_project()
             self.ui.put(("progress", 0.48))
-            self.build(vcvars, sdk)
-            self.make_launchers()
+            if IS_WINDOWS:
+                self.build(tools, sdk)
+                self.make_launchers()
+            else:
+                self.build_linux(tools, sdk)
+                self.make_launchers_linux()
             self.ui.put(("progress", 1.0))
             self.log("--- Install finished.")
             self.ui.put(("done", str(self.exe), str(self.game)))
@@ -708,8 +937,7 @@ def start_game(args, cwd, extra_env=None):
     the game could load DLLs from that folder and keep it locked; when the launcher then
     closed, Windows showed "Failed to remove temporary directory". Clear all of that first.
     """
-    env = dict(os.environ)
-    env.update(extra_env or {})
+    env = host_env(extra_env)
     mei = getattr(sys, "_MEIPASS", None)
     if mei:
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
@@ -728,12 +956,13 @@ def start_game(args, cwd, extra_env=None):
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     return subprocess.Popen(args, cwd=str(cwd), env=env, creationflags=flags, close_fds=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
+                            stderr=subprocess.DEVNULL, start_new_session=not IS_WINDOWS)
 
 
 def default_plugin(exe) -> str:
     """The native renderer when its plugin is next to tbc.exe, else ReXGlue's Xenos."""
-    return "native" if any(Path(exe).parent.glob("rexgpu-native*.dll")) else "xenos"
+    folder = Path(exe).parent
+    return "native" if any(folder.glob("rexgpu-native*.dll")) or any(folder.glob("librexgpu-native*.so")) else "xenos"
 
 
 def install_info_path() -> Path:
@@ -784,10 +1013,16 @@ class InstallView(tk.Frame):
         self._row(tr("1  Choose your game disc image"), self.iso_var, tr("Choose ISO..."), self.pick_iso)
         self._row(tr("2  Install location"), self.dir_var, tr("Change..."), self.pick_dir)
 
-        tk.Label(self, text=tr("The installer reads your ISO and builds the game on this PC. If this PC doesn't "
-                               "have Microsoft's C++ build tools yet, it downloads and installs them first "
-                               "(Visual Studio Build Tools, several GB; Windows asks for administrator "
-                               "permission), so the first install can take a while."), font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=690,
+        if IS_WINDOWS:
+            note = tr("The installer reads your ISO and builds the game on this PC. If this PC doesn't "
+                      "have Microsoft's C++ build tools yet, it downloads and installs them first "
+                      "(Visual Studio Build Tools, several GB; Windows asks for administrator "
+                      "permission), so the first install can take a while.")
+        else:
+            note = tr("The installer reads your ISO and builds the game on this PC, inside a container (Podman or "
+                      "Docker), so nothing else needs installing. The first install downloads the build container "
+                      "(about 2 GB) and can take a while. The Linux version is an experimental beta.")
+        tk.Label(self, text=note, font=("Segoe UI", 9), fg=DIM, bg=BG, wraplength=690,
                  justify="left").pack(anchor="w", pady=(14, 4), **pad)
 
         self.status_var = tk.StringVar(value=tr("Choose your ISO, then click Install."))
@@ -855,7 +1090,7 @@ class InstallView(tk.Frame):
     def open_log(self):
         log = Path(self.dir_var.get()) / "install.log"
         if log.exists():
-            os.startfile(log)
+            open_path(log)
         else:
             messagebox.showinfo(tr("Log"), tr("There's no install log yet."))
 
@@ -926,11 +1161,14 @@ def make_root(title):
     root.title(title)
     root.configure(bg=BG)
     icon = resource_dir() / "icon.ico"
-    if icon.exists():
-        try:
+    png = resource_dir() / "icon.png"
+    try:
+        if IS_WINDOWS and icon.exists():
             root.iconbitmap(default=str(icon))
-        except tk.TclError:
-            pass
+        elif png.exists():
+            root.iconphoto(True, tk.PhotoImage(file=str(png)))
+    except tk.TclError:
+        pass
     setup_style(root)
     return root
 

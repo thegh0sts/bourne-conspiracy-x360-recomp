@@ -505,6 +505,11 @@ TEXT = {
         'Rotation linéaire au stick (sans accélération, manette)',
         'Giro lineal con el stick (sin aceleración de giro, mando)',
         'Rotazione lineare con lo stick (senza accelerazione, controller)'),
+    'Fight attacks on the triggers (RT light, LT heavy; controller)': (
+        'Kampfangriffe auf den Triggern (RT leicht, LT schwer; Controller)',
+        'Attaques au corps à corps sur les gâchettes (RT légère, LT lourde ; manette)',
+        'Ataques cuerpo a cuerpo en los gatillos (RT ligero, LT fuerte; mando)',
+        'Attacchi corpo a corpo sui grilletti (RT leggero, LT pesante; controller)'),
     'Keyboard and mouse': (
         'Tastatur und Maus',
         'Clavier et souris',

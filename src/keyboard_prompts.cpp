@@ -32,6 +32,12 @@
 //   --keyboard_mouse_attacks=true           fight prompts: light / heavy attack on fire's and
 //                                           aim's keys ([LMB] / [RMB]), for a button on a line
 //                                           about "Attack" or "Combo"
+//   --pad_trigger_attacks=true              with a controller, fight prompts show light / heavy
+//                                           attack on RT / LT (R2 / L2 with PlayStation prompts)
+//                                           instead of X / Y, for a button on a line about
+//                                           "Attack" or "Combo" (the launcher's matching option
+//                                           moves the attacks onto the triggers in the game's
+//                                           input config)
 //   --keyboard_prompt_scale/dx/dy           size and nudge of gameplay labels
 //   --keyboard_menu_prompt_scale/dx/dy      the same for menus
 
@@ -68,6 +74,10 @@ REXCVAR_DEFINE_BOOL(keyboard_prompts_in_menus, true, "UI",
 REXCVAR_DEFINE_BOOL(keyboard_mouse_attacks, false, "UI",
                     "Fight prompts show light / heavy attack as [LMB] / [RMB] (the launcher sets "
                     "this with its matching option, which binds them in the game's input config)");
+REXCVAR_DEFINE_BOOL(pad_trigger_attacks, false, "UI",
+                    "With a controller, fight prompts show light / heavy attack on RT / LT instead of X / Y "
+                    "(the launcher sets this with its matching option, which binds them in the game's input "
+                    "config)");
 REXCVAR_DEFINE_BOOL(keyboard_prompt_centre, true, "UI",
                     "Centre key labels on the button they replace (off: start where it started)");
 REXCVAR_DEFINE_DOUBLE(keyboard_prompt_scale, 0.85, "UI", "Size of the key labels in play")
@@ -453,7 +463,7 @@ extern "C" REX_FUNC(sub_82C49D88) {
       g_title_until.store((now + kRecent).time_since_epoch().count());
     }
     const bool title = now - s.title_seen < kRecent;
-    if (REXCVAR_GET(keyboard_mouse_attacks)) {
+    if (REXCVAR_GET(keyboard_mouse_attacks) || REXCVAR_GET(pad_trigger_attacks)) {
       // Remember the words on screen and where (not the buttons themselves).
       if (base[text + 2] != 0 || base[text + 3] != 0) {
         if (s.recent.size() >= 48) {
@@ -490,6 +500,23 @@ extern "C" REX_FUNC(sub_82C49D88) {
           label_text = GuestString(s, base, LabelFor(s, bind, as_menu, fight));
           label_font = s.label_font;
         }
+      }
+    } else if (!s.keyboard_mode && REXCVAR_GET(pad_trigger_attacks) && button_font && !menu) {
+      // A controller with the attacks on the triggers: in a fight prompt, X (light attack) is drawn
+      // as RT and Y (heavy attack) as LT, the button font's own trigger characters (T / R, t / r
+      // for the small badges), which the PlayStation prompts paint as R2 / L2.
+      const char16_t c = char16_t(base[text] << 8 | base[text + 1]);
+      const bool single = base[text + 2] == 0 && base[text + 3] == 0;
+      const char trigger = !single         ? 0
+                           : c == u'X'     ? 'T'
+                           : c == u'x'     ? 't'
+                           : c == u'Y'     ? 'R'
+                           : c == u'y'     ? 'r'
+                                           : 0;
+      if (trigger && FightLine(s, ctx.f2.f64, now)) {
+        label_text = GuestString(s, base, std::string(1, trigger));
+        label_font = font;
+        glyph_label = true;
       }
     }
   }

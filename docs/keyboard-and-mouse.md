@@ -33,6 +33,10 @@ button prompts, the key images in the HUD and the quick-time-event prompts are d
 | Space | Block |
 | F | Takedown (when the adrenaline meter has a tier filled) |
 
+With a controller, fights use the game's own X (light) and Y (heavy) attacks, or RT (light) and
+LT (heavy) with **Fight attacks on the triggers** ticked in the launcher's Controls tab; the fight
+prompts show whichever buttons attack.
+
 ## Quick-time events
 
 QTE prompts show the controller's four face buttons as a diamond. On a keyboard the diamond is

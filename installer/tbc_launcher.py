@@ -349,6 +349,8 @@ DEFAULTS = {
     "no_auto_recenter": False,
     "linear_stick": False,
     "deadzone": 25,
+    # Controller: fight attacks on the triggers (RT light, LT heavy) instead of X / Y.
+    "trigger_attacks": False,
     "kbm": False,
     "kbm_aim_assist": False,  # the game's sticky aim with keyboard and mouse on (always on without)
     "mouse_sensitivity": 100,
@@ -458,7 +460,8 @@ def _edit_look_scales(body, factor, linear):
 # (left / right mouse) makes the mouse buttons attack in fights and shoot outside them. The
 # attacks also come off X and Y, so in fights only the mouse buttons attack. This is the
 # game's input config, so with the option on a controller's X / Y don't attack either: its
-# triggers do.
+# triggers do. The same edits are the controller option "Fight attacks on the triggers": light
+# attack on RT, heavy on LT (the prompts follow, --pad_trigger_attacks in keyboard_prompts.cpp).
 FIGHT_MOUSE_EDITS = [
     ('Bindings=(Name="XboxTypeS_RightTrigger",Command="StartFire | OnRelease StopFire | Axis aBaseZ Speed=+1.0")',
      'Bindings=(Name="XboxTypeS_RightTrigger",Command="StartFire | OnRelease StopFire | MeleeAttackLight | '
@@ -638,7 +641,9 @@ def _build_game_config(conf_bak: Path, s, kbm: bool):
     turn = int(s.get("turn_speed", 100))
     linear_aim = kbm  # the mouse gets the full turn speed while aiming
     look_edit = turn != 100 or linear_aim
-    fight_mouse = kbm  # with keyboard and mouse, fights are always on the mouse buttons
+    # With keyboard and mouse, fights are always on the mouse buttons (the triggers); with a
+    # controller, on its triggers when "Fight attacks on the triggers" is ticked.
+    fight_mouse = kbm or bool(s.get("trigger_attacks"))
     mouse_camera = kbm and bool(s.get("mouse_look", True))
     wide_pitch = bool(s.get("wide_pitch", True))
     no_recenter = bool(s.get("no_auto_recenter"))
@@ -961,6 +966,10 @@ def game_args(s, screen=None):
     args.append(f"--user_language={LANGUAGES.get(s.get('language'), 1)}")
     if int(s.get("brightness", 100)) != 100:
         args.append(f"--brightness={int(s['brightness']) / 100:.2f}")  # the native renderer's last pass
+    if s.get("trigger_attacks") and not s.get("kbm"):
+        # Fight prompts show light / heavy attack on RT / LT (R2 / L2) instead of X / Y
+        # (keyboard_prompts.cpp), to match the trigger bindings written to Xe-BourneInput.ini.
+        args.append("--pad_trigger_attacks=true")
     if s.get("kbm"):
         # Keyboard and mouse only: no controller driver. The config this mode writes (fight
         # attacks off X / Y and onto the triggers, 6x camera turn rates for mouse look) would
@@ -1172,24 +1181,25 @@ class SettingsView(tk.Frame):
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
         self._slider(box, 3, "vibration_strength", "Controller vibration (%, 0 = off)", 0, 100, 5)
-        self._subheading(box, 4, "Mouse")
+        self._check(box, 4, "trigger_attacks", "Fight attacks on the triggers (RT light, LT heavy; controller)")
+        self._subheading(box, 5, "Mouse")
         line2 = tk.Frame(box, bg=PANEL)
-        line2.grid(row=5, column=0, columnspan=2, sticky="w")
+        line2.grid(row=6, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
                           ("mouse_look_direct", "Direct (1:1)"),
                           ("kbm_aim_assist", "Aim assist")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=tr(text), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
-        self._slider(box, 6, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 7, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
-        self._slider(box, 8, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 7, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
+        self._slider(box, 8, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
+        self._slider(box, 9, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         tk.Label(box, text=tr("Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
                               "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
                               "Aim assist: the game's sticky aim, made for a controller; off by default with keyboard "
                               "and mouse (for a controller used alongside too)."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
-                 ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                 ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(6, 0))
         box = self._page("Saves")
         line = tk.Frame(box, bg=PANEL)
         line.grid(row=0, column=0, columnspan=2, sticky="w")

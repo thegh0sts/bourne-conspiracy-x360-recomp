@@ -68,8 +68,15 @@ float LoadF(const uint8_t* base, uint32_t a) {
   return f;
 }
 
+// Answers are kept per 4 KB page, but only until the next object table scan (Scan clears them):
+// kept for good, a page that wasn't readable when first asked (the object table before a level
+// grew it, a heap page not yet in use) stayed "unreadable" after the game moved things there, and
+// back on the main menu after playing, its buttons were never found again (no Quit Game). The
+// same mistake once made qte.cpp's keys stop working.
+std::unordered_map<uint32_t, bool> g_pages;
+
 bool Readable(uint32_t addr) {
-  static std::unordered_map<uint32_t, bool> pages;
+  auto& pages = g_pages;
   const uint32_t page = addr >> 12;
   if (const auto it = pages.find(page); it != pages.end()) return it->second;
   bool ok = false;
@@ -194,6 +201,7 @@ bool Focused(State& s, const PPCContext& ctx, uint8_t* base, uint32_t o) {
 
 // Every half second: the main menu's buttons and the hint line, from the object table.
 void Scan(State& s, const PPCContext& ctx, uint8_t* base) {
+  g_pages.clear();
   const uint32_t data = Load32(base, kObjects), count = Load32(base, kObjects + 4);
   if (!Readable(data) || count > 2000000) return;
   s.scenes.clear();
@@ -276,6 +284,17 @@ void Refresh(State& s, const PPCContext& ctx, uint8_t* base) {
     }
   }
   s.hint_rect = s.hint && IsObject(s.hint) ? Bounds(base, s.hint) : Rect{};
+  // In the log: each time the live main menu appears or goes (the first 40 times).
+  static bool was_found = false;
+  static int found_logged = 0;
+  if (s.found != was_found && found_logged < 40) {
+    ++found_logged;
+    size_t buttons = 0;
+    for (const auto& [scene, sc] : s.scenes) buttons += sc.buttons.size();
+    REXLOG_INFO("menu_quit: main menu {} ({} scene(s), {} button(s) in the object table)",
+                s.found ? "found" : "gone", s.scenes.size(), buttons);
+  }
+  was_found = s.found;
 }
 
 int Language() {

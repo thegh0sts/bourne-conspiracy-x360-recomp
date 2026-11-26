@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Launcher
+- **Input device** (Controls tab): one choice, **Controller** or **KBM** (keyboard and mouse), instead of a Keyboard and mouse switch with the mouse switches beside it. Only the chosen device's settings are shown (Direct (1:1) only with mouse look on). Picking KBM enables mouse look and Direct (1:1). A saved Keyboard and mouse setting carries over.
+- **New settings layout, as in the 007 launcher** (in this launcher's colours): each setting's name with a short note under it on the left, its control in the right-hand third, every control as wide as that column so they line up. On/off settings are Enabled | Disabled button groups; short lists are button groups (shorter button names: Native / Xenos, 720p ... 4K and UW for ultrawide, 30 ... 144 and ∞); the game language and launcher language are drop-downs in the same style. Pages scroll when they don't fit. Game files lays out the install, help and language rows the same way, with button stacks. New **Credits** tab (what the port is built on, with website buttons). Footer: **Save settings**, and a switch for closing the launcher when the game starts.
+- **Toggle button groups instead of drop-down lists** for the Display tab's Renderer, Output resolution, Render resolution, Graphics path, Upscaling filter, Anti-aliasing, Frame rate and FPS counter, and Texture filtering on the Graphics tab (Game's own · 4x · 8x · 16x): every choice is a button, the chosen one highlighted (the bracketed explanations are left off the buttons where the notes under them say it).
+- **On / Off button groups** instead of checkboxes, on the right like the lists and sliders, for Fullscreen, VSync, Original Xbox 360 frame pacing and Achievement pop-ups (Display tab), and Motion blur, Depth of field, Bloom, Lens flares, Heat haze / distortion and Second render thread (Graphics tab). **Hide achievement pop-ups** is now **Achievement pop-ups**, on by default; a saved "hide" setting carries over as off.
+
 ## 0.3.6 (2026-11-26)
 
 Controller camera fixes and an aiming reticle size option. Launcher only: no reinstall needed.

@@ -375,6 +375,11 @@ TEXT = {
         'Anticrénelage',
         'Antialiasing',
         'Antialiasing'),
+    'On': (
+        'An',
+        'Activé',
+        'Activado',
+        'Attivato'),
     'Off': (
         'Aus',
         'Désactivé',
@@ -440,11 +445,11 @@ TEXT = {
         "Cadence d'images de la Xbox 360 d'origine (plus lente)",
         'Ritmo de fotogramas original de Xbox 360 (más lento)',
         'Cadenza fotogrammi originale Xbox 360 (più lenta)'),
-    'Hide achievement pop-ups': (
-        'Erfolgs-Pop-ups ausblenden',
-        'Masquer les notifications de succès',
-        'Ocultar avisos de logros',
-        'Nascondi i popup degli obiettivi'),
+    'Achievement pop-ups': (
+        'Erfolgs-Pop-ups',
+        'Notifications de succès',
+        'Avisos de logros',
+        'Popup degli obiettivi'),
     'Native renderer by the Skullburglar project (github.com/nlwstein/skullburglar, BSD 3-Clause).': (
         'Nativer Renderer vom Skullburglar-Projekt (github.com/nlwstein/skullburglar, BSD 3-Clause).',
         'Moteur de rendu natif par le projet Skullburglar (github.com/nlwstein/skullburglar, BSD 3-Clause).',
@@ -515,9 +520,9 @@ TEXT = {
         'Second thread de rendu',
         'Segundo hilo de renderizado',
         'Secondo thread di rendering'),
-    'Second render thread is for the native renderer: it records the GPU\'s work on another CPU thread, for a higher frame rate in busy scenes. Untick it if the picture shows glitches.': (
+    'Second render thread is for the native renderer: it records the GPU\'s work on another CPU thread, for a higher frame rate in busy scenes. Turn it off if the picture shows glitches.': (
         'Der zweite Render-Thread ist für den nativen Renderer: Er zeichnet die Arbeit der GPU auf einem anderen CPU-Thread auf, für eine höhere Bildrate in aufwendigen Szenen. Deaktiviere ihn, wenn das Bild Fehler zeigt.',
-        'Le second thread de rendu concerne le moteur de rendu natif : il enregistre le travail du GPU sur un autre thread du processeur, pour une fréquence d\'images plus élevée dans les scènes chargées. Décochez-le si l\'image présente des défauts.',
+        'Le second thread de rendu concerne le moteur de rendu natif : il enregistre le travail du GPU sur un autre thread du processeur, pour une fréquence d\'images plus élevée dans les scènes chargées. Désactivez-le si l\'image présente des défauts.',
         'El segundo hilo de renderizado es para el renderizador nativo: graba el trabajo de la GPU en otro hilo de la CPU, para una mayor tasa de fotogramas en escenas exigentes. Desactívalo si la imagen muestra fallos.',
         'Il secondo thread di rendering è per il renderer nativo: registra il lavoro della GPU su un altro thread della CPU, per un frame rate più alto nelle scene complesse. Disattivalo se l\'immagine mostra difetti.'),
     'Looking for Podman or Docker (the build runs in a container)...': (
@@ -620,6 +625,241 @@ TEXT = {
         'taille du réticule inchangée : {error}',
         'tamaño de la retícula sin cambiar: {error}',
         'dimensione del reticolo non cambiata: {error}'),
+    'Enabled': (
+        'Aktiviert',
+        'Activé',
+        'Activado',
+        'Attivato'),
+    'Disabled': (
+        'Deaktiviert',
+        'Désactivé',
+        'Desactivado',
+        'Disattivato'),
+    'Credits': (
+        'Mitwirkende',
+        'Crédits',
+        'Créditos',
+        'Riconoscimenti'),
+    'Website': (
+        'Website',
+        'Site web',
+        'Sitio web',
+        'Sito web'),
+    'Original': (
+        'Original',
+        'Original',
+        'Original',
+        'Originale'),
+    'FXAA strong': (
+        'FXAA stark',
+        'FXAA fort',
+        'FXAA fuerte',
+        'FXAA forte'),
+    'Detailed': (
+        'Detailliert',
+        'Détaillé',
+        'Detallado',
+        'Dettagliato'),
+    'Keyboard and mouse map': (
+        'Tastatur- und Mausbelegung',
+        'Commandes clavier et souris',
+        'Controles de teclado y ratón',
+        'Comandi tastiera e mouse'),
+    'Controller': (
+        'Controller',
+        'Manette',
+        'Mando',
+        'Controller'),
+    'Auto': (
+        'Automatisch',
+        'Auto',
+        'Automático',
+        'Automatico'),
+    'Bilinear': (
+        'Bilinear',
+        'Bilinéaire',
+        'Bilineal',
+        'Bilineare'),
+    'FSR 1 upscaling and CAS sharpening.': (
+        'FSR-1-Hochskalierung und CAS-Schärfung.',
+        "Mise à l'échelle FSR 1 et netteté CAS.",
+        'Escalado FSR 1 y nitidez CAS.',
+        'Upscaling FSR 1 e nitidezza CAS.'),
+    'If the game crashes or misbehaves: the logs show what happened, and a crash report gathers them into one file to send with a bug report.': (
+        'Wenn das Spiel abstürzt oder Fehler macht: Die Protokolle zeigen, was passiert ist, und ein Absturzbericht fasst sie in einer Datei zusammen, die du einer Fehlermeldung beilegen kannst.',
+        "Si le jeu plante ou se comporte mal : les journaux montrent ce qui s'est passé, et un rapport de plantage les rassemble dans un seul fichier à joindre à un signalement de bug.",
+        'Si el juego se cuelga o falla: los registros muestran qué pasó, y un informe de fallo los reúne en un solo archivo para enviar con un informe de error.',
+        'Se il gioco si blocca o non funziona bene: i log mostrano cosa è successo, e un rapporto di crash li riunisce in un unico file da allegare a una segnalazione di bug.'),
+    'The recompiler and runtime that turn the Xbox 360 game into a PC program, built from the Xenia emulator.': (
+        'Der Recompiler und die Laufzeitumgebung, die das Xbox-360-Spiel zu einem PC-Programm machen, entstanden aus dem Xenia-Emulator.',
+        "Le recompilateur et l'environnement d'exécution qui font du jeu Xbox 360 un programme PC, issus de l'émulateur Xenia.",
+        'El recompilador y el entorno de ejecución que convierten el juego de Xbox 360 en un programa de PC, derivados del emulador Xenia.',
+        "Il ricompilatore e il runtime che trasformano il gioco Xbox 360 in un programma per PC, derivati dall'emulatore Xenia."),
+    'Save settings': (
+        'Einstellungen speichern',
+        'Enregistrer les réglages',
+        'Guardar ajustes',
+        'Salva impostazioni'),
+    'Native': (
+        'Nativ',
+        'Natif',
+        'Nativo',
+        'Nativo'),
+    'Fight attacks on the triggers': (
+        'Kampfangriffe auf den Triggern',
+        'Attaques de combat sur les gâchettes',
+        'Ataques de combate en los gatillos',
+        'Attacchi in combattimento sui grilletti'),
+    'Linear stick turning': (
+        'Lineares Stick-Drehen',
+        'Rotation linéaire au stick',
+        'Giro lineal con el stick',
+        'Rotazione lineare con lo stick'),
+    'Original Xbox 360 frame pacing': (
+        'Originales Xbox-360-Frame-Pacing',
+        "Cadence d'images Xbox 360 d'origine",
+        'Ritmo de fotogramas original de Xbox 360',
+        'Cadenza dei fotogrammi originale Xbox 360'),
+    "Also raises the camera's top turn rate (full stick).": (
+        'Erhöht auch die höchste Drehrate der Kamera (Stick ganz ausgelenkt).',
+        'Augmente aussi la vitesse maximale de la caméra (stick à fond).',
+        'También sube la velocidad máxima de giro de la cámara (stick a fondo).',
+        'Aumenta anche la velocità massima di rotazione della telecamera (stick al massimo).'),
+    'Controller: no turn acceleration, the stick turns at its top rate straight away.': (
+        'Controller: keine Drehbeschleunigung, der Stick dreht sofort mit voller Geschwindigkeit.',
+        "Manette : pas d'accélération, le stick tourne tout de suite à sa vitesse maximale.",
+        'Mando: sin aceleración de giro, el stick gira a su velocidad máxima desde el principio.',
+        'Controller: nessuna accelerazione, lo stick ruota subito alla velocità massima.'),
+    "How much of the game's camera easing stays with mouse look: lower is more responsive.": (
+        'Wie viel der Kameraverzögerung des Spiels beim Mausblick bleibt: weniger reagiert direkter.',
+        "La part de l'amortissement de caméra du jeu conservée avec la visée à la souris : moins = plus réactif.",
+        'Cuánto del suavizado de cámara del juego se mantiene con la vista con ratón: menos es más directo.',
+        'Quanto dello smussamento della telecamera del gioco resta con la visuale col mouse: meno è più reattivo.'),
+    "How much of the game's camera easing stays: lower is more responsive.": (
+        'Wie viel der Kameraverzögerung des Spiels bleibt: weniger reagiert direkter.',
+        "La part de l'amortissement de caméra du jeu conservée : moins = plus réactif.",
+        'Cuánto del suavizado de cámara del juego se mantiene: menos es más directo.',
+        'Quanto dello smussamento della telecamera del gioco resta: meno è più reattivo.'),
+    'How the picture is scaled to your screen. FSR gives sharper 3D but softer text; CAS only sharpens.': (
+        'Wie das Bild auf deinen Bildschirm skaliert wird. FSR macht 3D schärfer, aber Text weicher; CAS schärft nur.',
+        "Comment l'image est mise à l'échelle de votre écran. FSR rend la 3D plus nette mais le texte plus doux ; CAS ne fait qu'accentuer.",
+        'Cómo se escala la imagen a tu pantalla. FSR da un 3D más nítido pero texto más suave; CAS solo enfoca.',
+        "Come l'immagine viene adattata al tuo schermo. FSR rende il 3D più nitido ma il testo più morbido; CAS aumenta solo la nitidezza."),
+    'Native (Vulkan) is recommended. Xenos (Direct3D 12) is the fallback if the native renderer has trouble on your PC.': (
+        'Nativ (Vulkan) wird empfohlen. Xenos (Direct3D 12) ist die Ausweichlösung, falls der native Renderer auf deinem PC Probleme macht.',
+        'Natif (Vulkan) est recommandé. Xenos (Direct3D 12) est la solution de repli si le rendu natif pose problème sur votre PC.',
+        'Se recomienda Nativo (Vulkan). Xenos (Direct3D 12) es la alternativa si el renderizador nativo da problemas en tu PC.',
+        "Si consiglia Nativo (Vulkan). Xenos (Direct3D 12) è l'alternativa se il renderer nativo dà problemi sul tuo PC."),
+    'Native renderer only (Xenos ignores it). Black and white stay as they are.': (
+        'Nur nativer Renderer (Xenos ignoriert es). Schwarz und Weiß bleiben, wie sie sind.',
+        "Rendu natif uniquement (Xenos l'ignore). Le noir et le blanc restent tels quels.",
+        'Solo renderizador nativo (Xenos lo ignora). El negro y el blanco no cambian.',
+        'Solo renderer nativo (Xenos lo ignora). Il nero e il bianco restano invariati.'),
+    "Native renderer only: keeps floors, roads and walls sharp at an angle. The HUD and text keep the game's own filtering.": (
+        'Nur nativer Renderer: hält Böden, Straßen und Wände auch schräg betrachtet scharf. HUD und Text behalten die Filterung des Spiels.',
+        'Rendu natif uniquement : garde les sols, routes et murs nets vus de biais. Le HUD et le texte gardent le filtrage du jeu.',
+        'Solo renderizador nativo: mantiene nítidos suelos, carreteras y paredes en ángulo. El HUD y el texto conservan el filtrado del juego.',
+        'Solo renderer nativo: mantiene nitidi pavimenti, strade e muri visti di sbieco. HUD e testo mantengono il filtraggio del gioco.'),
+    "Native renderer only: records the GPU's work on another CPU thread, for a higher frame rate in busy scenes. Turn it off if the picture shows glitches.": (
+        'Nur nativer Renderer: zeichnet die Arbeit der GPU in einem weiteren CPU-Thread auf, für mehr Bilder pro Sekunde in vollen Szenen. Schalte es aus, wenn das Bild Fehler zeigt.',
+        "Rendu natif uniquement : enregistre le travail du GPU sur un autre thread CPU, pour plus d'images par seconde dans les scènes chargées. Désactivez-le si l'image présente des défauts.",
+        'Solo renderizador nativo: graba el trabajo de la GPU en otro hilo de CPU, para más fotogramas por segundo en escenas cargadas. Desactívalo si la imagen muestra fallos.',
+        "Solo renderer nativo: registra il lavoro della GPU su un altro thread della CPU, per più fotogrammi al secondo nelle scene affollate. Disattivalo se l'immagine mostra difetti."),
+    "Off keeps the game's own size.": (
+        'Aus behält die Größe des Spiels.',
+        'Désactivé garde la taille du jeu.',
+        'Desactivado mantiene el tamaño del juego.',
+        'Disattivato mantiene la dimensione del gioco.'),
+    'Off may tear, but can be faster.': (
+        'Aus kann zu Tearing führen, kann aber schneller sein.',
+        'Désactivé peut provoquer du tearing, mais peut être plus rapide.',
+        'Desactivado puede causar tearing, pero puede ser más rápido.',
+        'Disattivato può causare tearing, ma può essere più veloce.'),
+    'Over the shoulder and when shooting from cover.': (
+        'Über die Schulter und beim Schießen aus der Deckung.',
+        "Par-dessus l'épaule et en tirant à couvert.",
+        'Sobre el hombro y al disparar desde cobertura.',
+        'Sopra la spalla e quando si spara dalla copertura.'),
+    'Paces frames as the console did: slower.': (
+        'Taktet die Bilder wie die Konsole: langsamer.',
+        'Cadence les images comme la console : plus lent.',
+        'Marca el ritmo de los fotogramas como la consola: más lento.',
+        'Scandisce i fotogrammi come la console: più lento.'),
+    'RT light, LT heavy, instead of X and Y; the prompts follow.': (
+        'RT leicht, LT schwer statt X und Y; die Tastenhinweise passen sich an.',
+        'RT léger, LT lourd, au lieu de X et Y ; les indications suivent.',
+        'RT ligero, LT fuerte, en lugar de X e Y; los avisos de botones se adaptan.',
+        'RT leggero, LT pesante, invece di X e Y; i suggerimenti si adeguano.'),
+    'The Bourne Conspiracy is a trademark of its owners. This project is not affiliated with or endorsed by Microsoft, Activision, High Moon Studios or the Ludlum estate.': (
+        'The Bourne Conspiracy ist eine Marke ihrer Inhaber. Dieses Projekt steht in keiner Verbindung zu Microsoft, Activision, High Moon Studios oder dem Ludlum-Nachlass und wird von ihnen nicht unterstützt.',
+        "The Bourne Conspiracy est une marque de ses propriétaires. Ce projet n'est ni affilié ni approuvé par Microsoft, Activision, High Moon Studios ou la succession Ludlum.",
+        'The Bourne Conspiracy es una marca de sus propietarios. Este proyecto no está afiliado ni respaldado por Microsoft, Activision, High Moon Studios ni el patrimonio de Ludlum.',
+        'The Bourne Conspiracy è un marchio dei rispettivi proprietari. Questo progetto non è affiliato né approvato da Microsoft, Activision, High Moon Studios o dagli eredi Ludlum.'),
+    "The Xbox 360 emulator the SDK's runtime comes from.": (
+        'Der Xbox-360-Emulator, aus dem die Laufzeitumgebung des SDK stammt.',
+        "L'émulateur Xbox 360 dont provient l'environnement d'exécution du SDK.",
+        'El emulador de Xbox 360 del que procede el entorno de ejecución del SDK.',
+        "L'emulatore Xbox 360 da cui deriva l'ambiente di esecuzione dell'SDK."),
+    'The frame pacing approach. MIT licence.': (
+        'Der Ansatz für das Frame-Pacing. MIT-Lizenz.',
+        "L'approche de la cadence d'images. Licence MIT.",
+        'El enfoque del ritmo de fotogramas. Licencia MIT.',
+        "L'approccio alla cadenza dei fotogrammi. Licenza MIT."),
+    'The game draws at 720p; this is the resolution the renderer draws it at. Higher is sharper and slower.': (
+        'Das Spiel zeichnet in 720p; dies ist die Auflösung, in der der Renderer es zeichnet. Höher ist schärfer und langsamer.',
+        "Le jeu dessine en 720p ; c'est la résolution à laquelle le rendu le dessine. Plus haut = plus net et plus lent.",
+        'El juego dibuja a 720p; esta es la resolución a la que lo dibuja el renderizador. Más alta es más nítida y más lenta.',
+        'Il gioco disegna a 720p; questa è la risoluzione a cui lo disegna il renderer. Più alta è più nitida e più lenta.'),
+    "The game's sticky aim, made for a controller; off by default with keyboard and mouse (for a controller used alongside too).": (
+        'Die Zielhilfe des Spiels, gemacht für den Controller; mit Tastatur und Maus standardmäßig aus (auch für einen gleichzeitig genutzten Controller).',
+        'La visée assistée du jeu, conçue pour la manette ; désactivée par défaut au clavier et à la souris (aussi pour une manette utilisée en parallèle).',
+        'La asistencia de puntería del juego, pensada para mando; desactivada por defecto con teclado y ratón (también para un mando usado a la vez).',
+        'La mira assistita del gioco, pensata per il controller; disattivata per impostazione predefinita con tastiera e mouse (anche per un controller usato insieme).'),
+    'The native Vulkan renderer, the crash reports and the leak scanner. BSD 3-Clause licence.': (
+        'Der native Vulkan-Renderer, die Absturzberichte und der Leak-Scanner. BSD-3-Clause-Lizenz.',
+        "Le rendu Vulkan natif, les rapports de plantage et l'analyseur de fuites. Licence BSD 3-Clause.",
+        'El renderizador Vulkan nativo, los informes de fallos y el escáner de filtraciones. Licencia BSD 3-Clause.',
+        'Il renderer Vulkan nativo, i rapporti di crash e lo scanner di fughe. Licenza BSD 3-Clause.'),
+    'The size of the picture on your screen. Ultrawide outputs (UW) are experimental and need the native renderer.': (
+        'Die Größe des Bildes auf deinem Bildschirm. Ultrawide-Ausgaben (UW) sind experimentell und brauchen den nativen Renderer.',
+        "La taille de l'image sur votre écran. Les sorties ultralarges (UW) sont expérimentales et nécessitent le rendu natif.",
+        'El tamaño de la imagen en tu pantalla. Las salidas ultrapanorámicas (UW) son experimentales y necesitan el renderizador nativo.',
+        "La dimensione dell'immagine sul tuo schermo. Le uscite ultrawide (UW) sono sperimentali e richiedono il renderer nativo."),
+    "Xenos only: how it imitates the Xbox 360's framebuffer memory. Auto uses ROV above 720p.": (
+        'Nur Xenos: wie es den Bildspeicher der Xbox 360 nachbildet. Automatisch nutzt ROV über 720p.',
+        "Xenos uniquement : comment il imite la mémoire d'image de la Xbox 360. Auto utilise ROV au-delà de 720p.",
+        'Solo Xenos: cómo imita la memoria de imagen de la Xbox 360. Automático usa ROV por encima de 720p.',
+        "Solo Xenos: come imita la memoria dell'immagine della Xbox 360. Automatico usa ROV sopra i 720p."),
+    'By nikolaygorb: the GPU-wait hook, display refresh matching and the XMA audio decoder fixes. MIT licence.': (
+        'Von nikolaygorb: der GPU-Warte-Hook, die Anpassung an die Bildwiederholrate und die Korrekturen am XMA-Audiodecoder. MIT-Lizenz.',
+        "Par nikolaygorb : le hook d'attente GPU, l'adaptation au taux de rafraîchissement et les correctifs du décodeur audio XMA. Licence MIT.",
+        'De nikolaygorb: el hook de espera de la GPU, el ajuste a la frecuencia de la pantalla y las correcciones del decodificador de audio XMA. Licencia MIT.',
+        "Di nikolaygorb: l'hook di attesa della GPU, l'adattamento alla frequenza dello schermo e le correzioni al decodificatore audio XMA. Licenza MIT."),
+    "30 is the original. Above 60 is experimental: some scripted scenes can stall. For smoother motion, keep 60 and turn on your graphics driver's frame generation (NVIDIA Smooth Motion, AMD Fluid Motion Frames).": (
+        '30 ist das Original. Über 60 ist experimentell: Manche geskripteten Szenen können hängen bleiben. Für flüssigere Bewegung bleib bei 60 und schalte die Frame-Generierung deines Grafiktreibers ein (NVIDIA Smooth Motion, AMD Fluid Motion Frames).',
+        "30 est l'original. Au-delà de 60, c'est expérimental : certaines scènes scriptées peuvent bloquer. Pour un mouvement plus fluide, restez à 60 et activez la génération d'images de votre pilote graphique (NVIDIA Smooth Motion, AMD Fluid Motion Frames).",
+        '30 es el original. Por encima de 60 es experimental: algunas escenas con guion pueden atascarse. Para un movimiento más fluido, mantén 60 y activa la generación de fotogramas de tu controlador gráfico (NVIDIA Smooth Motion, AMD Fluid Motion Frames).',
+        "30 è l'originale. Sopra i 60 è sperimentale: alcune scene scriptate possono bloccarsi. Per un movimento più fluido, resta a 60 e attiva la generazione di fotogrammi del driver grafico (NVIDIA Smooth Motion, AMD Fluid Motion Frames)."),
+    'Input device': (
+        'Eingabegerät',
+        "Périphérique d'entrée",
+        'Dispositivo de entrada',
+        'Dispositivo di input'),
+    'Controller works with Xbox and PlayStation controllers, with the buttons shown to match. KBM (keyboard and mouse) turns controllers off.': (
+        'Controller funktioniert mit Xbox- und PlayStation-Controllern, die passenden Tasten werden angezeigt. KBM (Tastatur und Maus) schaltet Controller aus.',
+        'Manette fonctionne avec les manettes Xbox et PlayStation, avec les boutons affichés en conséquence. KBM (clavier et souris) désactive les manettes.',
+        'Mando funciona con mandos de Xbox y PlayStation, mostrando los botones que corresponden. KBM (teclado y ratón) desactiva los mandos.',
+        'Controller funziona con i controller Xbox e PlayStation, mostrando i tasti corrispondenti. KBM (tastiera e mouse) disattiva i controller.'),
+    "The mouse's movement goes straight into the camera's angles. Disabled: it's turned into a right-stick push.": (
+        'Die Mausbewegung geht direkt in die Kamerawinkel. Deaktiviert: Sie wird in einen Druck auf den rechten Stick umgewandelt.',
+        'Le mouvement de la souris va directement dans les angles de la caméra. Désactivé : il est converti en poussée du stick droit.',
+        'El movimiento del ratón va directamente a los ángulos de la cámara. Desactivado: se convierte en un empuje del stick derecho.',
+        'Il movimento del mouse va direttamente negli angoli della telecamera. Disattivato: viene convertito in una spinta dello stick destro.'),
+    "The game's sticky aim, made for a controller; off by default with keyboard and mouse.": (
+        'Die Zielhilfe des Spiels, gemacht für den Controller; mit Tastatur und Maus standardmäßig aus.',
+        'La visée assistée du jeu, conçue pour la manette ; désactivée par défaut au clavier et à la souris.',
+        'La asistencia de puntería del juego, pensada para mando; desactivada por defecto con teclado y ratón.',
+        'La mira assistita del gioco, pensata per il controller; disattivata per impostazione predefinita con tastiera e mouse.'),
     'Mouse camera smoothing (%)': (
         'Kameraglättung der Maus (%)',
         'Lissage de la caméra à la souris (%)',

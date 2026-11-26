@@ -1,0 +1,124 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 56fbb7d..cf384e1 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -128,6 +128,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+ 
+   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width, uint32_t frontbuffer_height) override {
+     if (!renderer_) return;
++    CpTimer swap_timer(cp_profile_, cp_.swap_ns);
+     TrackFrame();
+     renderer_->EndFrame();
+     PublishWarmup();
+@@ -228,6 +229,24 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+         REXLOG_INFO("gfx native: CP idle {:.2f} ms per frame, {:.2f} ms of it after submitting queries",
+                     double(idle_us_ - last_idle_us_) / 1000.0 / n,
+                     double(query_idle_us_ - last_query_idle_us_) / 1000.0 / n);
++        if (cp_profile_) {
++          // qos: where the CP thread's frame goes besides the renderer's draws (BOTS_DRAW_PROFILE=1).
++          auto cms = [&](uint64_t a, uint64_t b) { return double(a - b) / 1e6 / n; };
++          const double wall = std::chrono::duration<double, std::milli>(now - last_.time).count() / n;
++          const double idle = double(idle_us_ - last_idle_us_) / 1000.0 / n;
++          const double ib = cms(cp_.ib_ns, last_cp_.ib_ns), swap = cms(cp_.swap_ns, last_cp_.swap_ns);
++          REXLOG_INFO("gfx native: CP thread ms per frame: command buffers {:.2f} (IssueDraw {:.2f}, renderer draws "
++                      "{:.2f}, shader loads {:.2f}), swap {:.2f}, rest {:.2f} (wall - idle - those); {:.0f} shader "
++                      "loads ({:.0f} copied), {:.0f} register writes, {:.0f} constant registers in ranges, {:.0f} "
++                      "indirect buffers",
++                      ib, cms(cp_.issue_ns, last_cp_.issue_ns), double(st.draw_us - last_.draw_us) / 1000.0 / n,
++                      cms(cp_.shader_ns, last_cp_.shader_ns), swap, wall - idle - ib - swap,
++                      double(cp_.shader_loads - last_cp_.shader_loads) / n,
++                      double(cp_.shader_copies - last_cp_.shader_copies) / n,
++                      double(cp_.reg_writes - last_cp_.reg_writes) / n,
++                      double(cp_.const_regs - last_cp_.const_regs) / n,
++                      double(cp_.ibs - last_cp_.ibs) / n);
++        }
+         ReportFrameTimes(frames_ - last_.frames);
+         REXLOG_INFO("gfx native: textures {} held, {:.0f} MB (budget {}); over {} frames: {} loaded ({} of them "
+                     "evicted earlier), {} reloaded after CPU writes, {} evicted",
+@@ -241,6 +260,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       }
+       REXLOG_INFO("gfx native: memory: {}", renderer_->TakeMemoryReport());
+       last_idle_us_ = idle_us_, last_query_idle_us_ = query_idle_us_;
++      last_cp_ = cp_;
+       last_ = {frames_, now, st.draw_us, st.texture_us, st.wait_us, st.flushes, st.draws, st.resolves};
+       last_.render_passes = st.render_passes, last_.transfers = st.transfers, last_.barriers = st.barriers;
+       last_.pending_draws = st.pending_draws;
+@@ -347,6 +367,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+ 
+   rg::Shader* LoadShader(xe::ShaderType shader_type, uint32_t guest_address, const uint32_t* host_address,
+                          uint32_t dword_count) override {
++    CpTimer timer(cp_profile_, cp_.shader_ns);
++    ++cp_.shader_loads;
+     const bool vertex = shader_type == xe::ShaderType::kVertex;
+     ShaderLoad& load = vertex ? vs_ : ps_;
+     // tbc (007): BOTS_GFX_SHADER_AT_DRAW=1 keeps the old behaviour (microcode in guest memory read at the draw).
+@@ -362,7 +384,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;
+       const bool same = load.serial && load.inline_ucode == copy.data() && copy.size() == dword_count &&
+                         std::memcmp(copy.data(), host_address, size_t(dword_count) * 4) == 0;
+-      if (!same) copy.assign(host_address, host_address + dword_count);
++      if (!same) copy.assign(host_address, host_address + dword_count), ++cp_.shader_copies;
+       load = {address, dword_count, copy.data(), same ? load.serial : ++shader_serial_};
+     };
+     if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address) && at_draw) {
+@@ -382,6 +404,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   // draws with colour writes off). Their sync packets still run; their draws are dropped, as the replay
+   // executor (pm4.h) does.
+   void ExecuteIndirectBuffer(uint32_t ptr, uint32_t length) override {
++    CpTimer timer(cp_profile_ && indirect_depth_ == 0, cp_.ib_ns);
++    ++cp_.ibs;
+     ++indirect_depth_;
+     CommandProcessor::ExecuteIndirectBuffer(ptr, length);
+     --indirect_depth_;
+@@ -390,6 +414,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   bool IssueDraw(xe::PrimitiveType prim_type, uint32_t index_count, IndexBufferInfo* index_buffer_info,
+                  bool major_mode_explicit) override {
+     if (!renderer_) return false;
++    CpTimer timer(cp_profile_, cp_.issue_ns);
+     // tbc (Bourne): BOTS_GFX_NESTED_DRAWS=1 draws them. Bourne's 720p scene fits in EDRAM without
+     // predicated tiling, so its nested indirect buffers may hold real draws rather than replays.
+     static const bool nested_draws = [] {
+@@ -957,6 +982,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     }
+     CommandProcessor::WriteRegister(index, value);
+     constant_writes_.Note(index);
++    ++cp_.reg_writes;
+   }
+ 
+   // Shader constant uploads (SET_CONSTANT, LOAD_ALU_CONSTANT) are most of the register writes. Nothing in
+@@ -968,6 +994,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     }
+     rex::memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
+     if (num_registers) constant_writes_.NoteRange(start_index, num_registers);
++    cp_.const_regs += num_registers;
+   }
+ 
+   // Copies arrive as draws in EDRAM copy mode, which the renderer resolves itself.
+@@ -1062,6 +1089,27 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   bool query_wait_ = false;
+   std::chrono::steady_clock::time_point wait_start_;
+   uint64_t idle_us_ = 0, query_idle_us_ = 0, last_idle_us_ = 0, last_query_idle_us_ = 0;
++  // qos: BOTS_DRAW_PROFILE=1 splits the CP thread's time (the frame beyond the renderer's draws).
++  struct CpProfile {
++    uint64_t ib_ns = 0, issue_ns = 0, shader_ns = 0, swap_ns = 0;
++    uint64_t shader_loads = 0, shader_copies = 0, reg_writes = 0, const_regs = 0, ibs = 0;
++  };
++  CpProfile cp_, last_cp_;
++  const bool cp_profile_ = [] {
++    const char* v = std::getenv("BOTS_DRAW_PROFILE");
++    return v && *v == '1';
++  }();
++  struct CpTimer {
++    uint64_t* sink = nullptr;
++    std::chrono::steady_clock::time_point start;
++    CpTimer(bool on, uint64_t& total) {
++      if (on) sink = &total, start = std::chrono::steady_clock::now();
++    }
++    ~CpTimer() {
++      if (sink) *sink += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - start).count());
++    }
++  };
+ };
+ 
+ class NativeGraphicsSystem final : public rg::GraphicsSystem {

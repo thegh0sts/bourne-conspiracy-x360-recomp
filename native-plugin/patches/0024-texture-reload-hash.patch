@@ -1,0 +1,227 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 3f4f945..6864200 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -256,12 +256,13 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+         }
+         ReportFrameTimes(frames_ - last_.frames);
+         REXLOG_INFO("gfx native: textures {} held, {:.0f} MB (budget {}); over {} frames: {} loaded ({} of them "
+-                    "evicted earlier), {} reloaded after CPU writes, {} evicted",
++                    "evicted earlier), {} reloaded after CPU writes ({} more kept: written but unchanged), {} evicted",
+                     renderer_->texture_count(), renderer_->texture_bytes() / 1048576.0,
+                     renderer_->texture_budget() ? fmt::format("{:.0f} MB", renderer_->texture_budget() / 1048576.0)
+                                                 : std::string("none, evicted by age"),
+                     frames_ - last_.frames, st.texture_loads - last_.texture_loads,
+                     st.texture_loads_evicted - last_.texture_loads_evicted, st.texture_reloads - last_.texture_reloads,
++                    st.texture_reloads_skipped - last_.texture_reloads_skipped,
+                     st.texture_evictions - last_.texture_evictions);
+         RequestHostReport(now);
+       }
+@@ -279,6 +280,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       last_.index_bytes_converted = st.index_bytes_converted, last_.index_expanded = st.index_expanded;
+       last_.texture_loads = st.texture_loads, last_.texture_loads_evicted = st.texture_loads_evicted;
+       last_.texture_reloads = st.texture_reloads, last_.texture_evictions = st.texture_evictions;
++      last_.texture_reloads_skipped = st.texture_reloads_skipped;
+       renderer_->SavePipelineCache();  // runs are often killed rather than shut down
+       std::copy(std::begin(st.gpu_ns), std::end(st.gpu_ns), last_.gpu_ns);
+       std::copy(std::begin(st.draw_phase_ns), std::end(st.draw_phase_ns), last_.draw_phase_ns);
+@@ -1075,6 +1077,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+     uint64_t sampler_memo_hits = 0, set_binds_skipped = 0, index_bytes_converted = 0, index_expanded = 0;
+     uint64_t texture_loads = 0, texture_loads_evicted = 0, texture_reloads = 0, texture_evictions = 0;
++    uint64_t texture_reloads_skipped = 0;
+   } last_;
+   // Frame-time diagnostics (issue #12): the interval between swaps on this thread, what each slow one did (a "gfx
+   // hitch" line, at most kHitchLines per stats interval), and a histogram per interval. BOTS_HITCH_MS sets the
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 94b49ba..b51e068 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -185,6 +185,7 @@ class Renderer : public Pm4Sink {
+     // answered by the memo (texture_memo_).
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+     uint64_t sampler_memo_hits = 0, set_binds_skipped = 0;  // qos (0092)
++    uint64_t texture_reloads_skipped = 0;  // qos (0095): dirty textures kept, their bytes unchanged
+     uint64_t index_bytes_converted = 0, index_expanded = 0;  // qos (0094): DMA index bytes converted; draws whose indices were rebuilt on the CPU (quads, fans, other)
+     uint64_t pending_draws = 0;  // live: skipped while their shaders or pipeline were still being made
+     // Live: draws dropped because their pipeline failed to build (the driver refused it; every frame it's drawn).
+@@ -319,6 +320,9 @@ class Renderer : public Pm4Sink {
+     // The controller-button atlas (B-105): reloaded when the prompt device changes (PromptState generation).
+     bool prompt_atlas = false;
+     uint32_t prompt_generation = 0;
++    // qos (0095): XXH3 of the guest bytes in `ranges` when loaded (0: none). A dirty texture whose bytes hash the
++    // same is kept (the write was elsewhere on its pages, or the same data again) instead of reloaded.
++    uint64_t content_hash = 0;
+   };
+   using TextureCacheKey = std::array<uint32_t, 5>;
+   // Filters (mag, min, mip), clamp modes (x, y, z), border colour, mip range, anisotropy.
+@@ -1007,6 +1011,12 @@ class Renderer : public Pm4Sink {
+   void InitTexturePool();
+   size_t TexturePoolBlocks() const;  // made up front and kept: half the budget, 1-8 blocks
+   void LoadGuestTexture(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch, GuestTexture& texture);
++  // qos (0095): content hashes (BOTS_GFX_RELOAD_HASH=0: off), and 3D tiled textures copied in runs where a check
++  // of that shape showed every run contiguous (by the shape's key; false: block by block).
++  uint64_t GuestRangesHash(const GuestTexture& texture) const;
++  bool KeepUnchangedTexture(GuestTexture& texture);
++  std::map<std::array<uint32_t, 10>, bool> tiled3d_runs_ok_;
++  uint32_t reload_skip_lines_ = 0, reload_lines_ = 0;
+   void DropGuestTexture(GuestTexture& texture);
+   std::unordered_map<SamplerKey, VkSampler, WordsHash> samplers_;
+   bool trace_textures_ = false;
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index 3aff7b9..ed4ebcd 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -11,10 +11,12 @@
+ #include <vector>
+ 
+ #include <fmt/format.h>
++#include <xxhash.h>
+ 
+ #include <rex/graphics/pipeline/texture/conversion.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
++#include <rex/logging.h>
+ #include <rex/memory/utils.h>
+ 
+ #include "renderer.h"
+@@ -272,21 +274,69 @@ VkImageView Renderer::TextureView(const rg::xenos::xe_gpu_texture_fetch_t& fetch
+     ++stats_.texture_loads;
+     if (!evicted_keys_.empty() && evicted_keys_.erase(key)) ++stats_.texture_loads_evicted;
+     LoadGuestTexture(fetch, *slot);
++  } else if (slot->dirty && KeepUnchangedTexture(*slot)) {
++    ++stats_.texture_reloads_skipped;
+   } else if (slot->dirty || (slot->prompt_atlas && bots::FindPromptState() &&
+                               slot->prompt_generation != bots::FindPromptState()->generation.load())) {
+     DropGuestTexture(*slot);  // earlier draws of this submission still sample the old contents
+     *slot = GuestTexture{};
+     LoadGuestTexture(fetch, *slot);
+     ++stats_.texture_reloads;
++    if (reload_lines_ < 8) {
++      ++reload_lines_;
++      uint32_t width_m1, height_m1, depth_m1, base_page, mip_page, mip_min, mip_max;
++      rg::texture_util::GetSubresourcesFromFetchConstant(fetch, &width_m1, &height_m1, &depth_m1, &base_page,
++                                                         &mip_page, &mip_min, &mip_max);
++      REXLOG_INFO("gfx native: texture {:08X} {}x{}x{} dim {} format {}{} reloaded after a CPU write (contents "
++                  "changed)",
++                  base_page << 12, width_m1 + 1, height_m1 + 1, depth_m1 + 1, uint32_t(fetch.dimension),
++                  uint32_t(fetch.format), fetch.tiled ? " tiled" : "");
++    }
+   }
+   GuestTexture& texture = *slot;
+   texture.last_used = frame_;
+-  texture_view_texture_ = texture.prompt_atlas || texture.pad_sheet ? nullptr : &texture;
++  texture_view_texture_ = texture.prompt_atlas ? nullptr : &texture;
+   if (!texture.image.image) return VK_NULL_HANDLE;
+   host_swizzle = HostSwizzle(fetch.swizzle, texture.host_format_swizzle);
+   return SwizzledView(texture.image, host_swizzle, is_signed);
+ }
+ 
++uint64_t Renderer::GuestRangesHash(const GuestTexture& texture) const {
++  static const bool on = [] {
++    const char* v = std::getenv("BOTS_GFX_RELOAD_HASH");
++    return !(v && *v == '0');
++  }();
++  if (!on) return 0;
++  uint64_t hash = 0x51ED270B27D4EB4Full;
++  bool any = false;
++  for (const auto& [start, end] : texture.ranges) {
++    if (end <= start) continue;
++    const uint8_t* bytes = memory_(start);
++    if (!bytes) return 0;
++    hash = XXH3_64bits_withSeed(bytes, end - start, hash);
++    any = true;
++  }
++  return any && hash ? hash : 0;
++}
++
++// A dirty texture whose guest bytes are what it was loaded from: re-arm the write watch and keep the image.
++bool Renderer::KeepUnchangedTexture(GuestTexture& texture) {
++  if (!texture.content_hash || texture.prompt_atlas || !texture.image.image) return false;
++  if (GuestRangesHash(texture) != texture.content_hash) return false;
++  texture.dirty = false;
++  if (tracker_) {
++    for (const auto& [start, end] : texture.ranges) {
++      if (end > start) tracker_->Request(start, end - start);
++    }
++  }
++  if (reload_skip_lines_ < 8) {
++    ++reload_skip_lines_;
++    REXLOG_INFO("gfx native: texture {:08X} ({} bytes) written by the CPU but unchanged: kept, not reloaded",
++                texture.ranges[0].first, texture.ranges[0].second - texture.ranges[0].first);
++  }
++  return true;
++}
++
+ // LoadTexture, timed (TakeTextureLoadMaxUs) and counted in texture_bytes_.
+ void Renderer::LoadGuestTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, GuestTexture& texture) {
+   const auto start = std::chrono::steady_clock::now();
+@@ -304,6 +354,7 @@ void Renderer::LoadGuestTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch,
+                     width_m1 + 1, height_m1 + 1, depth_m1 + 1, uint32_t(fetch.format), mip_min, mip_max,
+                     fetch.tiled ? " tiled" : "", texture_load_create_us_ / 1000.0, texture_load_request_us_ / 1000.0);
+   }
++  texture.content_hash = texture.prompt_atlas ? 0 : GuestRangesHash(texture);
+   if (texture.image.allocation) {
+     VmaAllocationInfo info;
+     vmaGetAllocationInfo(allocator_, texture.image.allocation, &info);
+@@ -508,6 +559,44 @@ void Renderer::LoadTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, Guest
+     uint8_t* out = decode == BcDecode::kNone ? staging : blocks.data();
+     const bool runs = bpb == 1u << bpb_log2;
+     const uint32_t run_blocks = bpb_log2 ? std::max(16u >> bpb_log2, 1u) : 8;
++    // qos (0095): 3D tiled levels in runs too, once this shape's every run was checked contiguous (the check walks
++    // the level block by block, as the copy did before; BOTS_GFX_3D_RUNS=0: always block by block).
++    bool runs_3d = false;
++    if (is_3d && fetch.tiled && runs) {
++      static const bool allow = [] {
++        const char* v = std::getenv("BOTS_GFX_3D_RUNS");
++        return !(v && *v == '0');
++      }();
++      const std::array<uint32_t, 10> shape{pitch_blocks, guest.z_slice_stride_block_rows, bpb_log2, blocks_x,
++                                           blocks_y, level_depth, offset_x, offset_y, offset_z, run_blocks};
++      if (allow) {
++        auto [it, fresh] = tiled3d_runs_ok_.try_emplace(shape, true);
++        if (fresh) {
++          bool ok = true;
++          for (uint32_t z = 0; ok && z < level_depth; ++z) {
++            for (uint32_t y = 0; ok && y < blocks_y; ++y) {
++              const int32_t by = int32_t(y + offset_y), bz = int32_t(z + offset_z);
++              for (uint32_t x = 0; ok && x < blocks_x;) {
++                const uint32_t bx = x + offset_x;
++                const uint32_t n = std::min(run_blocks - (bx & (run_blocks - 1)), blocks_x - x);
++                const int32_t at = rg::texture_util::GetTiledOffset3D(int32_t(bx), by, bz, pitch_blocks,
++                                                                      guest.z_slice_stride_block_rows, bpb_log2);
++                for (uint32_t k = 1; ok && k < n; ++k) {
++                  ok = rg::texture_util::GetTiledOffset3D(int32_t(bx + k), by, bz, pitch_blocks,
++                                                          guest.z_slice_stride_block_rows,
++                                                          bpb_log2) == at + int32_t(k * bpb);
++                }
++                x += n;
++              }
++            }
++          }
++          it->second = ok;
++          REXLOG_INFO("gfx native: 3D tiled {}x{}x{} blocks of {} bytes: runs of {} {}", blocks_x, blocks_y,
++                      level_depth, bpb, run_blocks, ok ? "contiguous, copied in runs" : "not contiguous, block by block");
++        }
++        runs_3d = it->second;
++      }
++    }
+     for (uint32_t layer = 0; layer < layers; ++layer) {
+       const uint8_t* source = memory_(level_address + layer * guest.array_slice_stride_bytes);
+       for (uint32_t z = 0; z < level_depth; ++z) {
+@@ -518,11 +607,13 @@ void Renderer::LoadTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, Guest
+                                int32_t(offset_x * bpb);
+             rg::texture_conversion::CopySwapBlock(fetch.endianness, out, source + at, size_t(blocks_x) * bpb);
+             out += size_t(blocks_x) * bpb;
+-          } else if (!is_3d && runs) {
++          } else if (runs && (!is_3d || runs_3d)) {
+             for (uint32_t x = 0; x < blocks_x;) {
+               const uint32_t bx = x + offset_x;
+               const uint32_t n = std::min(run_blocks - (bx & (run_blocks - 1)), blocks_x - x);
+-              const int32_t at = rg::texture_util::GetTiledOffset2D(int32_t(bx), by, pitch_blocks, bpb_log2);
++              const int32_t at = is_3d ? rg::texture_util::GetTiledOffset3D(int32_t(bx), by, bz, pitch_blocks,
++                                                                            guest.z_slice_stride_block_rows, bpb_log2)
++                                       : rg::texture_util::GetTiledOffset2D(int32_t(bx), by, pitch_blocks, bpb_log2);
+               rg::texture_conversion::CopySwapBlock(fetch.endianness, out, source + at, size_t(n) * bpb);
+               out += size_t(n) * bpb, x += n;
+             }

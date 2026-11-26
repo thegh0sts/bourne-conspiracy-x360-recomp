@@ -595,6 +595,31 @@ TEXT = {
         'Sensibilité de visée (% de la souris)',
         'Sensibilidad al apuntar (% del ratón)',
         'Sensibilità di mira (% del mouse)'),
+    'Stick camera smoothing (%)': (
+        'Kameraglättung des Sticks (%)',
+        'Lissage de la caméra au stick (%)',
+        'Suavizado de cámara con stick (%)',
+        'Smussamento della telecamera con lo stick (%)'),
+    "Stick turn speed now also raises the camera's top turn rate (full stick). Smoothing: how much of the game's camera easing stays (lower is more responsive). No turn acceleration: Camera tab, Linear stick turning.": (
+        'Die Stick-Drehgeschwindigkeit erhöht jetzt auch die höchste Drehrate der Kamera (Stick ganz ausgelenkt). Glättung: wie viel der Kameraverzögerung des Spiels bleibt (weniger reagiert direkter). Ohne Drehbeschleunigung: Reiter Kamera, Lineares Stick-Drehen.',
+        "La vitesse de rotation du stick augmente désormais aussi la vitesse maximale de la caméra (stick à fond). Lissage : la part de l'amortissement de caméra du jeu conservée (moins = plus réactif). Sans accélération de rotation : onglet Caméra, Rotation linéaire au stick.",
+        'La velocidad de giro del stick ahora también sube la velocidad máxima de la cámara (stick a fondo). Suavizado: cuánto del suavizado de cámara del juego se mantiene (menos es más directo). Sin aceleración de giro: pestaña Cámara, Giro lineal con el stick.',
+        'La velocità di rotazione dello stick ora aumenta anche la velocità massima della telecamera (stick al massimo). Smussamento: quanto dello smussamento della telecamera del gioco resta (meno è più reattivo). Senza accelerazione di rotazione: scheda Telecamera, Rotazione lineare con lo stick.'),
+    'Custom aiming reticle size': (
+        'Eigene Fadenkreuzgröße',
+        'Taille du réticule personnalisée',
+        'Tamaño de retícula personalizado',
+        'Dimensione del reticolo personalizzata'),
+    'Aiming reticle size (%)': (
+        'Größe des Fadenkreuzes (%)',
+        'Taille du réticule (%)',
+        'Tamaño de la retícula (%)',
+        'Dimensione del reticolo (%)'),
+    'reticle size not changed: {error}': (
+        'Fadenkreuzgröße nicht geändert: {error}',
+        'taille du réticule inchangée : {error}',
+        'tamaño de la retícula sin cambiar: {error}',
+        'dimensione del reticolo non cambiata: {error}'),
     'Mouse camera smoothing (%)': (
         'Kameraglättung der Maus (%)',
         'Lissage de la caméra à la souris (%)',

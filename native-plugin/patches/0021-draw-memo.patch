@@ -1,0 +1,220 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index cf384e1..d6f3654 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -204,6 +204,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+           }
+           REXLOG_INFO("gfx native: draw CPU ms per frame:{} index buffers {:.0f} reused ({:.0f} kept from earlier "
+                       "frames), {:.0f} converted, {:.0f} heap requests, {} heap resets, {:.0f} texture bindings remembered, "
++                      "{:.0f} samplers remembered, {:.0f} set binds skipped, "
+                       "{:.1f} invalidations",
+                       phases, double(st.index_reuses - last_.index_reuses) / n,
+                       double(st.index_heap_hits - last_.index_heap_hits) / n,
+@@ -211,6 +212,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+                       double(st.index_heap_requests - last_.index_heap_requests) / n,
+                       st.index_heap_resets - last_.index_heap_resets,
+                       double(st.texture_memo_hits - last_.texture_memo_hits) / n,
++                      double(st.sampler_memo_hits - last_.sampler_memo_hits) / n,
++                      double(st.set_binds_skipped - last_.set_binds_skipped) / n,
+                       double(st.invalidations - last_.invalidations) / n);
+         }
+         if (renderer_->gpu_timing()) {
+@@ -267,6 +270,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       last_.index_reuses = st.index_reuses, last_.index_converts = st.index_converts;
+       last_.index_heap_hits = st.index_heap_hits, last_.index_heap_resets = st.index_heap_resets;
+       last_.texture_memo_hits = st.texture_memo_hits, last_.index_heap_requests = st.index_heap_requests;
++      last_.sampler_memo_hits = st.sampler_memo_hits, last_.set_binds_skipped = st.set_binds_skipped;
+       last_.invalidations = st.invalidations;
+       last_.texture_loads = st.texture_loads, last_.texture_loads_evicted = st.texture_loads_evicted;
+       last_.texture_reloads = st.texture_reloads, last_.texture_evictions = st.texture_evictions;
+@@ -1064,6 +1068,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     uint64_t render_passes = 0, transfers = 0, barriers = 0, pending_draws = 0, gpu_ns[7] = {}, draw_phase_ns[12] = {};
+     uint64_t index_reuses = 0, index_converts = 0, invalidations = 0;
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
++    uint64_t sampler_memo_hits = 0, set_binds_skipped = 0;
+     uint64_t texture_loads = 0, texture_loads_evicted = 0, texture_reloads = 0, texture_evictions = 0;
+   } last_;
+   // Frame-time diagnostics (issue #12): the interval between swaps on this thread, what each slow one did (a "gfx
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index e6197b6..bb9d3d4 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -242,6 +242,7 @@ bool Renderer::InitDrawing() {
+   draw_profile_ = std::getenv("BOTS_DRAW_PROFILE") && *std::getenv("BOTS_DRAW_PROFILE") == '1';
+   if (const char* v = std::getenv("BOTS_GFX_PASS_MERGE"); v && *v) pass_merge_ = *v == '1';
+   if (const char* v = std::getenv("BOTS_GFX_LAZY_RAW_DEPTH"); v && *v) lazy_raw_depth_ = *v == '1';
++  if (const char* v = std::getenv("BOTS_GFX_DRAW_MEMO"); v && *v == '0') draw_memo_ = false;
+   if (const char* v = std::getenv("BOTS_GFX_MAX_ANISO"); v && *v) max_anisotropy_ = uint32_t(std::atoi(v));
+   if (const char* v = std::getenv("BOTS_GFX_FORCE_ANISO"); v && *v) force_anisotropy_ = uint32_t(std::atoi(v));
+   if (force_anisotropy_) REXLOG_INFO("gfx native: anisotropic filtering at least {}x on 3D textures", force_anisotropy_);
+@@ -1554,9 +1555,48 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     if ((views.empty() && samplers.empty()) || samplers.size() > 32) return;
+     const size_t first = image_count;
+     for (VkImageView view : views) images[image_count++] = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
++    uint32_t slot = 0;
+     for (const auto& binding : samplers) {
+-      images[image_count++] = {GetSampler(regs.GetTextureFetch(binding.fetch_constant), binding), VK_NULL_HANDLE,
+-                               VK_IMAGE_LAYOUT_GENERAL};
++      const auto fetch = regs.GetTextureFetch(binding.fetch_constant);
++      VkSampler sampler;
++      if (draw_memo_ && !trace_textures_) {
++        // qos: the same fetch constant and filters as this slot's last draw: its sampler (samplers live until
++        // shutdown).
++        SamplerMemo& m = sampler_memo_[stage][slot];
++        const uint32_t filters = uint32_t(binding.mag_filter) | uint32_t(binding.min_filter) << 8 |
++                                 uint32_t(binding.mip_filter) << 16 | uint32_t(binding.aniso_filter) << 24;
++        if (m.sampler && m.filters == filters && std::memcmp(m.words, &fetch, sizeof(m.words)) == 0) {
++          sampler = m.sampler;
++          ++stats_.sampler_memo_hits;
++        } else {
++          sampler = GetSampler(fetch, binding);
++          std::memcpy(m.words, &fetch, sizeof(m.words));
++          m.filters = filters, m.sampler = sampler;
++        }
++      } else {
++        sampler = GetSampler(fetch, binding);
++      }
++      images[image_count++] = {sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL};
++      ++slot;
++    }
++    // qos: the raw handles, compared with this stage's last set without building the string key.
++    const size_t handle_count = image_count - first;
++    uint64_t handles[96];
++    for (size_t i = 0; i < handle_count; ++i) {
++      const VkDescriptorImageInfo& info = images[first + i];
++      handles[i] = info.imageView ? uint64_t(info.imageView) : uint64_t(info.sampler);
++    }
++    auto remember = [&](VkDescriptorSet s) {
++      set_memo_[stage] = s, set_memo_epoch_[stage] = texture_sets_epoch_;
++      set_memo_layout_[stage] = set_layout, set_memo_count_[stage] = handle_count;
++      std::memcpy(set_memo_handles_[stage], handles, handle_count * sizeof(uint64_t));
++    };
++    if (draw_memo_ && set_memo_epoch_[stage] == texture_sets_epoch_ && set_memo_layout_[stage] == set_layout &&
++        set_memo_count_[stage] == handle_count &&
++        std::memcmp(set_memo_handles_[stage], handles, handle_count * sizeof(uint64_t)) == 0) {
++      set = set_memo_[stage];
++      image_count = first;
++      return;
+     }
+     set_key_.assign(reinterpret_cast<const char*>(&set_layout), sizeof(set_layout));
+     for (size_t i = first; i < image_count; ++i) {
+@@ -1564,7 +1604,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       set_key_.append(reinterpret_cast<const char*>(&handle), sizeof(handle));
+     }
+     // qos: the same as this stage's last draw (most consecutive draws of a material): no hash lookup.
+-    if (set_memo_epoch_[stage] == texture_sets_epoch_ && set_memo_key_[stage] == set_key_) {
++    if (!draw_memo_ && set_memo_epoch_[stage] == texture_sets_epoch_ && set_memo_key_[stage] == set_key_) {
+       set = set_memo_[stage];
+       image_count = first;
+       return;
+@@ -1572,13 +1612,15 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     if (const auto it = texture_sets_.find(std::string_view(set_key_)); it != texture_sets_.end()) {
+       set = it->second;
+       image_count = first;
+-      set_memo_key_[stage] = set_key_, set_memo_[stage] = set, set_memo_epoch_[stage] = texture_sets_epoch_;
++      set_memo_key_[stage] = set_key_;
++      remember(set);
+       return;
+     }
+     set = AllocateSet(set_layout);
+     if (!set) return;
+     texture_sets_.emplace(set_key_, set);
+-    set_memo_key_[stage] = set_key_, set_memo_[stage] = set, set_memo_epoch_[stage] = texture_sets_epoch_;
++    set_memo_key_[stage] = set_key_;
++    remember(set);
+     if (!views.empty()) {
+       writes[write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, uint32_t(views.size()),
+                                VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, images + first, nullptr, nullptr};
+@@ -1801,11 +1843,18 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   }
+   vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout->layout, 0, 2, sets,
+                               Translator::kConstantBufferCount, constant_offsets);
++  // qos: sets 2 and 3 stay bound across draws with the same layout (binding 0-1 again with it doesn't disturb
++  // them); dynamic_valid_ is false when anything else bound since (present, transfers, a new command buffer).
++  const bool same_layout = draw_memo_ && dynamic_valid_ && bound_set_layout_ == layout->layout;
+   for (uint32_t i = 2; i < 4; ++i) {
+-    if (sets[i]) {
++    if (sets[i] && !(same_layout && bound_texture_sets_[i - 2] == sets[i])) {
+       vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout->layout, i, 1, &sets[i], 0, nullptr);
++    } else if (sets[i]) {
++      ++stats_.set_binds_skipped;
+     }
+   }
++  bound_set_layout_ = layout->layout;
++  bound_texture_sets_[0] = sets[2], bound_texture_sets_[1] = sets[3];
+ 
+   profile.Mark(kPhaseRecord);
+   // Dynamic state (VulkanCommandProcessor::UpdateDynamicState).
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index abeb3a3..b604ab2 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -1174,7 +1174,7 @@ uint32_t Renderer::TiledResolveBase(uint32_t address, uint32_t format, uint32_t
+ 
+ void Renderer::OnDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, const ShaderLoad& ps, const Draw& draw) {
+   if (!ok_) return;
+-  ScopedMicros time(stats_.draw_us);
++  ScopedNanos time(stats_.draw_ns, stats_.draw_us);
+   if (capture_frame_) {
+     // Counted but not drawn: an occlusion query over it is then inexact and answers "visible", as the hook does for
+     // suppressed frames, so the next capture frame's culling still draws the trees.
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 6c56b82..6400e0b 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -183,6 +183,7 @@ class Renderer : public Pm4Sink {
+     // qos: of those, bound from the index heap (kept across frames), and the heap's resets; texture bindings
+     // answered by the memo (texture_memo_).
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
++    uint64_t sampler_memo_hits = 0, set_binds_skipped = 0;  // qos (0092)
+     uint64_t pending_draws = 0;  // live: skipped while their shaders or pipeline were still being made
+     // Live: draws dropped because their pipeline failed to build (the driver refused it; every frame it's drawn).
+     uint64_t failed_pipeline_draws = 0;
+@@ -199,6 +200,7 @@ class Renderer : public Pm4Sink {
+     // Profiling (P5): submits, and microseconds blocked on the GPU fence, inside OnDraw (recording, including
+     // texture loads and any flush it triggers) and inside LoadTexture (untile + upload).
+     uint64_t flushes = 0, wait_us = 0, draw_us = 0, texture_us = 0;
++    uint64_t draw_ns = 0;  // qos: draw_us summed in nanoseconds (whole microseconds per draw lost ~a third)
+     uint64_t gpu_ns[7] = {};  // BOTS_GPU_TIMING=1: GPU time per GpuCat
+   };
+   const Stats& stats() const { return stats_; }
+@@ -234,6 +236,17 @@ class Renderer : public Pm4Sink {
+ 
+  private:
+   // Adds the scope's duration in microseconds to `total`.
++  // qos: nanoseconds summed, `us` kept as their whole microseconds.
++  struct ScopedNanos {
++    ScopedNanos(uint64_t& ns, uint64_t& us) : ns(ns), us(us), start(std::chrono::steady_clock::now()) {}
++    ~ScopedNanos() {
++      ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
++                         .count());
++      us = ns / 1000;
++    }
++    uint64_t &ns, &us;
++    std::chrono::steady_clock::time_point start;
++  };
+   struct ScopedMicros {
+     explicit ScopedMicros(uint64_t& total) : total(total), start(std::chrono::steady_clock::now()) {}
+     ~ScopedMicros() {
+@@ -751,6 +764,21 @@ class Renderer : public Pm4Sink {
+   std::string set_memo_key_[2];
+   VkDescriptorSet set_memo_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   uint64_t set_memo_epoch_[2] = {0, 0}, texture_sets_epoch_ = 1;
++  // qos (patch 0092, BOTS_GFX_DRAW_MEMO=0 turns these off): per stage, the last set's raw handles (compared directly,
++  // without building set_key_), each sampler slot's last fetch constant and filters -> sampler, and the texture sets
++  // bound at 2 and 3 (not bound again while the layout and sets are the same and nothing else bound since).
++  bool draw_memo_ = true;
++  uint64_t set_memo_handles_[2][96];
++  size_t set_memo_count_[2] = {0, 0};
++  VkDescriptorSetLayout set_memo_layout_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
++  struct SamplerMemo {
++    uint32_t words[6];
++    uint32_t filters = UINT32_MAX;  // the binding's mag | min << 8 | mip << 16 | aniso << 24
++    VkSampler sampler = VK_NULL_HANDLE;
++  };
++  SamplerMemo sampler_memo_[2][32];
++  VkPipelineLayout bound_set_layout_ = VK_NULL_HANDLE;
++  VkDescriptorSet bound_texture_sets_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   // qos: each texture binding's last result, per stage and binding position, for a draw whose fetch constant (all six
+   // words), signedness and dimension match: skips the resolve-destination and texture-cache lookups and the swizzled
+   // view's map. Only guest textures (and their null fallback), never resolve destinations (crops, raw depth) or the

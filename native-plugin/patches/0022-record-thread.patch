@@ -1,0 +1,908 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index d6f3654..d931395 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -238,17 +238,19 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+           const double wall = std::chrono::duration<double, std::milli>(now - last_.time).count() / n;
+           const double idle = double(idle_us_ - last_idle_us_) / 1000.0 / n;
+           const double ib = cms(cp_.ib_ns, last_cp_.ib_ns), swap = cms(cp_.swap_ns, last_cp_.swap_ns);
++          cp_.rec_packets = renderer_->recorder_packets(), cp_.rec_drains = renderer_->recorder_drains();
+           REXLOG_INFO("gfx native: CP thread ms per frame: command buffers {:.2f} (IssueDraw {:.2f}, renderer draws "
+                       "{:.2f}, shader loads {:.2f}), swap {:.2f}, rest {:.2f} (wall - idle - those); {:.0f} shader "
+                       "loads ({:.0f} copied), {:.0f} register writes, {:.0f} constant registers in ranges, {:.0f} "
+-                      "indirect buffers",
++                      "indirect buffers; recorder {:.0f} packets, {:.0f} waits",
+                       ib, cms(cp_.issue_ns, last_cp_.issue_ns), double(st.draw_us - last_.draw_us) / 1000.0 / n,
+                       cms(cp_.shader_ns, last_cp_.shader_ns), swap, wall - idle - ib - swap,
+                       double(cp_.shader_loads - last_cp_.shader_loads) / n,
+                       double(cp_.shader_copies - last_cp_.shader_copies) / n,
+                       double(cp_.reg_writes - last_cp_.reg_writes) / n,
+                       double(cp_.const_regs - last_cp_.const_regs) / n,
+-                      double(cp_.ibs - last_cp_.ibs) / n);
++                      double(cp_.ibs - last_cp_.ibs) / n, double(cp_.rec_packets - last_cp_.rec_packets) / n,
++                      double(cp_.rec_drains - last_cp_.rec_drains) / n);
+         }
+         ReportFrameTimes(frames_ - last_.frames);
+         REXLOG_INFO("gfx native: textures {} held, {:.0f} MB (budget {}); over {} frames: {} loaded ({} of them "
+@@ -1098,6 +1100,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   struct CpProfile {
+     uint64_t ib_ns = 0, issue_ns = 0, shader_ns = 0, swap_ns = 0;
+     uint64_t shader_loads = 0, shader_copies = 0, reg_writes = 0, const_regs = 0, ibs = 0;
++    uint64_t rec_packets = 0, rec_drains = 0;  // the renderer's recorder (0093), copied at each report
+   };
+   CpProfile cp_, last_cp_;
+   const bool cp_profile_ = [] {
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index bb9d3d4..8dfec5d 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -243,6 +243,10 @@ bool Renderer::InitDrawing() {
+   if (const char* v = std::getenv("BOTS_GFX_PASS_MERGE"); v && *v) pass_merge_ = *v == '1';
+   if (const char* v = std::getenv("BOTS_GFX_LAZY_RAW_DEPTH"); v && *v) lazy_raw_depth_ = *v == '1';
+   if (const char* v = std::getenv("BOTS_GFX_DRAW_MEMO"); v && *v == '0') draw_memo_ = false;
++  if (const char* v = std::getenv("BOTS_GFX_RECORD_THREAD"); v && *v == '1') {
++    recorder_ = std::make_unique<Recorder>();
++    REXLOG_INFO("gfx native: draws recorded on a worker thread (BOTS_GFX_RECORD_THREAD=1)");
++  }
+   if (const char* v = std::getenv("BOTS_GFX_MAX_ANISO"); v && *v) max_anisotropy_ = uint32_t(std::atoi(v));
+   if (const char* v = std::getenv("BOTS_GFX_FORCE_ANISO"); v && *v) force_anisotropy_ = uint32_t(std::atoi(v));
+   if (force_anisotropy_) REXLOG_INFO("gfx native: anisotropic filtering at least {}x on 3D textures", force_anisotropy_);
+@@ -389,7 +393,7 @@ bool Renderer::InitDrawing() {
+   const VkClearColorValue black{{fill, fill, fill, fill}};
+   for (const Image* image : {&null_2d_array_, &null_3d_, &null_cube_}) {
+     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, VK_REMAINING_ARRAY_LAYERS};
+-    vk_.vkCmdClearColorImage(cmd_, image->image, VK_IMAGE_LAYOUT_GENERAL, &black, 1, &range);
++    vk_.vkCmdClearColorImage(Cmd(), image->image, VK_IMAGE_LAYOUT_GENERAL, &black, 1, &range);
+   }
+   Barrier();
+   return InitTransfers();
+@@ -1638,7 +1642,32 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     ++stats_.skipped_draws;
+     return;
+   }
+-  if (write_count) vk_.vkUpdateDescriptorSets(device_->device(), write_count, writes, 0, nullptr);
++  if (write_count && recorder_) {
++    // qos (0093): updated on the worker, before the binds it records after this (a set must not be updated after a
++    // command buffer being recorded binds it).
++    struct Write {
++      VkDescriptorSet set;
++      uint32_t binding, count;
++      VkDescriptorType type;
++      uint32_t first;
++    };
++    std::array<Write, 4> list{};
++    for (uint32_t i = 0; i < write_count; ++i) {
++      list[i] = {writes[i].dstSet, writes[i].dstBinding, writes[i].descriptorCount, writes[i].descriptorType,
++                 uint32_t(writes[i].pImageInfo - images)};
++    }
++    std::vector<VkDescriptorImageInfo> infos(images, images + image_count);
++    Rec([this, list, n = write_count, infos = std::move(infos)](VkCommandBuffer) {
++      VkWriteDescriptorSet w[4];
++      for (uint32_t i = 0; i < n; ++i) {
++        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, list[i].set, list[i].binding, 0, list[i].count,
++                list[i].type, infos.data() + list[i].first, nullptr, nullptr};
++      }
++      vk_.vkUpdateDescriptorSets(device_->device(), n, w, 0, nullptr);
++    });
++  } else if (write_count) {
++    vk_.vkUpdateDescriptorSets(device_->device(), write_count, writes, 0, nullptr);
++  }
+ 
+   profile.Mark(kPhasePipeline);
+   // Pipeline (VulkanPipelineCache::GetCurrentStateDescription + EnsurePipelineCreated, simplified).
+@@ -1837,22 +1866,36 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     ++stats_.render_passes;
+   }
+ 
+-  if (pipeline != bound_pipeline_) {
+-    vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+-    bound_pipeline_ = pipeline;
+-  }
+-  vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout->layout, 0, 2, sets,
+-                              Translator::kConstantBufferCount, constant_offsets);
++  // qos (0093): one packet for the binds (pipeline if changed, sets 0-1 with their offsets, sets 2-3 if changed).
++  const bool bind_pipeline = pipeline != bound_pipeline_;
++  bound_pipeline_ = pipeline;
++  static_assert(Translator::kConstantBufferCount <= 8);
+   // qos: sets 2 and 3 stay bound across draws with the same layout (binding 0-1 again with it doesn't disturb
+   // them); dynamic_valid_ is false when anything else bound since (present, transfers, a new command buffer).
+   const bool same_layout = draw_memo_ && dynamic_valid_ && bound_set_layout_ == layout->layout;
++  uint32_t bind_mask = 0;
+   for (uint32_t i = 2; i < 4; ++i) {
+     if (sets[i] && !(same_layout && bound_texture_sets_[i - 2] == sets[i])) {
+-      vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout->layout, i, 1, &sets[i], 0, nullptr);
++      bind_mask |= 1u << i;
+     } else if (sets[i]) {
+       ++stats_.set_binds_skipped;
+     }
+   }
++  // qos (0093): the draw's commands go to the worker as one packet (DrawPacket::Record), handed over at the draw
++  // (or, if the draw is dropped after this, with the binds alone: bound_pipeline_ and the bound sets assume them).
++  DrawPacket packet;
++  packet.bind_pipeline = bind_pipeline, packet.pipeline = pipeline, packet.layout = layout->layout;
++  std::memcpy(packet.sets, sets, sizeof(packet.sets));
++  std::memcpy(packet.offsets.data(), constant_offsets, sizeof(constant_offsets));
++  packet.offset_count = Translator::kConstantBufferCount, packet.bind_mask = bind_mask;
++  struct BindsOnly {
++    Renderer* r;
++    DrawPacket* p;
++    bool armed = true;
++    ~BindsOnly() {
++      if (armed) r->Rec([r = r, p = *p](VkCommandBuffer cmd) { p.Record(r->vk_, cmd, false); });
++    }
++  } binds_only{this, &packet};
+   bound_set_layout_ = layout->layout;
+   bound_texture_sets_[0] = sets[2], bound_texture_sets_[1] = sets[3];
+ 
+@@ -1912,20 +1955,20 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                             ref_front.stencilwritemask, ref_back.stencilwritemask}};
+   const DynamicState* last = dynamic_valid_ ? &dynamic_ : nullptr;
+   auto changed = [&](auto member) { return !last || std::memcmp(&(last->*member), &(state.*member), sizeof(state.*member)); };
+-  if (changed(&DynamicState::viewport)) vk_.vkCmdSetViewport(cmd_, 0, 1, &state.viewport);
+-  if (changed(&DynamicState::scissor)) vk_.vkCmdSetScissor(cmd_, 0, 1, &state.scissor);
+-  if (changed(&DynamicState::bias)) vk_.vkCmdSetDepthBias(cmd_, state.bias[0], 0.0f, state.bias[1]);
+-  if (changed(&DynamicState::blend)) vk_.vkCmdSetBlendConstants(cmd_, state.blend);
++  // qos (0093): which dynamic states changed (bits 0-3: viewport, scissor, bias, blend; 4-9: stencil words), and
++  // one packet setting them.
++  uint32_t dyn_mask = 0;
++  if (changed(&DynamicState::viewport)) dyn_mask |= 1;
++  if (changed(&DynamicState::scissor)) dyn_mask |= 2;
++  if (changed(&DynamicState::bias)) dyn_mask |= 4;
++  if (changed(&DynamicState::blend)) dyn_mask |= 8;
+   if (changed(&DynamicState::stencil)) {
+-    const uint32_t* s = state.stencil;
+     const uint32_t* o = last ? last->stencil : nullptr;
+-    if (!o || s[0] != o[0]) vk_.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_BIT, s[0]);
+-    if (!o || s[1] != o[1]) vk_.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_BACK_BIT, s[1]);
+-    if (!o || s[2] != o[2]) vk_.vkCmdSetStencilCompareMask(cmd_, VK_STENCIL_FACE_FRONT_BIT, s[2]);
+-    if (!o || s[3] != o[3]) vk_.vkCmdSetStencilCompareMask(cmd_, VK_STENCIL_FACE_BACK_BIT, s[3]);
+-    if (!o || s[4] != o[4]) vk_.vkCmdSetStencilWriteMask(cmd_, VK_STENCIL_FACE_FRONT_BIT, s[4]);
+-    if (!o || s[5] != o[5]) vk_.vkCmdSetStencilWriteMask(cmd_, VK_STENCIL_FACE_BACK_BIT, s[5]);
++    for (uint32_t i = 0; i < 6; ++i) {
++      if (!o || state.stencil[i] != o[i]) dyn_mask |= 16u << i;
++    }
+   }
++  packet.dyn_mask = dyn_mask, packet.state = state;
+   dynamic_ = state, dynamic_valid_ = true;
+ 
+   if (gpu_draw_labels_) {
+@@ -2081,13 +2124,17 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                          (samples_x * samples_y > 1 ? 2u : 0u) | (rect ? 4u : 0u) | (indexed ? 8u : 0u),
+                      uint32_t(prim), host_count, streams, px);
+   }
+-  if (indexed) vk_.vkCmdBindIndexBuffer(cmd_, index_buffer ? index_buffer : ring_.buffer, index_offset, index_type);
+-  BeginDrawQuery();
+-  if (indexed) {
+-    vk_.vkCmdDrawIndexed(cmd_, host_count, 1, 0, 0, 0);
+-  } else {
+-    vk_.vkCmdDraw(cmd_, host_count, 1, 0, 0);
++  packet.indexed = indexed, packet.index_buffer = index_buffer ? index_buffer : ring_.buffer;
++  packet.index_offset = index_offset, packet.index_type = index_type, packet.count = host_count;
++  binds_only.armed = false;
++  if (!dynamic_valid_ || bound_pipeline_ != pipeline) {
++    // Something recorded since (debug captures between the state and the draw) bound its own: everything again.
++    packet.bind_pipeline = true, packet.dyn_mask = 0x3FF;
++    packet.bind_mask = (sets[2] ? 4u : 0u) | (sets[3] ? 8u : 0u);
++    bound_pipeline_ = pipeline, dynamic_valid_ = true;
+   }
++  BeginDrawQuery();
++  Rec([r = this, packet](VkCommandBuffer cmd) { packet.Record(r->vk_, cmd, true); });
+   EndDrawQuery();
+   ++stats_.draws;
+   for (Image* image : attachments.color) {
+@@ -2135,6 +2182,32 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   }
+ }
+ 
++void Renderer::DrawPacket::Record(const Api& vk, VkCommandBuffer cmd, bool draw) const {
++  if (bind_pipeline) vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
++  vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets, offset_count, offsets.data());
++  for (uint32_t i = 2; i < 4; ++i) {
++    if (bind_mask & (1u << i)) vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, i, 1, &sets[i], 0, nullptr);
++  }
++  if (!draw) return;
++  if (dyn_mask & 1) vk.vkCmdSetViewport(cmd, 0, 1, &state.viewport);
++  if (dyn_mask & 2) vk.vkCmdSetScissor(cmd, 0, 1, &state.scissor);
++  if (dyn_mask & 4) vk.vkCmdSetDepthBias(cmd, state.bias[0], 0.0f, state.bias[1]);
++  if (dyn_mask & 8) vk.vkCmdSetBlendConstants(cmd, state.blend);
++  const uint32_t* s = state.stencil;
++  if (dyn_mask & 16) vk.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, s[0]);
++  if (dyn_mask & 32) vk.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, s[1]);
++  if (dyn_mask & 64) vk.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_BIT, s[2]);
++  if (dyn_mask & 128) vk.vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_BACK_BIT, s[3]);
++  if (dyn_mask & 256) vk.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, s[4]);
++  if (dyn_mask & 512) vk.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, s[5]);
++  if (indexed) {
++    vk.vkCmdBindIndexBuffer(cmd, index_buffer, index_offset, index_type);
++    vk.vkCmdDrawIndexed(cmd, count, 1, 0, 0, 0);
++  } else {
++    vk.vkCmdDraw(cmd, count, 1, 0, 0);
++  }
++}
++
+ }  // namespace bots::gfx::vk
+ 
+ // Scene-feed draw dump (draw_dump.h).
+diff --git a/src/gfx/vk/hybrid_fill.cpp b/src/gfx/vk/hybrid_fill.cpp
+index c297920..764fd1d 100644
+--- a/src/gfx/vk/hybrid_fill.cpp
++++ b/src/gfx/vk/hybrid_fill.cpp
+@@ -411,7 +411,7 @@ void Renderer::PumpN1Uploads() {
+   BeginCommands(kGpuDraw);
+   EndRendering("n1 upload");
+   const auto t0 = std::chrono::steady_clock::now();
+-  const int32_t n = n1_upload(host->r, cmd_, stats_.flushes + 1, completed, uint32_t(host->load_ms * 1000), &st);
++  const int32_t n = n1_upload(host->r, Cmd(), stats_.flushes + 1, completed, uint32_t(host->load_ms * 1000), &st);
+   n1_note_.upload_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+   if (n < 0) REXLOG_WARN("hybrid n1: n1_upload failed: {}", n1_last_error());
+   NoteLoads(host, st, n1_note_);
+@@ -530,7 +530,7 @@ void Renderer::HoldN1Preload(void* h, bool may_flush) {
+       if (s.pending) completed = std::min(completed, s.serial - 1);
+     BeginCommands(kGpuDraw);
+     EndRendering("n1 preload hold");
+-    if (n1_upload(host->r, cmd_, stats_.flushes + 1, completed, 8000, &st) < 0) {
++    if (n1_upload(host->r, Cmd(), stats_.flushes + 1, completed, 8000, &st) < 0) {
+       REXLOG_WARN("hybrid n1: n1_upload failed: {}", n1_last_error());
+       break;
+     }
+@@ -901,7 +901,7 @@ bool Renderer::DrawSceneN1(Image& target, const HybridCamera& cam, const VkRect2
+   if (gpu_timing_) GpuLabel(kGpuDraw, "hybrid n1");
+   const auto t1 = std::chrono::steady_clock::now();
+   N1Stats st{};
+-  const int32_t rc = n1_record(host->r, cmd_, &t, &camera, host->instances.data(), uint32_t(host->instances.size()),
++  const int32_t rc = n1_record(host->r, Cmd(), &t, &camera, host->instances.data(), uint32_t(host->instances.size()),
+                                host->material_handles.data(), uint32_t(host->material_handles.size()),
+                                stats_.flushes + 1, completed, host->budget, &st);
+   const auto t2 = std::chrono::steady_clock::now();
+@@ -1320,8 +1320,8 @@ bool Renderer::DrawSceneDual(Image& target, const HybridCamera& cam, const VkRec
+   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   region.imageOffset = {area.offset.x, area.offset.y, 0};
+   region.imageExtent = {p.w, p.h, 1};
+-  vk_.vkCmdCopyImageToBuffer(cmd_, target.image, VK_IMAGE_LAYOUT_GENERAL, p.buffer[0], 1, &region);
+-  vk_.vkCmdCopyImageToBuffer(cmd_, image->image, VK_IMAGE_LAYOUT_GENERAL, p.buffer[1], 1, &region);
++  vk_.vkCmdCopyImageToBuffer(Cmd(), target.image, VK_IMAGE_LAYOUT_GENERAL, p.buffer[0], 1, &region);
++  vk_.vkCmdCopyImageToBuffer(Cmd(), image->image, VK_IMAGE_LAYOUT_GENERAL, p.buffer[1], 1, &region);
+   // B-313: the port's god-rays mask (8-bit) and ray texture (8888), 128x128 each, from its latest resolves.
+   for (Image* g : {god_mask_, god_rays_}) {
+     if (!g || g->width != 128 || g->height != 128 || (g->format != VK_FORMAT_R8_UNORM && g->format != VK_FORMAT_R8G8B8A8_UNORM)) continue;
+@@ -1336,7 +1336,7 @@ bool Renderer::DrawSceneDual(Image& target, const HybridCamera& cam, const VkRec
+     VkBufferImageCopy xr{};
+     xr.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+     xr.imageExtent = {128, 128, 1};
+-    vk_.vkCmdCopyImageToBuffer(cmd_, g->image, VK_IMAGE_LAYOUT_GENERAL, e.buffer, 1, &xr);
++    vk_.vkCmdCopyImageToBuffer(Cmd(), g->image, VK_IMAGE_LAYOUT_GENERAL, e.buffer, 1, &xr);
+     p.extra.push_back(e);
+   }
+   Barrier();  // before the HUD draws over the target
+@@ -1413,7 +1413,7 @@ void Renderer::CaptureDamageTarget() {
+   VkBufferImageCopy region{};
+   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   region.imageExtent = {r.w, r.h, 1};
+-  vk_.vkCmdCopyImageToBuffer(cmd_, image->image, VK_IMAGE_LAYOUT_GENERAL, r.buffer, 1, &region);
++  vk_.vkCmdCopyImageToBuffer(Cmd(), image->image, VK_IMAGE_LAYOUT_GENERAL, r.buffer, 1, &region);
+   Barrier();
+   damage_reads_.push_back(r);
+ }
+@@ -1569,8 +1569,8 @@ bool Renderer::DrawSceneFill(Image& target) {
+     VkClearAttachment clear{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
+     clear.clearValue.color = {{0.10f, 0.35f, 0.55f, 1.0f}};
+     const VkClearRect rect{area, 0, 1};
+-    vk_.vkCmdClearAttachments(cmd_, 1, &clear, 1, &rect);
+-    vk_.vkCmdEndRendering(cmd_);
++    vk_.vkCmdClearAttachments(Cmd(), 1, &clear, 1, &rect);
++    vk_.vkCmdEndRendering(Cmd());
+     target.Use(x1, y1);
+     state->fills_drawn.fetch_add(1, std::memory_order_relaxed);
+     return true;
+@@ -1604,12 +1604,12 @@ bool Renderer::DrawSceneFill(Image& target) {
+   rendering.pColorAttachments = &color;
+   BeginRendering(rendering, "hybrid fill");
+   if (gpu_timing_) GpuLabel(kGpuDraw, "hybrid fill " + std::to_string(mode));
+-  vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
++  vk_.vkCmdBindPipeline(Cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+   bound_pipeline_ = pipeline;
+   dynamic_valid_ = false;
+   const VkViewport vp{float(x0), float(y0), float(x1 - x0), float(y1 - y0), 0.0f, 1.0f};
+-  vk_.vkCmdSetViewport(cmd_, 0, 1, &vp);
+-  vk_.vkCmdSetScissor(cmd_, 0, 1, &area);
++  vk_.vkCmdSetViewport(Cmd(), 0, 1, &vp);
++  vk_.vkCmdSetScissor(Cmd(), 0, 1, &area);
+   FillConstants constants{};
+   std::memcpy(constants.inv_view_proj, cam.inv_view_proj, sizeof(constants.inv_view_proj));
+   constants.rect[0] = float(x0), constants.rect[1] = float(y0);
+@@ -1622,9 +1622,9 @@ bool Renderer::DrawSceneFill(Image& target) {
+   }();
+   constants.origin[0] = cam.location[0], constants.origin[1] = cam.location[1], constants.origin[2] = cam.location[2];
+   constants.origin[3] = ground_z;
+-  vk_.vkCmdPushConstants(cmd_, fill_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+-  vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+-  vk_.vkCmdEndRendering(cmd_);
++  vk_.vkCmdPushConstants(Cmd(), fill_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
++  vk_.vkCmdDraw(Cmd(), 3, 1, 0, 0);
++  vk_.vkCmdEndRendering(Cmd());
+   target.Use(x1, y1);
+   state->fills_drawn.fetch_add(1, std::memory_order_relaxed);
+   return true;
+diff --git a/src/gfx/vk/occlusion.cpp b/src/gfx/vk/occlusion.cpp
+index 8cb8436..9274751 100644
+--- a/src/gfx/vk/occlusion.cpp
++++ b/src/gfx/vk/occlusion.cpp
+@@ -59,14 +59,19 @@ void Renderer::BeginDrawQuery() {
+     occlusion_inexact_ = true;
+     return;
+   }
+-  vk_.vkCmdBeginQuery(cmd_, s.occlusion_pool, s.occlusion_slots, occlusion_flags_);
++  Rec([this, pool = s.occlusion_pool, slot = s.occlusion_slots, flags = occlusion_flags_](VkCommandBuffer cmd) {
++    vk_.vkCmdBeginQuery(cmd, pool, slot, flags);
++  });
+   occlusion_drawing_ = true;
+ }
+ 
+ void Renderer::EndDrawQuery() {
+   if (!occlusion_drawing_) return;
+   Submission& s = submissions_[current_];
+-  vk_.vkCmdEndQuery(cmd_, s.occlusion_pool, s.occlusion_slots++);
++  Rec([this, pool = s.occlusion_pool, slot = s.occlusion_slots](VkCommandBuffer cmd) {
++    vk_.vkCmdEndQuery(cmd, pool, slot);
++  });
++  ++s.occlusion_slots;
+   occlusion_drawing_ = false;
+   ++occlusion_counted_;
+ }
+diff --git a/src/gfx/vk/present.cpp b/src/gfx/vk/present.cpp
+index 3d1f620..258620f 100644
+--- a/src/gfx/vk/present.cpp
++++ b/src/gfx/vk/present.cpp
+@@ -524,7 +524,7 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+   barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+   barrier.image = target;
+   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+-  vk_.vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
++  vk_.vkCmdPipelineBarrier(Cmd(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+ 
+   VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+@@ -538,21 +538,21 @@ bool Renderer::Present(uint32_t address, VkImage target, VkImageView target_view
+   rendering.colorAttachmentCount = 1;
+   rendering.pColorAttachments = &color;
+   BeginRendering(rendering, "present");
+-  vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, present_pipeline_);
++  vk_.vkCmdBindPipeline(Cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, present_pipeline_);
+   bound_pipeline_ = present_pipeline_;
+   dynamic_valid_ = false;
+-  vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout_, 0, 1, &set, 0, nullptr);
++  vk_.vkCmdBindDescriptorSets(Cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout_, 0, 1, &set, 0, nullptr);
+   const VkViewport vp{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
+-  vk_.vkCmdSetViewport(cmd_, 0, 1, &vp);
+-  vk_.vkCmdSetScissor(cmd_, 0, 1, &rendering.renderArea);
+-  vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+-  vk_.vkCmdEndRendering(cmd_);
++  vk_.vkCmdSetViewport(Cmd(), 0, 1, &vp);
++  vk_.vkCmdSetScissor(Cmd(), 0, 1, &rendering.renderArea);
++  vk_.vkCmdDraw(Cmd(), 3, 1, 0, 0);
++  vk_.vkCmdEndRendering(Cmd());
+ 
+   barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+   barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+   barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+   barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+-  vk_.vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
++  vk_.vkCmdPipelineBarrier(Cmd(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                            0, 0, nullptr, 0, nullptr, 1, &barrier);
+   static const bool burst = [] {
+     const char* v = std::getenv("BOTS_CAPTURE_BURST");
+@@ -662,7 +662,7 @@ void Renderer::CaptureBurst(const Image& source) {
+   region.bufferOffset = b->frame_bytes * b->taken;
+   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   region.imageExtent = {b->w, b->h, 1};
+-  vk_.vkCmdCopyImageToBuffer(cmd_, source.image, VK_IMAGE_LAYOUT_GENERAL, b->buffer, 1, &region);
++  vk_.vkCmdCopyImageToBuffer(Cmd(), source.image, VK_IMAGE_LAYOUT_GENERAL, b->buffer, 1, &region);
+   Barrier();
+   char line[200];
+   std::snprintf(line, sizeof(line), "%u\t%.2f\t%llu\t%llu\t%u\t%u\t%u\t%llu\t%.2f\t%s\n", b->taken,
+diff --git a/src/gfx/vk/recorder.h b/src/gfx/vk/recorder.h
+new file mode 100644
+index 0000000..fd387e1
+--- /dev/null
++++ b/src/gfx/vk/recorder.h
+@@ -0,0 +1,190 @@
++#pragma once
++
++// qos (patch 0093, BOTS_GFX_RECORD_THREAD=1): DXVK's CS-thread model for the renderer's hot path. The CP thread
++// translates a draw (textures, indices, constants, descriptor sets, pipeline, pass) and hands its Vulkan commands
++// to a worker as a packet; the worker records them into the command buffer in order while the CP thread goes on to
++// the next draw. Anything that records directly (Renderer::Cmd(): resolves, uploads, transfers, present, flush)
++// first waits until the worker has recorded everything handed to it, so the command buffer keeps one order and is
++// only ever used by one thread at a time.
++//
++// Single producer (the CP thread), single consumer (the worker). Packets are closures constructed in place in a
++// byte ring; the worker runs each with the command buffer it was pushed for, then destroys it.
++
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <new>
++#include <thread>
++#include <type_traits>
++#include <utility>
++
++#include <vulkan/vulkan.h>
++
++#if defined(_M_X64) || defined(__x86_64__)
++#include <immintrin.h>
++#endif
++
++namespace bots::gfx::vk {
++
++class Recorder {
++ public:
++  Recorder() : ring_(std::make_unique<std::byte[]>(kRingBytes)), worker_([this] { Run(); }) {}
++  ~Recorder() {
++    Drain();
++    stop_.store(true, std::memory_order_seq_cst);
++    Push(VK_NULL_HANDLE, [](VkCommandBuffer) {});  // moves write_, so a sleeping worker wakes and sees stop_
++    Publish();
++    worker_.join();
++  }
++  Recorder(const Recorder&) = delete;
++  Recorder& operator=(const Recorder&) = delete;
++
++  // Hands `f(cmd)` to the worker. Captures must stay valid on their own (copies, not references to the caller's
++  // stack).
++  template <class F>
++  void Push(VkCommandBuffer cmd, F&& f) {
++    using Fn = std::decay_t<F>;
++    static_assert(alignof(Fn) <= kAlign, "packet over-aligned");
++    constexpr size_t bytes = Round(sizeof(Header) + Round(sizeof(Fn)));
++    static_assert(bytes < kRingBytes / 4, "packet too large");
++    size_t at = Reserve(bytes);
++    Header* h = new (ring_.get() + at) Header{&Invoke<Fn>, uint32_t(bytes), cmd};
++    new (reinterpret_cast<std::byte*>(h) + Round(sizeof(Header))) Fn(std::forward<F>(f));
++    write_pos_ = write_pos_ - (write_pos_ % kRingBytes) + at + bytes;
++    ++pushed_;
++    // Handed over in batches (as DXVK's CS chunks): one atomic store per kBatchBytes, not per packet.
++    if (write_pos_ - published_ >= kBatchBytes) Publish();
++  }
++
++  // Returns once the worker has run every packet pushed so far. Cheap when it already has.
++  void Drain() {
++    Publish();
++    const uint64_t target = write_pos_;
++    if (read_.load(std::memory_order_acquire) == target) return;
++    ++drains_;
++    Wake();
++    for (uint32_t spin = 0; read_.load(std::memory_order_acquire) != target; ++spin) {
++      if (spin < 4096) {
++        Pause();
++      } else {
++        const uint64_t seen = read_.load(std::memory_order_acquire);
++        if (seen != target) read_.wait(seen, std::memory_order_acquire);
++      }
++    }
++  }
++
++  uint64_t pushed() const { return pushed_; }
++  uint64_t drains() const { return drains_; }
++
++ private:
++  static constexpr size_t kRingBytes = size_t(8) << 20;
++  static constexpr size_t kAlign = 16;
++  static constexpr size_t kBatchBytes = 4096;
++  static constexpr size_t Round(size_t n) { return (n + kAlign - 1) & ~(kAlign - 1); }
++
++  struct Header {
++    void (*invoke)(void* fn, VkCommandBuffer cmd);  // null: wrap to the ring's start
++    uint32_t bytes;
++    VkCommandBuffer cmd;
++  };
++
++  template <class Fn>
++  static void Invoke(void* p, VkCommandBuffer cmd) {
++    Fn* fn = static_cast<Fn*>(p);
++    (*fn)(cmd);
++    fn->~Fn();
++  }
++
++  static void Pause() {
++#if defined(_M_X64) || defined(__x86_64__)
++    _mm_pause();
++#endif
++  }
++
++  // Positions are monotonically increasing byte counts; the ring offset is pos % kRingBytes.
++  size_t Reserve(size_t bytes) {
++    size_t offset = size_t(write_pos_ % kRingBytes);
++    if (offset + bytes + sizeof(Header) > kRingBytes) {
++      // Not enough room before the end: a wrap marker, and the packet goes at the start.
++      WaitForRoom(kRingBytes - offset);
++      new (ring_.get() + offset) Header{nullptr, uint32_t(kRingBytes - offset), VK_NULL_HANDLE};
++      write_pos_ += kRingBytes - offset;
++      offset = 0;
++    }
++    WaitForRoom(bytes);
++    return offset;
++  }
++
++  void WaitForRoom(size_t bytes) {
++    if (write_pos_ + bytes + sizeof(Header) - read_.load(std::memory_order_acquire) > kRingBytes) Publish();
++    for (uint32_t spin = 0; write_pos_ + bytes + sizeof(Header) - read_.load(std::memory_order_acquire) > kRingBytes;
++         ++spin) {
++      Wake();
++      if (spin < 4096) {
++        Pause();
++      } else {
++        const uint64_t seen = read_.load(std::memory_order_acquire);
++        if (write_pos_ + bytes + sizeof(Header) - seen > kRingBytes) read_.wait(seen, std::memory_order_acquire);
++      }
++    }
++  }
++
++  void Publish() {
++    if (published_ == write_pos_) return;
++    published_ = write_pos_;
++    write_.store(write_pos_, std::memory_order_seq_cst);
++    if (sleeping_.load(std::memory_order_seq_cst)) Wake();
++  }
++
++  void Wake() { write_.notify_one(); }
++
++  void Run() {
++    uint64_t pos = 0;
++    for (;;) {
++      uint64_t end = write_.load(std::memory_order_acquire);
++      if (end == pos) {
++        if (stop_.load(std::memory_order_acquire)) return;
++        bool got = false;
++        for (uint32_t spin = 0; spin < 2048; ++spin) {
++          Pause();
++          if (write_.load(std::memory_order_acquire) != pos || stop_.load(std::memory_order_acquire)) {
++            got = true;
++            break;
++          }
++        }
++        if (!got) {
++          sleeping_.store(true, std::memory_order_seq_cst);
++          if (write_.load(std::memory_order_seq_cst) == pos && !stop_.load(std::memory_order_acquire)) {
++            write_.wait(pos, std::memory_order_acquire);
++          }
++          sleeping_.store(false, std::memory_order_relaxed);
++        }
++        continue;
++      }
++      while (pos != end) {
++        Header* h = reinterpret_cast<Header*>(ring_.get() + size_t(pos % kRingBytes));
++        if (h->invoke && h->cmd) {
++          h->invoke(reinterpret_cast<std::byte*>(h) + Round(sizeof(Header)), h->cmd);
++        } else if (h->invoke) {
++          h->invoke(reinterpret_cast<std::byte*>(h) + Round(sizeof(Header)), VK_NULL_HANDLE);
++        }
++        pos += h->bytes;
++      }
++      read_.store(pos, std::memory_order_release);
++      read_.notify_all();
++    }
++  }
++
++  std::unique_ptr<std::byte[]> ring_;
++  uint64_t write_pos_ = 0, published_ = 0;  // the producer's own: written so far, and handed over
++  alignas(64) std::atomic<uint64_t> write_{0};
++  alignas(64) std::atomic<uint64_t> read_{0};
++  alignas(64) std::atomic<bool> sleeping_{false};
++  std::atomic<bool> stop_{false};
++  uint64_t pushed_ = 0, drains_ = 0;
++  std::thread worker_;  // last: started once everything above exists
++};
++
++}  // namespace bots::gfx::vk
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index b604ab2..25c20c6 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -298,10 +298,30 @@ void Renderer::BeginRendering(const VkRenderingInfo& info, const char* what) {
+     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+     VkRenderingInfo with_depth = info;
+     with_depth.pDepthAttachment = with_depth.pStencilAttachment = &depth;
+-    vk_.vkCmdBeginRendering(cmd_, &with_depth);
++    RecBeginRendering(with_depth);
+     return;
+   }
+-  vk_.vkCmdBeginRendering(cmd_, &info);
++  RecBeginRendering(info);
++}
++
++void Renderer::RecBeginRendering(const VkRenderingInfo& info) {
++  struct Copy {
++    VkRenderingInfo info;
++    std::array<VkRenderingAttachmentInfo, 8> colors;
++    VkRenderingAttachmentInfo depth, stencil;
++  } c{info, {}, {}, {}};
++  const uint32_t n = std::min<uint32_t>(info.colorAttachmentCount, 8);
++  for (uint32_t i = 0; i < n; ++i) c.colors[i] = info.pColorAttachments[i];
++  c.info.colorAttachmentCount = n;
++  const bool depth = info.pDepthAttachment, stencil = info.pStencilAttachment;
++  if (depth) c.depth = *info.pDepthAttachment;
++  if (stencil) c.stencil = *info.pStencilAttachment;
++  Rec([this, c, depth, stencil](VkCommandBuffer cmd) mutable {
++    c.info.pColorAttachments = c.colors.data();
++    c.info.pDepthAttachment = depth ? &c.depth : nullptr;
++    c.info.pStencilAttachment = stencil ? &c.stencil : nullptr;
++    vk_.vkCmdBeginRendering(cmd, &c.info);
++  });
+ }
+ 
+ VkImageView Renderer::DummyDepth(uint32_t width, uint32_t height) {
+@@ -421,7 +441,7 @@ void Renderer::UseSubmission(uint32_t index) {
+   // Its occlusion results are read (WaitSubmission): reset the slots used when it next begins recording.
+   s.occlusion_reset = std::max(s.occlusion_reset, s.occlusion_slots);
+   s.occlusion_slots = 0;
+-  pool_ = s.pool, cmd_ = s.cmd, fence_ = s.fence, transient_pool_ = s.transient_pool;
++  pool_ = s.pool, cmd_raw_ = s.cmd, fence_ = s.fence, transient_pool_ = s.transient_pool;
+   ring_ = rings_[index];
+   ring_used_ = 0;
+   ++ring_epoch_;
+@@ -465,6 +485,7 @@ void Renderer::WaitSubmission(Submission& submission) {
+ }
+ 
+ void Renderer::DestroyImage(Image& image) {
++  if (recorder_) recorder_->Drain();  // nothing still to be recorded may name it
+   const VkDevice dev = device_->device();
+   for (VkImageView view : {image.view, image.depth_view, image.stencil_view}) {
+     if (view) vk_.vkDestroyImageView(dev, view, nullptr);
+@@ -700,7 +721,9 @@ bool Renderer::UploadGuestMemory(uint32_t start, uint32_t length) {
+     }
+     std::memcpy(staging, memory_(start), chunk);
+     const VkBufferCopy region{offset, start, chunk};
+-    vk_.vkCmdCopyBuffer(cmd_, ring_.buffer, shared_memory_.buffer, 1, &region);
++    Rec([this, src = ring_.buffer, dst = shared_memory_.buffer, region](VkCommandBuffer cmd) {
++      vk_.vkCmdCopyBuffer(cmd, src, dst, 1, &region);
++    });
+     stats_.uploaded_bytes += chunk;
+     start += chunk, length -= chunk;
+   }
+@@ -766,6 +789,7 @@ std::string Renderer::PipelineLibrarySupport() const {
+ }
+ 
+ Renderer::~Renderer() {
++  recorder_.reset();  // records what it was handed, then stops
+   if (!device_) return;
+   if (shaders_) shaders_->StopWorkers();  // their jobs use the pipeline cache and shader modules
+   if (manifest_) std::fclose(manifest_);
+@@ -797,19 +821,19 @@ void Renderer::BeginCommands(GpuCat cat) {
+   if (!recording_) {
+     const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+-    vk_.vkBeginCommandBuffer(cmd_, &begin);
++    vk_.vkBeginCommandBuffer(Cmd(), &begin);
+     recording_ = true;
+     bound_pipeline_ = VK_NULL_HANDLE;
+     dynamic_valid_ = false;
+     if (gpu_timing_) {
+-      vk_.vkCmdResetQueryPool(cmd_, submissions_[current_].timing_pool, 0, kMaxGpuMarks);
++      vk_.vkCmdResetQueryPool(Cmd(), submissions_[current_].timing_pool, 0, kMaxGpuMarks);
+       submissions_[current_].marks.clear();
+       submissions_[current_].labels.clear();
+       gpu_cat_ = 0xFF;
+     }
+     Submission& s = submissions_[current_];
+     if (s.occlusion_pool && s.occlusion_reset) {
+-      vk_.vkCmdResetQueryPool(cmd_, s.occlusion_pool, 0, std::min(s.occlusion_reset, occlusion_pool_size_));
++      vk_.vkCmdResetQueryPool(Cmd(), s.occlusion_pool, 0, std::min(s.occlusion_reset, occlusion_pool_size_));
+       s.occlusion_reset = 0;
+     }
+   }
+@@ -820,7 +844,9 @@ void Renderer::GpuMark(GpuCat cat, bool force) {
+   if (!gpu_timing_ || !recording_ || (cat == gpu_cat_ && !force)) return;
+   Submission& s = submissions_[current_];
+   if (s.marks.size() >= kMaxGpuMarks) return;
+-  vk_.vkCmdWriteTimestamp(cmd_, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s.timing_pool, uint32_t(s.marks.size()));
++  Rec([this, pool = s.timing_pool, slot = uint32_t(s.marks.size())](VkCommandBuffer cmd) {
++    vk_.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, slot);
++  });
+   s.marks.push_back(cat);
+   s.labels.emplace_back();
+   gpu_cat_ = cat;
+@@ -916,14 +942,16 @@ void Renderer::Barrier() {
+   const VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                 VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                 VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+-  vk_.vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+-                           &barrier, 0, nullptr, 0, nullptr);
++  Rec([this, barrier](VkCommandBuffer cmd) {
++    vk_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
++                             &barrier, 0, nullptr, 0, nullptr);
++  });
+ }
+ 
+ void Renderer::EndRendering(const char* why) {
+   if (!rendering_) return;
+   if (trace_rendering_) std::fprintf(stderr, "EndRendering %s\n", why);
+-  vk_.vkCmdEndRendering(cmd_);
++  Rec([this](VkCommandBuffer cmd) { vk_.vkCmdEndRendering(cmd); });
+   rendering_ = false;
+ }
+ 
+@@ -944,11 +972,11 @@ void Renderer::Flush() {
+     index_heap_flushed_ = index_heap_used_;
+   }
+   ring_peak_ = std::max(ring_peak_, ring_used_);
+-  vk_.vkEndCommandBuffer(cmd_);
++  vk_.vkEndCommandBuffer(Cmd());
+   recording_ = false;
+   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+   submit.commandBufferCount = 1;
+-  submit.pCommandBuffers = &cmd_;
++  submit.pCommandBuffers = &cmd_raw_;
+   {
+     auto queue = device_->AcquireQueue(device_->queue_family_graphics_compute(), 0);
+     vk_.vkQueueSubmit(queue.queue(), 1, &submit, fence_);
+@@ -1037,7 +1065,7 @@ bool Renderer::CreateImage(Image& image, VkFormat format, uint32_t width, uint32
+   barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+   barrier.image = image.image;
+   barrier.subresourceRange = {image.aspect, 0, levels, 0, info.arrayLayers};  // both aspects of a depth image
+-  vk_.vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
++  vk_.vkCmdPipelineBarrier(Cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                            nullptr, 0, nullptr, 1, &barrier);
+   return true;
+ }
+@@ -1422,8 +1450,8 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+                                        : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+                                  0, value};
+     const VkClearRect rect{{{x0, y0}, {uint32_t(w), uint32_t(h)}}, 0, 1};
+-    vk_.vkCmdClearAttachments(cmd_, 1, &what, 1, &rect);
+-    vk_.vkCmdEndRendering(cmd_);
++    vk_.vkCmdClearAttachments(Cmd(), 1, &what, 1, &rect);
++    vk_.vkCmdEndRendering(Cmd());
+     image.written = ++write_clock_;
+     ++stats_.clears;
+   };
+@@ -1535,7 +1563,7 @@ bool Renderer::ReadImage(const Image& image, std::vector<uint8_t>& rgb, uint32_t
+   VkBufferImageCopy region{};
+   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   region.imageExtent = {image.width, image.height, 1};
+-  vk_.vkCmdCopyImageToBuffer(cmd_, image.image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, &region);
++  vk_.vkCmdCopyImageToBuffer(Cmd(), image.image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, &region);
+   Finish();
+   vmaInvalidateAllocation(allocator_, allocation, 0, VK_WHOLE_SIZE);
+ 
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 6400e0b..a654186 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -36,6 +36,7 @@
+ #include <rex/ui/vulkan/mem_alloc.h>
+ 
+ #include "../pm4.h"
++#include "recorder.h"
+ #include "shaders.h"
+ #include "vk_api.h"
+ 
+@@ -666,7 +667,7 @@ class Renderer : public Pm4Sink {
+     uint32_t address, first, count;  // guest sample-count struct; slots in the submission's pool
+     uint64_t generation;             // occlusion_generations_[address] when it ended
+   };
+-  // Submissions in flight. The members below (pool_, cmd_, fence_, ring_, transient_pool_, retired_) are the
++  // Submissions in flight. The members below (pool_, cmd_raw_, fence_, ring_, transient_pool_, retired_) are the
+   // current one's; Flush submits it and moves on to the next slot, waiting only if that slot is still pending.
+   struct Submission {
+     VkCommandPool pool = VK_NULL_HANDLE;
+@@ -696,7 +697,28 @@ class Renderer : public Pm4Sink {
+   void UseSubmission(uint32_t index);
+   void WaitSubmission(Submission& submission);
+   VkCommandPool pool_ = VK_NULL_HANDLE;
+-  VkCommandBuffer cmd_ = VK_NULL_HANDLE;
++  VkCommandBuffer cmd_raw_ = VK_NULL_HANDLE;
++  // qos (patch 0093): BOTS_GFX_RECORD_THREAD=1 records the draws' commands on a worker (recorder.h). Cmd() is the
++  // command buffer for recording here and now: it first waits for the worker to finish what it was handed. Rec(f)
++  // hands f(cmd) to the worker (or runs it here without one); f must capture by value.
++  std::unique_ptr<Recorder> recorder_;
++  void RecBeginRendering(const VkRenderingInfo& info);  // vkCmdBeginRendering with the info copied (Rec)
++ public:
++  uint64_t recorder_packets() const { return recorder_ ? recorder_->pushed() : 0; }
++  uint64_t recorder_drains() const { return recorder_ ? recorder_->drains() : 0; }
++ private:
++  VkCommandBuffer Cmd() {
++    if (recorder_) recorder_->Drain();
++    return cmd_raw_;
++  }
++  template <class F>
++  void Rec(F&& f) {
++    if (recorder_) {
++      recorder_->Push(cmd_raw_, std::forward<F>(f));
++    } else {
++      f(cmd_raw_);
++    }
++  }
+   VkFence fence_ = VK_NULL_HANDLE;
+   bool recording_ = false;
+ 
+@@ -914,6 +936,20 @@ class Renderer : public Pm4Sink {
+   };
+   DynamicState dynamic_{};
+   bool dynamic_valid_ = false;
++  // A draw's Vulkan commands (0093): binds, changed dynamic state, index buffer, draw.
++  struct DrawPacket {
++    bool bind_pipeline = false, indexed = false;
++    VkPipeline pipeline = VK_NULL_HANDLE;
++    VkPipelineLayout layout = VK_NULL_HANDLE;
++    VkDescriptorSet sets[4] = {};
++    std::array<uint32_t, 8> offsets{};
++    uint32_t offset_count = 0, bind_mask = 0, dyn_mask = 0, count = 0;
++    DynamicState state{};
++    VkBuffer index_buffer = VK_NULL_HANDLE;
++    VkDeviceSize index_offset = 0;
++    VkIndexType index_type = VK_INDEX_TYPE_UINT16;
++    void Record(const Api& vk, VkCommandBuffer cmd, bool draw) const;
++  };
+   VkDescriptorPool persistent_pool_ = VK_NULL_HANDLE, transient_pool_ = VK_NULL_HANDLE;
+   VkDescriptorSet shared_set_ = VK_NULL_HANDLE;
+   std::array<VkDescriptorSet, kSubmissions> constant_sets_{};  // per ring (draw.cpp)
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index bc02f3d..3aff7b9 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -347,7 +347,9 @@ Renderer::Image* Renderer::Crop(Image& image, uint32_t width, uint32_t height) {
+     Access({&read, 1}, {&write, 1});
+     const VkImageCopy region{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              {0, 0, 0}, {width, height, 1}};
+-    vk_.vkCmdCopyImage(cmd_, image.image, VK_IMAGE_LAYOUT_GENERAL, crop.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
++    Rec([this, src = image.image, dst = crop.image, region](VkCommandBuffer cmd) {
++      vk_.vkCmdCopyImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
++    });
+     crop.written = image.written;
+   }
+   crop.swapped = image.swapped;
+@@ -547,7 +549,7 @@ void Renderer::LoadTexture(const rg::xenos::xe_gpu_texture_fetch_t& fetch, Guest
+     region.bufferImageHeight = blocks_y * format_info->block_height;
+     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, texture.image.layers};
+     region.imageExtent = {level_width, level_height, level_depth};
+-    vk_.vkCmdCopyBufferToImage(cmd_, ring_.buffer, texture.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
++    vk_.vkCmdCopyBufferToImage(Cmd(), ring_.buffer, texture.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+   }
+   Barrier();
+   ++stats_.textures;
+@@ -584,7 +586,7 @@ bool Renderer::LoadPromptAtlas(GuestTexture& texture, uint32_t address, bots::Pr
+   region.bufferOffset = offset;
+   region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   region.imageExtent = {p::kButtonAtlasWidth, p::kButtonAtlasHeight, 1};
+-  vk_.vkCmdCopyBufferToImage(cmd_, ring_.buffer, texture.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
++  vk_.vkCmdCopyBufferToImage(Cmd(), ring_.buffer, texture.image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+   Barrier();
+   ++stats_.textures;
+   static uint32_t logged = 0;  // one line per device
+diff --git a/src/gfx/vk/transfer.cpp b/src/gfx/vk/transfer.cpp
+index 1845f8f..6c2c365 100644
+--- a/src/gfx/vk/transfer.cpp
++++ b/src/gfx/vk/transfer.cpp
+@@ -341,13 +341,13 @@ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint
+                  " " + std::to_string(rendering.renderArea.extent.width) + "x" +
+                  std::to_string(rendering.renderArea.extent.height));
+   }
+-  vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
++  vk_.vkCmdBindPipeline(Cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+   bound_pipeline_ = pipeline;
+   dynamic_valid_ = false;
+-  vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, transfer_layout_, 0, 1, &set, 0, nullptr);
++  vk_.vkCmdBindDescriptorSets(Cmd(), VK_PIPELINE_BIND_POINT_GRAPHICS, transfer_layout_, 0, 1, &set, 0, nullptr);
+   const VkViewport vp{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
+-  vk_.vkCmdSetViewport(cmd_, 0, 1, &vp);
+-  vk_.vkCmdSetScissor(cmd_, 0, 1, &rendering.renderArea);
++  vk_.vkCmdSetViewport(Cmd(), 0, 1, &vp);
++  vk_.vkCmdSetScissor(Cmd(), 0, 1, &rendering.renderArea);
+   struct {
+     int32_t dest_size[2];
+     int32_t dest_offset[2];
+@@ -355,9 +355,9 @@ void Renderer::Transfer(Image& source, uint32_t source_format, Image& dest, uint
+   } constants{{int32_t(rect ? source.width / samples_x : width), int32_t(rect ? source.height / samples_y : height)},
+               {dest_offset.x, dest_offset.y},
+               scale};
+-  vk_.vkCmdPushConstants(cmd_, transfer_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
+-  vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+-  vk_.vkCmdEndRendering(cmd_);
++  vk_.vkCmdPushConstants(Cmd(), transfer_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
++  vk_.vkCmdDraw(Cmd(), 3, 1, 0, 0);
++  vk_.vkCmdEndRendering(Cmd());
+   ++stats_.transfers;
+ }
+ 

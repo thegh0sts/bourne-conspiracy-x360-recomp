@@ -1,0 +1,277 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 92fa12a..2fcb76e 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -350,17 +350,21 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       const char* v = std::getenv("BOTS_GFX_SHADER_AT_DRAW");
+       return v && *v == '1';
+     }();
++    // qos: the serial stays when the same microcode is loaded again (the renderer then reuses its shader lookup).
++    auto copy_in = [&](uint32_t address) {
++      std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;
++      const bool same = load.serial && load.inline_ucode == copy.data() && copy.size() == dword_count &&
++                        std::memcmp(copy.data(), host_address, size_t(dword_count) * 4) == 0;
++      if (!same) copy.assign(host_address, host_address + dword_count);
++      load = {address, dword_count, copy.data(), same ? load.serial : ++shader_serial_};
++    };
+     if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address) && at_draw) {
+       load = {guest_address, dword_count, nullptr};
+     } else if (host_address == memory_->TranslatePhysical<const uint32_t*>(guest_address)) {
+-      std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;
+-      copy.assign(host_address, host_address + dword_count);
+-      load = {guest_address, dword_count, copy.data()};
++      copy_in(guest_address);
+     } else {
+       // IM_LOAD_IMMEDIATE: the microcode is in the ring, which moves on before the draw.
+-      std::vector<uint32_t>& copy = vertex ? vs_inline_ : ps_inline_;
+-      copy.assign(host_address, host_address + dword_count);
+-      load = {0, dword_count, copy.data()};
++      copy_in(0);
+     }
+     return nullptr;
+   }
+@@ -1016,6 +1020,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+   }
+   ShaderLoad vs_, ps_;
+   std::vector<uint32_t> vs_inline_, ps_inline_;
++  uint64_t shader_serial_ = 0;
+   ConstantWriteTracker constant_writes_;
+   uint64_t frames_ = 0, indirect_draws_ = 0;
+   struct {
+diff --git a/src/gfx/pm4.h b/src/gfx/pm4.h
+index 4d4045f..fc03a1c 100644
+--- a/src/gfx/pm4.h
++++ b/src/gfx/pm4.h
+@@ -25,6 +25,9 @@ struct ShaderLoad {
+   uint32_t address = 0;  // physical
+   uint32_t dwords = 0;
+   const uint32_t* inline_ucode = nullptr;  // IM_LOAD_IMMEDIATE: microcode inside the packet (big-endian)
++  // qos: changes when the microcode does (0: unknown), so a renderer can keep the shader it looked up for the last
++  // draw instead of hashing the microcode again (native.cpp LoadShader).
++  uint64_t serial = 0;
+ };
+ 
+ struct Draw {
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 92f904a..53c87ce 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -804,7 +804,14 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     ++stats_.skipped_draws;
+     return;
+   }
+-  ShaderCache::Shader* vshader = shaders_->Get(xe::ShaderType::kVertex, ucode(vs), vs.dwords);
++  // qos: the same microcode as the last draw (ShaderLoad::serial): the same shader, without hashing it again.
++  ShaderCache::Shader* vshader;
++  if (vs.serial && vs.serial == vs_memo_serial_) {
++    vshader = static_cast<ShaderCache::Shader*>(vs_memo_);
++  } else {
++    vshader = shaders_->Get(xe::ShaderType::kVertex, ucode(vs), vs.dwords);
++    vs_memo_serial_ = vs.serial, vs_memo_ = vshader;
++  }
+   const bool polygonal = du::IsPrimitivePolygonal(regs);
+   if (!du::IsRasterizationPotentiallyDone(regs, polygonal)) {
+     ++stats_.skipped_draws;  // memexport-only draws: not used by this game so far
+@@ -812,7 +819,12 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   }
+   ShaderCache::Shader* pshader = nullptr;
+   if (mode == xe::EdramMode::kColorDepth && ps.dwords && ucode(ps)) {
+-    pshader = shaders_->Get(xe::ShaderType::kPixel, ucode(ps), ps.dwords);
++    if (ps.serial && ps.serial == ps_memo_serial_) {
++      pshader = static_cast<ShaderCache::Shader*>(ps_memo_);
++    } else {
++      pshader = shaders_->Get(xe::ShaderType::kPixel, ucode(ps), ps.dwords);
++      ps_memo_serial_ = ps.serial, ps_memo_ = pshader;
++    }
+     if (!du::IsPixelShaderNeededWithRasterization(*pshader, regs)) pshader = nullptr;
+   }
+   // BOTS_SKIP_DRAWS=<a>-<b> leaves draws a..b out (bisecting rendering bugs).
+@@ -1203,7 +1215,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     const uint32_t reset_index = regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx;
+     const bool strip = topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+     if (index_uploads_epoch_ != ring_epoch_) {
+-      index_uploads_.clear();
++      ForgetIndexUploads();
+       index_uploads_epoch_ = ring_epoch_;
+     }
+     const IndexKey key{draw.index_base, count, reset_enabled ? reset_index : 0,
+@@ -1233,8 +1245,13 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       restart = restart && strip;  // Vulkan only restarts strips
+       indexed = true;
+       ++stats_.index_converts;
+-      index_uploads_[key] = {uint32_t(index_offset), count * (index32 ? 4u : 2u),
+-                             index_type == VK_INDEX_TYPE_UINT32, restart};
++      const uint32_t bytes = count * (index32 ? 4u : 2u);
++      index_uploads_[key] = {uint32_t(index_offset), bytes, index_type == VK_INDEX_TYPE_UINT32, restart};
++      const uint32_t end = key.base + std::max(bytes, 1u) - 1;
++      for (uint32_t block = key.base >> kIndexBlockShift; end >= key.base && block <= end >> kIndexBlockShift;
++           ++block) {
++        index_blocks_[block].push_back(key);
++      }
+     }
+   } else if (prim == xe::PrimitiveType::kQuadList || prim == xe::PrimitiveType::kTriangleFan ||
+              prim == xe::PrimitiveType::kPolygon || dma) {
+@@ -1417,7 +1434,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   // Texture sets are reused within a submission when a draw binds exactly what an earlier one did (consecutive draws
+   // of a material mostly do). Views and samplers outlive the submission (Retire), so a handle can't be reused in it.
+   auto texture_set = [&](VkDescriptorSet& set, VkDescriptorSetLayout set_layout, std::span<const VkImageView> views,
+-                         const std::vector<rg::SpirvShader::SamplerBinding>& samplers) {
++                         const std::vector<rg::SpirvShader::SamplerBinding>& samplers, uint32_t stage) {
+     if ((views.empty() && samplers.empty()) || samplers.size() > 32) return;
+     const size_t first = image_count;
+     for (VkImageView view : views) images[image_count++] = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+@@ -1430,14 +1447,22 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       const uint64_t handle = images[i].imageView ? uint64_t(images[i].imageView) : uint64_t(images[i].sampler);
+       set_key_.append(reinterpret_cast<const char*>(&handle), sizeof(handle));
+     }
++    // qos: the same as this stage's last draw (most consecutive draws of a material): no hash lookup.
++    if (set_memo_epoch_[stage] == texture_sets_epoch_ && set_memo_key_[stage] == set_key_) {
++      set = set_memo_[stage];
++      image_count = first;
++      return;
++    }
+     if (const auto it = texture_sets_.find(std::string_view(set_key_)); it != texture_sets_.end()) {
+       set = it->second;
+       image_count = first;
++      set_memo_key_[stage] = set_key_, set_memo_[stage] = set, set_memo_epoch_[stage] = texture_sets_epoch_;
+       return;
+     }
+     set = AllocateSet(set_layout);
+     if (!set) return;
+     texture_sets_.emplace(set_key_, set);
++    set_memo_key_[stage] = set_key_, set_memo_[stage] = set, set_memo_epoch_[stage] = texture_sets_epoch_;
+     if (!views.empty()) {
+       writes[write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, uint32_t(views.size()),
+                                VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, images + first, nullptr, nullptr};
+@@ -1448,8 +1473,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                                nullptr, nullptr};
+     }
+   };
+-  texture_set(sets[2], layout->textures_vertex, vviews, vsamplers);
+-  texture_set(sets[3], layout->textures_pixel, pviews, psamplers);
++  texture_set(sets[2], layout->textures_vertex, vviews, vsamplers, 0);
++  texture_set(sets[3], layout->textures_pixel, pviews, psamplers, 1);
+   if ((sets[2] == VK_NULL_HANDLE && !(vtextures.empty() && vsamplers.empty())) ||
+       (sets[3] == VK_NULL_HANDLE && !(ptextures.empty() && psamplers.empty()))) {
+     ++stats_.skipped_draws;
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 87f03e4..145fcd4 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -428,6 +428,7 @@ void Renderer::UseSubmission(uint32_t index) {
+   transient_sets_ = 0;
+   constant_set_ = constant_sets_[index];
+   texture_sets_.clear();
++  ++texture_sets_epoch_;
+ }
+ 
+ void Renderer::WaitSubmission(Submission& submission) {
+@@ -482,24 +483,60 @@ void Renderer::ProcessInvalidations() {
+   if (!tracker_) return;
+   invalidated_.clear();
+   tracker_->TakeInvalidated(invalidated_);
++  if (invalidated_.empty()) return;
++  stats_.invalidations += invalidated_.size();
++  // qos: every range against each texture in one pass (was a pass over all textures per range).
++  auto overlaps_any = [&](uint32_t start, uint32_t end) {
++    if (start >= end) return false;
++    for (const auto& [first, last] : invalidated_) {
++      if (start <= last && end > first) return true;
++    }
++    return false;
++  };
++  for (auto& [key, texture] : guest_textures_) {
++    if (texture->dirty) continue;
++    for (const auto& [start, end] : texture->ranges) {
++      if (overlaps_any(start, end)) {
++        texture->dirty = true;
++        break;
++      }
++    }
++  }
++  // A resolve destination the CPU wrote over is no longer what a fetch of that address reads.
++  for (auto* map : {&texture_at_, &depth_texture_at_}) {
++    for (auto it = map->begin(); it != map->end();) {
++      const auto& image = *it->second;
++      // Close enough: pages, not texels. Guest texels: the host image is render-scaled.
++      const uint64_t bytes = uint64_t(double(image.width) * image.height * 4 / (double(scale_) * scale_));
++      it = overlaps_any(it->first, uint32_t(std::min<uint64_t>(it->first + bytes, UINT32_MAX))) ? map->erase(it)
++                                                                                                 : std::next(it);
++    }
++  }
++  // Index uploads: only those in the invalidated ranges' 64 KB blocks (index_blocks_); a range spanning more blocks
++  // than there are uploads checks them all.
++  if (index_uploads_.empty()) return;
+   for (const auto& [first, last] : invalidated_) {
+-    ++stats_.invalidations;
+     auto overlaps = [&](uint32_t start, uint32_t end) { return start < end && start <= last && end > first; };
+-    for (auto& [key, texture] : guest_textures_) {
+-      for (const auto& [start, end] : texture->ranges) texture->dirty |= overlaps(start, end);
+-    }
+-    // A resolve destination the CPU wrote over is no longer what a fetch of that address reads.
+-    for (auto* map : {&texture_at_, &depth_texture_at_}) {
+-      for (auto it = map->begin(); it != map->end();) {
+-        const auto& image = *it->second;
+-        // Close enough: pages, not texels. Guest texels: the host image is render-scaled.
+-        const uint64_t bytes = uint64_t(double(image.width) * image.height * 4 / (double(scale_) * scale_));
+-        it = overlaps(it->first, uint32_t(std::min<uint64_t>(it->first + bytes, UINT32_MAX))) ? map->erase(it)
+-                                                                                                : std::next(it);
++    const uint32_t block_first = first >> kIndexBlockShift, block_last = last >> kIndexBlockShift;
++    if (uint64_t(block_last - block_first) + 1 > index_uploads_.size()) {
++      for (auto it = index_uploads_.begin(); it != index_uploads_.end();) {
++        it = overlaps(it->first.base, it->first.base + it->second.bytes) ? index_uploads_.erase(it) : std::next(it);
+       }
++      continue;
+     }
+-    for (auto it = index_uploads_.begin(); it != index_uploads_.end();) {
+-      it = overlaps(it->first.base, it->first.base + it->second.bytes) ? index_uploads_.erase(it) : std::next(it);
++    for (uint32_t block = block_first; block <= block_last; ++block) {
++      const auto bucket = index_blocks_.find(block);
++      if (bucket == index_blocks_.end()) continue;
++      std::vector<IndexKey>& keys = bucket->second;
++      std::erase_if(keys, [&](const IndexKey& key) {
++        const auto it = index_uploads_.find(key);
++        if (it == index_uploads_.end()) return true;  // already gone
++        if (!overlaps(key.base, key.base + it->second.bytes)) return false;
++        index_uploads_.erase(it);
++        return true;
++      });
++      if (keys.empty()) index_blocks_.erase(bucket);
++      if (block == UINT32_MAX) break;
+     }
+   }
+ }
+@@ -673,7 +710,7 @@ void Renderer::ResetFrame() {
+   open_pass_ = {};
+   shared_memory_uploaded_ = false;
+   last_resolve_address_ = 0;
+-  index_uploads_.clear();
++  ForgetIndexUploads();
+   stats_ = {};
+ }
+ 
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 36adb00..201d96a 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -732,6 +732,20 @@ class Renderer : public Pm4Sink {
+   };
+   std::unordered_map<IndexKey, IndexUpload, IndexKeyHash> index_uploads_;
+   uint64_t index_uploads_epoch_ = 0;
++  // qos: index_uploads_' keys by the 64 KB blocks of guest memory they read (a key in each block it spans), so an
++  // invalidation looks only at the uploads in its blocks instead of all of them (thousands per submission, and
++  // ~100 invalidations a frame: ProcessInvalidations was most of a draw's setup time). May hold keys already erased.
++  std::unordered_map<uint32_t, std::vector<IndexKey>> index_blocks_;
++  static constexpr uint32_t kIndexBlockShift = 16;
++  void ForgetIndexUploads() { index_uploads_.clear(), index_blocks_.clear(); }
++  // qos: the shaders the last draw looked up, by ShaderLoad::serial (0: none).
++  uint64_t vs_memo_serial_ = 0, ps_memo_serial_ = 0;
++  void* vs_memo_ = nullptr;
++  void* ps_memo_ = nullptr;
++  // qos: the texture set each stage's last draw bound, by its key (set_key_), while texture_sets_ holds it.
++  std::string set_memo_key_[2];
++  VkDescriptorSet set_memo_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
++  uint64_t set_memo_epoch_[2] = {0, 0}, texture_sets_epoch_ = 1;
+   std::vector<uint8_t> last_system_constants_;
+   uint64_t system_constants_version_ = 0;  // bumped when they change
+   uint32_t transient_sets_ = 0;  // allocated from transient_pool_ this submission

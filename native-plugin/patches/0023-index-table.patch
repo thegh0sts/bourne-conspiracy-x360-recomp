@@ -1,0 +1,250 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index d931395..3f4f945 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -203,12 +203,14 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+                                   double(st.draw_phase_ns[i] - last_.draw_phase_ns[i]) / 1e6 / n);
+           }
+           REXLOG_INFO("gfx native: draw CPU ms per frame:{} index buffers {:.0f} reused ({:.0f} kept from earlier "
+-                      "frames), {:.0f} converted, {:.0f} heap requests, {} heap resets, {:.0f} texture bindings remembered, "
++                      "frames), {:.0f} converted ({:.0f} KB), {:.0f} rebuilt on the CPU, {:.0f} heap requests, {} heap resets, {:.0f} texture bindings remembered, "
+                       "{:.0f} samplers remembered, {:.0f} set binds skipped, "
+                       "{:.1f} invalidations",
+                       phases, double(st.index_reuses - last_.index_reuses) / n,
+                       double(st.index_heap_hits - last_.index_heap_hits) / n,
+                       double(st.index_converts - last_.index_converts) / n,
++                      double(st.index_bytes_converted - last_.index_bytes_converted) / 1024 / n,
++                      double(st.index_expanded - last_.index_expanded) / n,
+                       double(st.index_heap_requests - last_.index_heap_requests) / n,
+                       st.index_heap_resets - last_.index_heap_resets,
+                       double(st.texture_memo_hits - last_.texture_memo_hits) / n,
+@@ -274,6 +276,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       last_.texture_memo_hits = st.texture_memo_hits, last_.index_heap_requests = st.index_heap_requests;
+       last_.sampler_memo_hits = st.sampler_memo_hits, last_.set_binds_skipped = st.set_binds_skipped;
+       last_.invalidations = st.invalidations;
++      last_.index_bytes_converted = st.index_bytes_converted, last_.index_expanded = st.index_expanded;
+       last_.texture_loads = st.texture_loads, last_.texture_loads_evicted = st.texture_loads_evicted;
+       last_.texture_reloads = st.texture_reloads, last_.texture_evictions = st.texture_evictions;
+       renderer_->SavePipelineCache();  // runs are often killed rather than shut down
+@@ -1070,7 +1073,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     uint64_t render_passes = 0, transfers = 0, barriers = 0, pending_draws = 0, gpu_ns[7] = {}, draw_phase_ns[12] = {};
+     uint64_t index_reuses = 0, index_converts = 0, invalidations = 0;
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+-    uint64_t sampler_memo_hits = 0, set_binds_skipped = 0;
++    uint64_t sampler_memo_hits = 0, set_binds_skipped = 0, index_bytes_converted = 0, index_expanded = 0;
+     uint64_t texture_loads = 0, texture_loads_evicted = 0, texture_reloads = 0, texture_evictions = 0;
+   } last_;
+   // Frame-time diagnostics (issue #12): the interval between swaps on this thread, what each slow one did (a "gfx
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 8dfec5d..1bd616c 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -902,6 +902,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   // Primitive type -> host topology.
+   const xe::PrimitiveType prim = draw.initiator.prim_type;
+   const bool rect = prim == xe::PrimitiveType::kRectangleList;
++  // Primitives drawn as two-triangle strips built in the vertex shader (007 adds point lists; Bourne has none).
++  const bool expanded = rect;
+   VkPrimitiveTopology topology;
+   // Which draws are refused, in the log (the first 20 of each kind: primitive type, index source).
+   auto unsupported = [&](const char* why) {
+@@ -1311,7 +1313,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         if (!dst) return false;
+         restart = ConvertIndices(src, dst, count, index_endian, reset_enabled, reset_index);
+       } else {
+-        std::vector<uint16_t> narrow(count);
++        std::vector<uint16_t>& narrow = index_scratch_;
++        if (narrow.size() < count) narrow.resize(count);
+         ConvertIndices(src, narrow.data(), count, index_endian, false, 0);
+         auto* dst = reinterpret_cast<uint32_t*>(alloc(VkDeviceSize(count) * 4));
+         if (!dst) return false;
+@@ -1351,10 +1354,14 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+            ++block) {
+         index_static_blocks_[block].push_back(heap_key);
+       }
+-    } else if (auto it = index_uploads_.find(key); it != index_uploads_.end()) {
+-      index_offset = it->second.offset;
+-      index_type = it->second.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+-      restart = it->second.restart;
++    } else if (const IndexUpload* hit = [&]() -> const IndexUpload* {
++                 if (IndexFlat()) return FindIndexUpload(key);
++                 const auto it = index_uploads_.find(key);
++                 return it != index_uploads_.end() ? &it->second : nullptr;
++               }()) {
++      index_offset = hit->offset;
++      index_type = hit->index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
++      restart = hit->restart;
+       indexed = true;
+       ++stats_.index_reuses;
+     } else {
+@@ -1367,11 +1374,17 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+       indexed = true;
+       ++stats_.index_converts;
+       const uint32_t bytes = count * (index32 ? 4u : 2u);
+-      index_uploads_[key] = {uint32_t(index_offset), bytes, index_type == VK_INDEX_TYPE_UINT32, restart};
+-      const uint32_t end = key.base + std::max(bytes, 1u) - 1;
+-      for (uint32_t block = key.base >> kIndexBlockShift; end >= key.base && block <= end >> kIndexBlockShift;
+-           ++block) {
+-        index_blocks_[block].push_back(key);
++      stats_.index_bytes_converted += bytes;
++      const IndexUpload upload{uint32_t(index_offset), bytes, index_type == VK_INDEX_TYPE_UINT32, restart};
++      if (IndexFlat()) {
++        KeepIndexUpload(key, upload);
++      } else {
++        index_uploads_[key] = upload;
++        const uint32_t end = key.base + std::max(bytes, 1u) - 1;
++        for (uint32_t block = key.base >> kIndexBlockShift; end >= key.base && block <= end >> kIndexBlockShift;
++             ++block) {
++          index_blocks_[block].push_back(key);
++        }
+       }
+     }
+   } else if (prim == xe::PrimitiveType::kQuadList || prim == xe::PrimitiveType::kTriangleFan ||
+@@ -1395,7 +1408,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                             topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
+     }
+   }
+-  if (!host.empty() || rect) {
++  if (!host.empty() || expanded) {
++    ++stats_.index_expanded;
+     uint8_t* p = Upload(host.size() * 4, 4, index_offset);
+     std::memcpy(p, host.data(), host.size() * 4);
+     host_count = uint32_t(host.size());
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 25c20c6..08e61db 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -500,6 +500,85 @@ void Renderer::Retire(Image& image) {
+   image = Image{};
+ }
+ 
++bool Renderer::IndexFlat() {
++  static const bool on = [] {
++    const char* v = std::getenv("BOTS_GFX_INDEX_FLAT");
++    return !(v && *v == '0');
++  }();
++  return on;
++}
++
++uint32_t Renderer::IndexSlotOf(const IndexKey& key) {
++  uint64_t h = (uint64_t(key.base) << 32 | key.count) ^
++               (uint64_t(key.reset_index) << 8 | key.flags) * 0xC2B2AE3D27D4EB4Full;
++  h ^= h >> 31;
++  h *= 0x9E3779B97F4A7C15ull;
++  return uint32_t(h >> (64 - kIndexSlotBits));
++}
++
++void Renderer::ForgetIndexUploads() {
++  index_uploads_.clear(), index_blocks_.clear();
++  index_slots_used_ = 0;
++  if (++index_flat_gen_ == 0) {  // wrapped: no slot may look current
++    for (IndexSlot& slot : index_slots_) slot.gen = 0;
++    index_flat_gen_ = 1;
++  }
++}
++
++const Renderer::IndexUpload* Renderer::FindIndexUpload(const IndexKey& key) {
++  if (!index_slots_used_) return nullptr;
++  constexpr uint32_t mask = kIndexSlots - 1;
++  for (uint32_t i = IndexSlotOf(key), n = 0; n < kIndexSlots; i = (i + 1) & mask, ++n) {
++    const IndexSlot& slot = index_slots_[i];
++    if (slot.gen != index_flat_gen_) return nullptr;  // an empty slot ends the probe
++    if (!(slot.key == key)) continue;
++    const uint64_t end = uint64_t(key.base) + std::max(slot.upload.bytes, 1u) - 1;
++    const uint32_t last = uint32_t(std::min<uint64_t>(end, UINT32_MAX) >> kIndexPageShift);
++    for (uint32_t page = key.base >> kIndexPageShift; page <= last; ++page) {
++      if (index_page_stamps_[page] > slot.stamp) return nullptr;  // written since: KeepIndexUpload reuses the slot
++    }
++    return &slot.upload;
++  }
++  return nullptr;
++}
++
++void Renderer::KeepIndexUpload(const IndexKey& key, const IndexUpload& upload) {
++  if (index_slots_.empty()) {
++    index_slots_.resize(kIndexSlots);
++    index_page_stamps_.assign(size_t(1) << (32 - kIndexPageShift), 0);
++  }
++  constexpr uint32_t mask = kIndexSlots - 1;
++  for (uint32_t i = IndexSlotOf(key), n = 0; n < kIndexSlots; i = (i + 1) & mask, ++n) {
++    IndexSlot& slot = index_slots_[i];
++    if (slot.gen == index_flat_gen_) {
++      if (!(slot.key == key)) continue;
++    } else {
++      if (index_slots_used_ >= kIndexSlots / 4 * 3) return;  // full enough: this one isn't kept
++      slot.gen = index_flat_gen_;
++      ++index_slots_used_;
++    }
++    slot.key = key, slot.upload = upload, slot.stamp = index_stamp_;
++    return;
++  }
++}
++
++// CPU writes (invalidated_) stamp their pages, so entries made before them are no longer found.
++void Renderer::StampIndexPages() {
++  if (!index_slots_used_ || invalidated_.empty()) return;
++  if (index_stamp_ >= 0xFFFFFFF0u) {  // wrapping: start the stamps over, and the entries with them
++    std::fill(index_page_stamps_.begin(), index_page_stamps_.end(), 0u);
++    index_stamp_ = 1;
++    ForgetIndexUploads();
++    return;
++  }
++  ++index_stamp_;
++  for (const auto& [first, last] : invalidated_) {
++    if (last < first) continue;
++    std::fill(index_page_stamps_.begin() + (first >> kIndexPageShift),
++              index_page_stamps_.begin() + (size_t(last >> kIndexPageShift) + 1), index_stamp_);
++  }
++}
++
+ void Renderer::ProcessInvalidations() {
+   if (!tracker_) return;
+   invalidated_.clear();
+@@ -580,6 +659,7 @@ void Renderer::ProcessInvalidations() {
+     }
+   };
+   forget_indices(index_uploads_, index_blocks_, false);
++  StampIndexPages();
+   forget_indices(index_static_, index_static_blocks_, true);
+ }
+ 
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index a654186..94b49ba 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -185,6 +185,7 @@ class Renderer : public Pm4Sink {
+     // answered by the memo (texture_memo_).
+     uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+     uint64_t sampler_memo_hits = 0, set_binds_skipped = 0;  // qos (0092)
++    uint64_t index_bytes_converted = 0, index_expanded = 0;  // qos (0094): DMA index bytes converted; draws whose indices were rebuilt on the CPU (quads, fans, other)
+     uint64_t pending_draws = 0;  // live: skipped while their shaders or pipeline were still being made
+     // Live: draws dropped because their pipeline failed to build (the driver refused it; every frame it's drawn).
+     uint64_t failed_pipeline_draws = 0;
+@@ -777,7 +778,26 @@ class Renderer : public Pm4Sink {
+   // ~100 invalidations a frame: ProcessInvalidations was most of a draw's setup time). May hold keys already erased.
+   std::unordered_map<uint32_t, std::vector<IndexKey>> index_blocks_;
+   static constexpr uint32_t kIndexBlockShift = 16;
+-  void ForgetIndexUploads() { index_uploads_.clear(), index_blocks_.clear(); }
++  void ForgetIndexUploads();
++  // qos (0094): index_uploads_ as a flat open-addressed table, on by default (BOTS_GFX_INDEX_FLAT=0: the maps above).
++  // The maps allocated a node and a block-vector entry per converted index buffer (~4,000 a frame) and freed them all
++  // at every submission. Here emptying is a generation bump, and a CPU write stamps its 4 KB pages instead of erasing
++  // entries: an entry is used only while none of its pages has a newer stamp.
++  struct IndexSlot {
++    IndexKey key{};
++    IndexUpload upload{};
++    uint32_t gen = 0, stamp = 0;
++  };
++  static constexpr uint32_t kIndexSlotBits = 14, kIndexSlots = 1u << kIndexSlotBits, kIndexPageShift = 12;
++  std::vector<IndexSlot> index_slots_;
++  std::vector<uint32_t> index_page_stamps_;  // by guest page (4 GB / 4 KB), allocated with index_slots_
++  uint32_t index_flat_gen_ = 1, index_stamp_ = 1, index_slots_used_ = 0;
++  std::vector<uint16_t> index_scratch_;  // 16-bit lists with a reset index, before widening
++  static bool IndexFlat();
++  static uint32_t IndexSlotOf(const IndexKey& key);
++  const IndexUpload* FindIndexUpload(const IndexKey& key);
++  void KeepIndexUpload(const IndexKey& key, const IndexUpload& upload);
++  void StampIndexPages();
+   // qos: the shaders the last draw looked up, by ShaderLoad::serial (0: none).
+   uint64_t vs_memo_serial_ = 0, ps_memo_serial_ = 0;
+   void* vs_memo_ = nullptr;

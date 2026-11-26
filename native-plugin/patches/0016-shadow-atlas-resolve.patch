@@ -1,0 +1,96 @@
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 6a7bcbe..87f03e4 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -1068,23 +1068,35 @@ Renderer::Image* Renderer::ResolveTexture(uint32_t address, uint32_t format, uin
+ }
+ 
+ uint32_t Renderer::TiledResolveBase(uint32_t address, uint32_t format, uint32_t width, uint32_t height,
+-                                    VkOffset2D& offset) {
++                                    VkOffset2D& offset, uint32_t* base_width, uint32_t* base_height) {
+   offset = {0, 0};
++  if (base_width) *base_width = width;
++  if (base_height) *base_height = height;
+   const rg::FormatInfo* info = rg::FormatInfo::Get(format & 0x3F);
+   if (!info || !width || !height) return address;
+   const uint32_t bytes = info->bytes_per_block();
+   const uint32_t tile_bytes = 32 * 32 * bytes;  // the 360's tiled 2D layout: 32x32-texel blocks, row by row
+   const uint32_t tiles_x = (width + 31) / 32, tiles_y = (height + 31) / 32;
++  // tbc: a tile of a tiled frame, the same size as the texture it lands in. qos: or a tile of a taller texture of
++  // the same width (007 resolves four 512x512 shadow maps into one 512x2048 atlas, each copy's destination sized to
++  // the rest of the atlas: 512x2048, 512x1536, 512x1024, 512x512), when the copy fits inside it. The lowest base
++  // wins: the whole atlas, not a tail of it that an earlier copy created.
++  uint32_t best = address;
+   for (const auto& [key, image] : textures_) {
+     const auto [base, key_format, key_width, key_height] = key;
+-    if (!image || base >= address || key_format != format || key_width != width || key_height != height) continue;
++    if (!image || base >= address || base >= best || key_format != format || key_width != width) continue;
++    if (key_height != height && key_height < height) continue;
++    const uint32_t key_tiles_y = (key_height + 31) / 32;
+     const uint32_t delta = address - base;
+-    if (delta % tile_bytes || delta / tile_bytes >= tiles_x * tiles_y) continue;
++    if (delta % tile_bytes || delta / tile_bytes >= tiles_x * key_tiles_y) continue;
+     const uint32_t tile = delta / tile_bytes;
++    if (key_height != height && (tile % tiles_x || tile / tiles_x + tiles_y > key_tiles_y)) continue;
+     offset = {int32_t(Host((tile % tiles_x) * 32)), int32_t(Host((tile / tiles_x) * 32))};
+-    return base;
++    best = base;
++    if (base_width) *base_width = key_width;
++    if (base_height) *base_height = key_height;
+   }
+-  return address;
++  return best;
+ }
+ 
+ void Renderer::OnDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, const ShaderLoad& ps, const Draw& draw) {
+@@ -1210,13 +1222,14 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+     const bool float_depth =
+         regs.Get<rg::reg::RB_DEPTH_INFO>().depth_format == xe::DepthRenderTargetFormat::kD24FS8;
+     VkOffset2D tile_offset;
+-    const uint32_t base_address = TiledResolveBase(dest_address, uint32_t(xe::TextureFormat::k_8_8_8_8),
+-                                                   dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, tile_offset);
+-    Image* raw = ResolveTexture(base_address, uint32_t(xe::TextureFormat::k_8_8_8_8), dest_pitch.copy_dest_pitch,
+-                                dest_pitch.copy_dest_height);
++    uint32_t base_width, base_height;
++    const uint32_t base_address =
++        TiledResolveBase(dest_address, uint32_t(xe::TextureFormat::k_8_8_8_8), dest_pitch.copy_dest_pitch,
++                         dest_pitch.copy_dest_height, tile_offset, &base_width, &base_height);
++    Image* raw = ResolveTexture(base_address, uint32_t(xe::TextureFormat::k_8_8_8_8), base_width, base_height);
+     Image* value = ResolveTexture(base_address, uint32_t(float_depth ? xe::TextureFormat::k_24_8_FLOAT
+                                                                      : xe::TextureFormat::k_24_8),
+-                                  dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, true);
++                                  base_width, base_height, true);
+     int32_t w, h, dw, dh;
+     if (raw && value && clamp_rect(*source, w, h) && clamp_rect(*raw, dw, dh)) {
+       const VkRect2D rect{{x0, y0}, {uint32_t(std::min(w, dw)), uint32_t(std::min(h, dh))}};
+@@ -1248,10 +1261,11 @@ void Renderer::Resolve(const rg::RegisterFile& regs) {
+     const bool is_signed = number == xe::SurfaceNumberFormat::kSignedRepeatingFraction ||
+                            number == xe::SurfaceNumberFormat::kSignedInteger;
+     VkOffset2D tile_offset;
+-    const uint32_t base_address = TiledResolveBase(dest_address, format | (is_signed ? 0x200 : 0),
+-                                                   dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height, tile_offset);
+-    Image* dest = ResolveTexture(base_address, format, dest_pitch.copy_dest_pitch, dest_pitch.copy_dest_height,
+-                                 false, is_signed);
++    uint32_t base_width, base_height;
++    const uint32_t base_address =
++        TiledResolveBase(dest_address, format | (is_signed ? 0x200 : 0), dest_pitch.copy_dest_pitch,
++                         dest_pitch.copy_dest_height, tile_offset, &base_width, &base_height);
++    Image* dest = ResolveTexture(base_address, format, base_width, base_height, false, is_signed);
+     int32_t w, h, dw, dh;
+     if (dest && clamp_rect(*source, w, h) && clamp_rect(*dest, dw, dh)) {
+       // The resolve converts through the shader into the destination's format and signedness, with the exponent
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 4902c66..36adb00 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -541,7 +541,9 @@ class Renderer : public Pm4Sink {
+   // the full texture (the address of its first texel in the 360's tiled layout). If `address` falls inside a
+   // resolve texture made earlier with the same format and size, returns that texture's base address and sets
+   // `offset` to the tile's texel position; otherwise returns `address` and leaves `offset` at 0, 0.
+-  uint32_t TiledResolveBase(uint32_t address, uint32_t format, uint32_t width, uint32_t height, VkOffset2D& offset);
++  // qos: base_width/base_height get the enclosing texture's size (a shadow-map tile resolved into a taller atlas).
++  uint32_t TiledResolveBase(uint32_t address, uint32_t format, uint32_t width, uint32_t height, VkOffset2D& offset,
++                            uint32_t* base_width = nullptr, uint32_t* base_height = nullptr);
+   // Hybrid spike (hybrid_fill.cpp): draws the queued stand-in scene into `target`; false if there was none to draw.
+   bool DrawSceneFill(Image& target);
+   void DestroySceneFill();

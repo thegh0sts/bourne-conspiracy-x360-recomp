@@ -29,12 +29,13 @@ from tkinter import filedialog, messagebox, ttk
 
 import launcher_text
 import tbc_config as cfg
+import tbc_reticle
 import xex_achievements
 from launcher_text import tr, tr_label
 from tbc_installer import (ACCENT, APP_NAME, BG, DIM, EXE_NAME, FG, IS_WINDOWS, LAUNCHER_HOME, InstallView,
                            data_home, desktop_dir, install_info_path, make_root, open_path, start_game)
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 # Update check: the newest release on GitHub, asked once when the launcher opens.
 RELEASES_API = "https://api.github.com/repos/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
 RELEASES_URL = "https://github.com/thegh0sts/bourne-conspiracy-x360-recomp/releases/latest"
@@ -369,6 +370,9 @@ DEFAULTS = {
     "mouse_smoothing": 10,
     "mouse_look_direct": True,
     "turn_speed": 100,
+    "stick_smoothing": 100,
+    "custom_reticle": False,
+    "reticle_size": 100,
     "close_on_play": True,
     # The launcher's own language (launcher_text.py): "same" as the game's, or en / de / fr / es / it.
     "launcher_language": "same",
@@ -530,6 +534,47 @@ def _edit_camera_for_mouse(body, smoothing=0.25):
     return "\r\n".join(lines)
 
 
+# Controller camera (the game's own copy of the config; the keyboard-and-mouse copy gets the mouse
+# rates above instead). The look scales (_edit_look_scales) only shape the stick's travel: at full
+# stick the camera turns at the orbit behaviour's YawSpeed / PitchSpeed (35 to 120 degrees a
+# second), so up to 0.3.5 the stick turn speed made no difference once the stick was pushed all
+# the way. Now the full-stick rates scale with it too.
+# - turn: YawSpeed and PitchSpeed of every on-foot, cover, aiming and fight camera, times turn.
+# - smoothing: the orbit smoother's time (0.2 s on foot, 0 aiming), as a share of the game's.
+# - linear: no turn acceleration. The yaw behaviour adds YawRampSpeedModifier after the stick has
+#   been held for YawRampTime (0.5 s; 0.8 s aiming); the ramp now takes 0.01 s, so the stick turns
+#   at its top rate straight away. (0.3.5 and earlier set the ramp to 1000 s, which left the camera
+#   at its slow starting rate for good.)
+LINEAR_RAMP_TIME = 0.01
+
+
+def _edit_camera_for_stick(body, turn=1.0, smoothing=1.0, linear=False):
+    lines = body.split("\r\n")
+    kind = None
+    for i, line in enumerate(lines):
+        if line.startswith("["):
+            kind = ("yaw" if "OrbitYawCameraBehavior" in line else
+                    "pitch" if "OrbitPitch" in line else
+                    "smoother" if "OrbitSmootherCameraBehavior" in line else None)
+            continue
+        if not kind or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            v = float(value)
+        except ValueError:
+            continue
+        if kind == "yaw" and key == "YawSpeed" and turn != 1:
+            lines[i] = f"{key}={v * turn:g}"
+        elif kind == "yaw" and key == "YawRampTime" and linear:
+            lines[i] = f"{key}={LINEAR_RAMP_TIME:g}"
+        elif kind == "pitch" and key == "PitchSpeed" and turn != 1:
+            lines[i] = f"{key}={v * turn:g}"
+        elif kind == "smoother" and key == "SmoothTime" and smoothing != 1:
+            lines[i] = f"{key}={v * max(smoothing, MIN_SMOOTHING):g}"
+    return "\r\n".join(lines)
+
+
 def _edit_fight_mouse(body):
     for old, new in FIGHT_MOUSE_EDITS:
         body = body.replace(old, new, 1)
@@ -547,13 +592,12 @@ def _edit_fight_mouse(body):
 #   while walking, jogging and sprinting (BnOrbitYawSpeedDependentLimitsCameraBehavior: limit
 #   angle, stick resistance, return speed). The manual recentre (middle mouse / right stick
 #   press) still works.
-# - linear_stick: no turn ramp (HmOrbitYawCameraBehavior speeds up after the stick is held for
-#   YawRampTime); with BelowStepMultiplier in the look scales (_edit_look_scales) also no slow
-#   zone while aiming.
+# (linear_stick, no turn acceleration, is in _edit_camera_for_stick; with BelowStepMultiplier in
+# the look scales (_edit_look_scales) it also takes away the slow zone while aiming.)
 WIDE_PITCH = (-45.0, 35.0)
 
 
-def _edit_camera_freedom(body, wide_pitch, no_auto_recenter, linear_stick):
+def _edit_camera_freedom(body, wide_pitch, no_auto_recenter):
     lines = body.split("\r\n")
     section = ""
     for i, line in enumerate(lines):
@@ -578,8 +622,6 @@ def _edit_camera_freedom(body, wide_pitch, no_auto_recenter, linear_stick):
             value = re.sub(r"(Max|Min)StickResistance=[0-9.]+", r"\1StickResistance=0.0", value)
             value = re.sub(r"(Max|Min)ReturnSpeed=[0-9.]+", r"\1ReturnSpeed=0.0", value)
             lines[i] = f"{key}={value}"
-        elif linear_stick and "OrbitYaw" in section and key == "YawRampTime":
-            lines[i] = f"{key}=1000"
     return "\r\n".join(lines)
 
 
@@ -628,6 +670,14 @@ def apply_game_config(game: Path, s) -> str:
     else:
         shutil.copy2(toc_bak, toc)  # update the TOC entry starting from the original
         cfg.write(game, files)
+    # Reticle size: a copy of the HUD's package (tbc_reticle.py), and its own TOC entry.
+    try:
+        size = int(s.get("reticle_size", 100)) if s.get("custom_reticle") else 100
+        tbc_reticle.apply_reticle_size(game, toc, size)
+    except PermissionError:
+        raise
+    except (OSError, ValueError) as e:
+        summary += " (" + tr("reticle size not changed: {error}", error=e) + ")"
     return summary
 
 
@@ -661,7 +711,9 @@ def _build_game_config(conf_bak: Path, s, kbm: bool):
     wide_pitch = bool(s.get("wide_pitch", True))
     no_recenter = bool(s.get("no_auto_recenter"))
     linear_stick = bool(s.get("linear_stick"))
-    camera_free = wide_pitch or no_recenter or linear_stick
+    camera_free = wide_pitch or no_recenter
+    stick_smoothing = int(s.get("stick_smoothing", 100))
+    stick_camera = not mouse_camera and (turn != 100 or stick_smoothing != 100 or linear_stick)
     linear_aim = linear_aim or linear_stick
     look_edit = turn != 100 or linear_aim
 
@@ -678,7 +730,8 @@ def _build_game_config(conf_bak: Path, s, kbm: bool):
         # whatever the mode's turn rate, so it scales with the turn speed too.
         edits.append(("Xe-BourneInput.ini", "BourneNative.BnPlayerInput", "MaxYawRate", f"{100 * turn / 100:g}"))
 
-    if not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera and not camera_free:
+    if (not edits and fov == 100 and not look_edit and not fight_mouse and not mouse_camera and not camera_free
+            and not stick_camera):
         return None, 0
 
     files = cfg.decode(conf_bak.read_bytes())
@@ -717,8 +770,17 @@ def _build_game_config(conf_bak: Path, s, kbm: bool):
             except SystemExit:
                 continue
             name, body = files[i]
-            files[i] = (name, _edit_camera_freedom(body, wide_pitch, no_recenter, linear_stick))
-    return files, len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free
+            files[i] = (name, _edit_camera_freedom(body, wide_pitch, no_recenter))
+    if stick_camera:
+        for short in ("Xe-BourneCamera.ini", "BourneCamera.ini"):
+            try:
+                i = cfg.find_file(files, short)
+            except SystemExit:
+                continue
+            name, body = files[i]
+            files[i] = (name, _edit_camera_for_stick(body, turn / 100, stick_smoothing / 100, linear_stick))
+    return files, (len(edits) + (fov != 100) + look_edit + fight_mouse + mouse_camera + camera_free
+                   + stick_camera)
 
 
 def apply_intro_skip(game: Path, skip: bool) -> None:
@@ -1194,6 +1256,14 @@ class SettingsView(tk.Frame):
         self._check(box, 1, "wide_pitch", "Look further up and down")
         self._check(box, 2, "no_auto_recenter", "No camera auto-recentre")
         self._check(box, 3, "linear_stick", "Linear stick turning (no turn acceleration, controller)")
+        self._check(box, 4, "custom_reticle", "Custom aiming reticle size")
+        reticle = self._slider(box, 5, "reticle_size", "Aiming reticle size (%)", 50, 250, 10)
+
+        def show_reticle(*_):
+            for widget in reticle:
+                widget.grid() if self.vars["custom_reticle"].get() else widget.grid_remove()
+        self.vars["custom_reticle"].trace_add("write", show_reticle)
+        show_reticle()
 
         box = self._page("Controls")
         line = tk.Frame(box, bg=PANEL)
@@ -1204,26 +1274,32 @@ class SettingsView(tk.Frame):
         self._link(line, tr("Key binds"), self.show_keys).pack(side="left", padx=14, pady=4)
         self._slider(box, 1, "deadzone", "Stick dead zone (%)", 5, 40, 1)
         self._slider(box, 2, "turn_speed", "Stick turn speed (%)", 50, 300, 10)
-        self._slider(box, 3, "vibration_strength", "Controller vibration (%, 0 = off)", 0, 100, 5)
-        self._check(box, 4, "trigger_attacks", "Fight attacks on the triggers (RT light, LT heavy; controller)")
-        self._subheading(box, 5, "Mouse")
+        self._slider(box, 3, "stick_smoothing", "Stick camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 4, "vibration_strength", "Controller vibration (%, 0 = off)", 0, 100, 5)
+        self._check(box, 5, "trigger_attacks", "Fight attacks on the triggers (RT light, LT heavy; controller)")
+        tk.Label(box, text=tr("Stick turn speed now also raises the camera's top turn rate (full stick). Smoothing: how "
+                              "much of the game's camera easing stays (lower is more responsive). No turn acceleration: "
+                              "Camera tab, Linear stick turning."),
+                 font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
+                 ).grid(row=6, column=0, columnspan=2, sticky="w")
+        self._subheading(box, 7, "Mouse")
         line2 = tk.Frame(box, bg=PANEL)
-        line2.grid(row=6, column=0, columnspan=2, sticky="w")
+        line2.grid(row=8, column=0, columnspan=2, sticky="w")
         for key, text in (("mouse_look", "Mouse turns the camera directly (mouse look)"),
                           ("mouse_look_direct", "Direct (1:1)"),
                           ("kbm_aim_assist", "Aim assist")):
             v = self.vars[key] = tk.BooleanVar(value=bool(self.s.get(key, DEFAULTS[key])))
             tk.Checkbutton(line2, text=tr(text), variable=v, font=("Segoe UI", 10), fg=FG, bg=PANEL, selectcolor=PANEL,
                            activebackground=PANEL, activeforeground=FG).pack(side="left", padx=(0, 14))
-        self._slider(box, 7, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
-        self._slider(box, 8, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
-        self._slider(box, 9, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
+        self._slider(box, 9, "mouse_sensitivity", "Mouse sensitivity (%)", 10, 400, 5)
+        self._slider(box, 10, "aim_sensitivity", "Aiming sensitivity (% of mouse)", 20, 200, 5)
+        self._slider(box, 11, "mouse_smoothing", "Mouse camera smoothing (%)", 0, 100, 5)
         tk.Label(box, text=tr("Smoothing: how much of the game's camera easing stays with mouse look (lower is more "
                               "responsive). Aiming sensitivity applies over the shoulder and when shooting from cover. "
                               "Aim assist: the game's sticky aim, made for a controller; off by default with keyboard "
                               "and mouse (for a controller used alongside too)."),
                  font=("Segoe UI", 8), fg=DIM, bg=PANEL, anchor="w", wraplength=560, justify="left"
-                 ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                 ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(6, 0))
         box = self._page("Saves")
         line = tk.Frame(box, bg=PANEL)
         line.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -1415,10 +1491,12 @@ class SettingsView(tk.Frame):
 
     def _slider(self, box, row, key, text, lo, hi, step):
         v = self.vars[key] = tk.IntVar(value=int(self.s[key]))
-        tk.Label(box, text=tr(text), font=("Segoe UI", 10), fg=FG, bg=PANEL).grid(row=row, column=0, sticky="w")
-        tk.Scale(box, variable=v, from_=lo, to=hi, resolution=step, orient="horizontal", length=230,
-                 bg=PANEL, fg=FG, troughcolor="#2a2f38", highlightthickness=0, bd=0, activebackground=ACCENT
-                 ).grid(row=row, column=1, sticky="e")
+        label = tk.Label(box, text=tr(text), font=("Segoe UI", 10), fg=FG, bg=PANEL)
+        label.grid(row=row, column=0, sticky="w")
+        scale = tk.Scale(box, variable=v, from_=lo, to=hi, resolution=step, orient="horizontal", length=230,
+                         bg=PANEL, fg=FG, troughcolor="#2a2f38", highlightthickness=0, bd=0, activebackground=ACCENT)
+        scale.grid(row=row, column=1, sticky="e")
+        return label, scale
 
     # actions --------------------------------------------------------------
     def collect(self):

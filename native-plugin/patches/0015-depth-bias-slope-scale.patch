@@ -1,0 +1,15 @@
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 1c58145..92f904a 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -1705,6 +1705,10 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     return v && *v ? float(std::atof(v)) : 1.0f;
+   }();
+   bias_constant *= bias_scale;
++  // eatlead: the slope-scaled part is per pixel of depth change: at a render scale the depth changes 1/scale as much
++  // from one host pixel to the next as from one guest pixel to the next, so the same factor gave decals 1/scale of
++  // their guest bias on sloped surfaces (bullet holes on posters flickering at 4K, less at 1x). Scaled back up.
++  bias_slope *= scale_;
+   const auto ref_front = regs.Get<reg::RB_STENCILREFMASK>();
+   const auto ref_back = polygonal && depth_control.backface_enable
+                             ? regs.Get<reg::RB_STENCILREFMASK>(rg::XE_GPU_REG_RB_STENCILREFMASK_BF)

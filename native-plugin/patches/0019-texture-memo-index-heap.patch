@@ -1,0 +1,545 @@
+diff --git a/src/gfx/native.cpp b/src/gfx/native.cpp
+index 2fcb76e..56fbb7d 100644
+--- a/src/gfx/native.cpp
++++ b/src/gfx/native.cpp
+@@ -201,10 +201,15 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+             phases += fmt::format(" {} {:.2f},", vk::Renderer::kDrawPhaseNames[i],
+                                   double(st.draw_phase_ns[i] - last_.draw_phase_ns[i]) / 1e6 / n);
+           }
+-          REXLOG_INFO("gfx native: draw CPU ms per frame:{} index buffers {:.0f} reused, {:.0f} converted, "
++          REXLOG_INFO("gfx native: draw CPU ms per frame:{} index buffers {:.0f} reused ({:.0f} kept from earlier "
++                      "frames), {:.0f} converted, {:.0f} heap requests, {} heap resets, {:.0f} texture bindings remembered, "
+                       "{:.1f} invalidations",
+                       phases, double(st.index_reuses - last_.index_reuses) / n,
++                      double(st.index_heap_hits - last_.index_heap_hits) / n,
+                       double(st.index_converts - last_.index_converts) / n,
++                      double(st.index_heap_requests - last_.index_heap_requests) / n,
++                      st.index_heap_resets - last_.index_heap_resets,
++                      double(st.texture_memo_hits - last_.texture_memo_hits) / n,
+                       double(st.invalidations - last_.invalidations) / n);
+         }
+         if (renderer_->gpu_timing()) {
+@@ -240,6 +245,8 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+       last_.render_passes = st.render_passes, last_.transfers = st.transfers, last_.barriers = st.barriers;
+       last_.pending_draws = st.pending_draws;
+       last_.index_reuses = st.index_reuses, last_.index_converts = st.index_converts;
++      last_.index_heap_hits = st.index_heap_hits, last_.index_heap_resets = st.index_heap_resets;
++      last_.texture_memo_hits = st.texture_memo_hits, last_.index_heap_requests = st.index_heap_requests;
+       last_.invalidations = st.invalidations;
+       last_.texture_loads = st.texture_loads, last_.texture_loads_evicted = st.texture_loads_evicted;
+       last_.texture_reloads = st.texture_reloads, last_.texture_evictions = st.texture_evictions;
+@@ -1029,6 +1036,7 @@ class NativeCommandProcessor final : public rg::CommandProcessor {
+     uint64_t draw_us = 0, texture_us = 0, wait_us = 0, flushes = 0, draws = 0, resolves = 0;
+     uint64_t render_passes = 0, transfers = 0, barriers = 0, pending_draws = 0, gpu_ns[7] = {}, draw_phase_ns[12] = {};
+     uint64_t index_reuses = 0, index_converts = 0, invalidations = 0;
++    uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+     uint64_t texture_loads = 0, texture_loads_evicted = 0, texture_reloads = 0, texture_evictions = 0;
+   } last_;
+   // Frame-time diagnostics (issue #12): the interval between swaps on this thread, what each slow one did (a "gfx
+diff --git a/src/gfx/vk/draw.cpp b/src/gfx/vk/draw.cpp
+index 53c87ce..e6197b6 100644
+--- a/src/gfx/vk/draw.cpp
++++ b/src/gfx/vk/draw.cpp
+@@ -334,6 +334,15 @@ bool Renderer::InitDrawing() {
+   if (!buffers) {
+     return Fail("couldn't allocate the guest-memory buffer or the upload rings");
+   }
++  // qos: the index heap is off by default (BOTS_GFX_INDEX_HEAP=1 turns it on): in 007 its lookups cost the tracker
++  // phase more (+4.4 ms a frame) than it saved converting indices (-3.2 ms). Without it indices go to the ring.
++  {
++    const char* v = std::getenv("BOTS_GFX_INDEX_HEAP");
++    if (v && *v == '1' && !CreateBuffer(index_heap_, kIndexHeapSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, true)) {
++      REXLOG_WARN("gfx native: couldn't allocate the index heap; indices go through the upload ring");
++      index_heap_ = {};
++    }
++  }
+   // One constants set per ring.
+   for (uint32_t i = 0; i < kSubmissions; ++i) {
+     const VkDescriptorSetAllocateInfo constants_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
+@@ -410,6 +419,7 @@ void Renderer::DestroyDrawing() {
+   for (Buffer& ring : rings_) {
+     if (ring.buffer) vmaDestroyBuffer(allocator_, ring.buffer, ring.allocation);
+   }
++  if (index_heap_.buffer) vmaDestroyBuffer(allocator_, index_heap_.buffer, index_heap_.allocation);
+   shaders_.reset();
+ }
+ 
+@@ -985,6 +995,36 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   }
+ 
+   profile.Mark(kPhaseTracker);
++  // qos: a DMA index buffer drawn as it is (no primitive conversion) can come from the index heap, kept across frames:
++  // found there, or requested from the tracker here (before the ring reservation: a request may upload and flush) so
++  // its pages are watched, and converted into the heap below. An address the CPU has rewritten stays on the ring.
++  IndexKey heap_key{};
++  IndexUpload heap_hit{};
++  bool heap_found = false, heap_new = false;
++  uint64_t heap_generation = 0;
++  const bool direct_indices = dma && !expanded && prim != xe::PrimitiveType::kQuadList &&
++                              prim != xe::PrimitiveType::kTriangleFan && prim != xe::PrimitiveType::kPolygon;
++  if (direct_indices && tracker_ && index_heap_.buffer) {
++    const bool reset_enabled = regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena;
++    const uint32_t reset_index = regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx;
++    const bool strip = topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
++    heap_key = {draw.index_base, count, reset_enabled ? reset_index : 0,
++                uint32_t(index32) | uint32_t(reset_enabled) << 1 | uint32_t(strip) << 2 |
++                    uint32_t(IndexEndian(draw.index_endian, index32)) << 3};
++    heap_generation = index_heap_generation_;
++    if (const auto it = index_static_.find(heap_key); it != index_static_.end()) {
++      heap_hit = it->second, heap_found = true;
++    } else if (!index_heap_full_ && !index_dynamic_.contains(draw.index_base >> kIndexBlockShift) &&
++               memory_(draw.index_base)) {
++      const uint32_t bytes = count * (index32 ? 4u : 2u);
++      if (tracker_->IsCurrent(draw.index_base, bytes)) {
++        heap_new = true;  // already watched (shared with requested vertex data, say)
++      } else if (index_heap_requests_ < kIndexHeapRequests) {
++        ++index_heap_requests_, ++stats_.index_heap_requests;
++        heap_new = tracker_->Request(draw.index_base, bytes);
++      }
++    }
++  }
+   // Tracked memory: what the shaders read from shared memory - vertex buffers, and the DMA indices rectangle-list
+   // vertex shaders load themselves. (Other indices are read on the CPU below.)
+   if (tracker_) {
+@@ -1020,11 +1060,27 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   draw_reads_.clear();
+   // At most 32 fetch constants, two bindings each (3D-or-stacked fetches); fixed arrays, no allocation per draw.
+   using Views = std::array<VkImageView, 64>;
+-  auto texture_views = [&](const std::vector<rg::SpirvShader::TextureBinding>& bindings, Views& views) {
++  static_assert(sizeof(rg::xenos::xe_gpu_texture_fetch_t) == sizeof(TextureMemo::words));
++  auto texture_views = [&](const std::vector<rg::SpirvShader::TextureBinding>& bindings, Views& views,
++                           uint32_t stage) {
+     uint32_t n = 0;
+     for (const auto& binding : bindings) {
+       if (n == views.size()) break;
+       const auto fetch = regs.GetTextureFetch(binding.fetch_constant);
++      // qos: the same fetch constant as this binding's last draw, with nothing changed since: its view again.
++      TextureMemo& memo = texture_memo_[stage][n];
++      if (!trace && memo.epoch == texture_memo_epoch_ && memo.dimension == uint32_t(binding.dimension) &&
++          memo.is_signed == binding.is_signed && std::memcmp(memo.words, &fetch, sizeof(memo.words)) == 0) {
++        if (memo.texture) {
++          memo.texture->last_used = frame_;
++          texture_swizzles[binding.fetch_constant] = memo.swizzle;
++          texture_signs[binding.fetch_constant] = memo.signs;
++        }
++        views[n++] = memo.view;
++        ++stats_.texture_memo_hits;
++        continue;
++      }
++      bool memoize = false;
+       VkImageView view = VK_NULL_HANDLE;
+       const char* source = "null";
+       // As the SDK's AreDimensionsCompatible: 3D-or-stacked fetches have a 2D array binding (stacked data) and a 3D
+@@ -1057,15 +1113,30 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+         source = resolved->format == VK_FORMAT_R32_SFLOAT ? "depth" : "rt";
+       } else {
+         uint32_t swizzle = xe::XE_GPU_TEXTURE_SWIZZLE_RGBA;
++        texture_view_texture_ = nullptr;
+         view = TextureView(fetch, binding.is_signed, swizzle);
++        GuestTexture* const texture = texture_view_texture_;
+         if (view) {
+           texture_swizzles[binding.fetch_constant] = swizzle;
+           texture_signs[binding.fetch_constant] = rg::texture_util::SwizzleSigns(fetch);
+           source = "tex";
++          // TextureView may have flushed or dropped textures (a reload): only an unchanged epoch is kept.
++          if (texture) {
++            memoize = true;
++            memo.texture = texture, memo.swizzle = swizzle, memo.signs = texture_signs[binding.fetch_constant];
++          }
+         } else {
+           view = null_image->view;
++          if (texture) memoize = true, memo.texture = nullptr;
+         }
+       }
++      if (memoize) {
++        std::memcpy(memo.words, &fetch, sizeof(memo.words));
++        memo.epoch = texture_memo_epoch_, memo.view = view;
++        memo.dimension = uint32_t(binding.dimension), memo.is_signed = binding.is_signed;
++      } else {
++        memo.epoch = 0;
++      }
+       views[n++] = view;
+       if (trace && !binding.is_signed) {
+         char t[96];
+@@ -1085,8 +1156,8 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     return;
+   }
+   Views vview_storage, pview_storage;
+-  const std::span<const VkImageView> vviews = texture_views(vtextures, vview_storage),
+-                                     pviews = texture_views(ptextures, pview_storage);
++  const std::span<const VkImageView> vviews = texture_views(vtextures, vview_storage, 0),
++                                     pviews = texture_views(ptextures, pview_storage, 1);
+   // BOTS_DUMP_PS=<dir> (Bourne): each pixel shader once, as <dir>/<microcode hash>.txt: the textures the first draw
+   // using it binds (fetch constant, size, format), that draw's non-zero pixel shader constants, and the microcode.
+   if (pshader) {
+@@ -1160,6 +1231,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+   bool indexed = false, restart = false;
+   uint32_t host_count = count;
+   VkDeviceSize index_offset = 0;
++  VkBuffer index_buffer = VK_NULL_HANDLE;  // qos: the index heap's; null: the ring's (ring_ when bound)
+   VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+   std::vector<uint32_t> guest, host;
+   const xe::Endian index_endian = IndexEndian(draw.index_endian, index32);
+@@ -1221,25 +1293,69 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+     const IndexKey key{draw.index_base, count, reset_enabled ? reset_index : 0,
+                        uint32_t(index32) | uint32_t(reset_enabled) << 1 | uint32_t(strip) << 2 |
+                            uint32_t(index_endian) << 3};
+-    if (auto it = index_uploads_.find(key); it != index_uploads_.end()) {
++    // Converts the guest indices into `alloc(bytes)` (the ring or the heap), widening a 16-bit list with a reset index
++    // to 32 bits (0xFFFFFFFF), as on the general path below. False when there was no room.
++    auto convert = [&](auto alloc) {
++      if (!index32 && (!reset_enabled || strip)) {
++        auto* dst = reinterpret_cast<uint16_t*>(alloc(VkDeviceSize(count) * 2));
++        if (!dst) return false;
++        restart = ConvertIndices(src, dst, count, index_endian, reset_enabled, reset_index);
++        index_type = VK_INDEX_TYPE_UINT16;
++      } else if (index32) {
++        auto* dst = reinterpret_cast<uint32_t*>(alloc(VkDeviceSize(count) * 4));
++        if (!dst) return false;
++        restart = ConvertIndices(src, dst, count, index_endian, reset_enabled, reset_index);
++      } else {
++        std::vector<uint16_t> narrow(count);
++        ConvertIndices(src, narrow.data(), count, index_endian, false, 0);
++        auto* dst = reinterpret_cast<uint32_t*>(alloc(VkDeviceSize(count) * 4));
++        if (!dst) return false;
++        for (uint32_t i = 0; i < count; ++i) dst[i] = narrow[i] == reset_index ? UINT32_MAX : narrow[i];
++      }
++      return true;
++    };
++    // qos: the index heap first (its entries outlive the ring); a heap emptied by a flush since the lookup is
++    // not used.
++    const bool heap_valid = heap_generation == index_heap_generation_ && index_heap_.buffer;
++    if (heap_found && heap_valid) {
++      index_buffer = index_heap_.buffer;
++      index_offset = heap_hit.offset;
++      index_type = heap_hit.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
++      restart = heap_hit.restart;
++      indexed = true;
++      ++stats_.index_reuses, ++stats_.index_heap_hits;
++    } else if (heap_new && heap_valid && !index_heap_full_ &&
++               convert([&](VkDeviceSize bytes) -> uint8_t* {
++                 const VkDeviceSize start = (index_heap_used_ + 3) & ~VkDeviceSize(3);
++                 if (start + bytes > index_heap_.size) {
++                   index_heap_full_ = true;  // emptied at the next flush
++                   return nullptr;
++                 }
++                 index_heap_used_ = start + bytes;
++                 index_offset = start;
++                 return index_heap_.mapping + start;
++               })) {
++      restart = restart && strip;  // Vulkan only restarts strips
++      index_buffer = index_heap_.buffer;
++      indexed = true;
++      ++stats_.index_converts;
++      const uint32_t bytes = count * (index32 ? 4u : 2u);
++      index_static_[heap_key] = {uint32_t(index_offset), bytes, index_type == VK_INDEX_TYPE_UINT32, restart};
++      const uint32_t end = heap_key.base + std::max(bytes, 1u) - 1;
++      for (uint32_t block = heap_key.base >> kIndexBlockShift; end >= heap_key.base && block <= end >> kIndexBlockShift;
++           ++block) {
++        index_static_blocks_[block].push_back(heap_key);
++      }
++    } else if (auto it = index_uploads_.find(key); it != index_uploads_.end()) {
+       index_offset = it->second.offset;
+       index_type = it->second.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+       restart = it->second.restart;
+       indexed = true;
+       ++stats_.index_reuses;
+-    } else if (!index32 && (!reset_enabled || strip)) {
+-      auto* dst = reinterpret_cast<uint16_t*>(Upload(VkDeviceSize(count) * 2, 4, index_offset));
+-      restart = ConvertIndices(src, dst, count, index_endian, reset_enabled, reset_index);
+-      index_type = VK_INDEX_TYPE_UINT16;
+-    } else if (index32) {
+-      auto* dst = reinterpret_cast<uint32_t*>(Upload(VkDeviceSize(count) * 4, 4, index_offset));
+-      restart = ConvertIndices(src, dst, count, index_endian, reset_enabled, reset_index);
+     } else {
+-      // A 16-bit list with a reset index: it becomes 0xFFFFFFFF, as on the general path below.
+-      std::vector<uint16_t> narrow(count);
+-      ConvertIndices(src, narrow.data(), count, index_endian, false, 0);
+-      auto* dst = reinterpret_cast<uint32_t*>(Upload(VkDeviceSize(count) * 4, 4, index_offset));
+-      for (uint32_t i = 0; i < count; ++i) dst[i] = narrow[i] == reset_index ? UINT32_MAX : narrow[i];
++      index_type = VK_INDEX_TYPE_UINT32;
++      restart = false;
++      convert([&](VkDeviceSize bytes) { return Upload(bytes, 4, index_offset); });
+     }
+     if (!indexed) {
+       restart = restart && strip;  // Vulkan only restarts strips
+@@ -1916,7 +2032,7 @@ void Renderer::IssueDraw(const rg::RegisterFile& regs, const ShaderLoad& vs, con
+                          (samples_x * samples_y > 1 ? 2u : 0u) | (rect ? 4u : 0u) | (indexed ? 8u : 0u),
+                      uint32_t(prim), host_count, streams, px);
+   }
+-  if (indexed) vk_.vkCmdBindIndexBuffer(cmd_, ring_.buffer, index_offset, index_type);
++  if (indexed) vk_.vkCmdBindIndexBuffer(cmd_, index_buffer ? index_buffer : ring_.buffer, index_offset, index_type);
+   BeginDrawQuery();
+   if (indexed) {
+     vk_.vkCmdDrawIndexed(cmd_, host_count, 1, 0, 0, 0);
+diff --git a/src/gfx/vk/memory_sync.cpp b/src/gfx/vk/memory_sync.cpp
+index c7f1183..e9ea9ca 100644
+--- a/src/gfx/vk/memory_sync.cpp
++++ b/src/gfx/vk/memory_sync.cpp
+@@ -29,6 +29,18 @@ void MemorySync::SetValidBits(uint32_t page_first, uint32_t page_last, bool vali
+   }
+ }
+ 
++bool MemorySync::IsCurrent(uint32_t start, uint32_t length) {
++  if (!length || start >= kBufferSize || kBufferSize - start < length) return false;
++  const uint32_t page_first = start >> page_size_log2(), page_last = (start + length - 1) >> page_size_log2();
++  for (uint32_t block = page_first >> 6; block <= page_last >> 6; ++block) {
++    const uint32_t lo = block == page_first >> 6 ? page_first & 63 : 0;
++    const uint32_t hi = block == page_last >> 6 ? page_last & 63 : 63;
++    const uint64_t bits = (hi == 63 ? ~uint64_t(0) : (uint64_t(1) << (hi + 1)) - 1) & ~((uint64_t(1) << lo) - 1);
++    if ((valid_[block].load(std::memory_order_acquire) & bits) != bits) return false;
++  }
++  return true;
++}
++
+ bool MemorySync::Request(uint32_t start, uint32_t length) {
+   if (!length || start >= kBufferSize || kBufferSize - start < length) return RequestRange(start, length);
+   const uint32_t page_first = start >> page_size_log2(), page_last = (start + length - 1) >> page_size_log2();
+diff --git a/src/gfx/vk/memory_sync.h b/src/gfx/vk/memory_sync.h
+index c67d649..bee1a19 100644
+--- a/src/gfx/vk/memory_sync.h
++++ b/src/gfx/vk/memory_sync.h
+@@ -29,6 +29,7 @@ class MemorySync final : public rex::graphics::SharedMemory, public GuestMemoryT
+   ~MemorySync() override;
+ 
+   bool Request(uint32_t start, uint32_t length) override;
++  bool IsCurrent(uint32_t start, uint32_t length) override;
+   void TakeInvalidated(std::vector<std::pair<uint32_t, uint32_t>>& ranges) override;
+ 
+   // Diagnostics: requests, ones that took the lock and ones of those that uploaded (command-processor thread), and
+diff --git a/src/gfx/vk/renderer.cpp b/src/gfx/vk/renderer.cpp
+index 145fcd4..abeb3a3 100644
+--- a/src/gfx/vk/renderer.cpp
++++ b/src/gfx/vk/renderer.cpp
+@@ -498,6 +498,7 @@ void Renderer::ProcessInvalidations() {
+     for (const auto& [start, end] : texture->ranges) {
+       if (overlaps_any(start, end)) {
+         texture->dirty = true;
++        BumpTextureMemo();
+         break;
+       }
+     }
+@@ -508,37 +509,57 @@ void Renderer::ProcessInvalidations() {
+       const auto& image = *it->second;
+       // Close enough: pages, not texels. Guest texels: the host image is render-scaled.
+       const uint64_t bytes = uint64_t(double(image.width) * image.height * 4 / (double(scale_) * scale_));
+-      it = overlaps_any(it->first, uint32_t(std::min<uint64_t>(it->first + bytes, UINT32_MAX))) ? map->erase(it)
+-                                                                                                 : std::next(it);
++      if (overlaps_any(it->first, uint32_t(std::min<uint64_t>(it->first + bytes, UINT32_MAX)))) {
++        it = map->erase(it);
++        BumpTextureMemo();
++      } else {
++        ++it;
++      }
+     }
+   }
+   // Index uploads: only those in the invalidated ranges' 64 KB blocks (index_blocks_); a range spanning more blocks
+-  // than there are uploads checks them all.
+-  if (index_uploads_.empty()) return;
+-  for (const auto& [first, last] : invalidated_) {
+-    auto overlaps = [&](uint32_t start, uint32_t end) { return start < end && start <= last && end > first; };
+-    const uint32_t block_first = first >> kIndexBlockShift, block_last = last >> kIndexBlockShift;
+-    if (uint64_t(block_last - block_first) + 1 > index_uploads_.size()) {
+-      for (auto it = index_uploads_.begin(); it != index_uploads_.end();) {
+-        it = overlaps(it->first.base, it->first.base + it->second.bytes) ? index_uploads_.erase(it) : std::next(it);
++  // than there are uploads checks them all. The same for the index heap's (qos), whose erased addresses are dynamic.
++  auto forget_indices = [&](std::unordered_map<IndexKey, IndexUpload, IndexKeyHash>& uploads,
++                            std::unordered_map<uint32_t, std::vector<IndexKey>>& blocks, bool heap) {
++    if (uploads.empty()) return;
++    auto erased = [&](const IndexKey& key) {
++      if (!heap) return;
++      if (index_dynamic_.size() >= 65536) index_dynamic_.clear();
++      index_dynamic_.insert(key.base >> kIndexBlockShift);
++    };
++    for (const auto& [first, last] : invalidated_) {
++      auto overlaps = [&](uint32_t start, uint32_t end) { return start < end && start <= last && end > first; };
++      const uint32_t block_first = first >> kIndexBlockShift, block_last = last >> kIndexBlockShift;
++      if (uint64_t(block_last - block_first) + 1 > uploads.size()) {
++        for (auto it = uploads.begin(); it != uploads.end();) {
++          if (overlaps(it->first.base, it->first.base + it->second.bytes)) {
++            erased(it->first);
++            it = uploads.erase(it);
++          } else {
++            ++it;
++          }
++        }
++        continue;
++      }
++      for (uint32_t block = block_first; block <= block_last; ++block) {
++        const auto bucket = blocks.find(block);
++        if (bucket == blocks.end()) continue;
++        std::vector<IndexKey>& keys = bucket->second;
++        std::erase_if(keys, [&](const IndexKey& key) {
++          const auto it = uploads.find(key);
++          if (it == uploads.end()) return true;  // already gone
++          if (!overlaps(key.base, key.base + it->second.bytes)) return false;
++          erased(key);
++          uploads.erase(it);
++          return true;
++        });
++        if (keys.empty()) blocks.erase(bucket);
++        if (block == UINT32_MAX) break;
+       }
+-      continue;
+-    }
+-    for (uint32_t block = block_first; block <= block_last; ++block) {
+-      const auto bucket = index_blocks_.find(block);
+-      if (bucket == index_blocks_.end()) continue;
+-      std::vector<IndexKey>& keys = bucket->second;
+-      std::erase_if(keys, [&](const IndexKey& key) {
+-        const auto it = index_uploads_.find(key);
+-        if (it == index_uploads_.end()) return true;  // already gone
+-        if (!overlaps(key.base, key.base + it->second.bytes)) return false;
+-        index_uploads_.erase(it);
+-        return true;
+-      });
+-      if (keys.empty()) index_blocks_.erase(bucket);
+-      if (block == UINT32_MAX) break;
+     }
+-  }
++  };
++  forget_indices(index_uploads_, index_blocks_, false);
++  forget_indices(index_static_, index_static_blocks_, true);
+ }
+ 
+ void Renderer::EndFrame() {
+@@ -656,6 +677,7 @@ void Renderer::InitTexturePool() {
+ }
+ 
+ void Renderer::DropGuestTexture(GuestTexture& texture) {
++  BumpTextureMemo();
+   texture_bytes_ -= std::min(texture_bytes_, texture.bytes);
+   texture.bytes = 0;
+   Retire(texture.image);
+@@ -701,6 +723,7 @@ void Renderer::DestroyFrameState() {
+   evicted_keys_.clear();
+   texture_at_.clear();
+   depth_texture_at_.clear();
++  BumpTextureMemo();
+ }
+ 
+ void Renderer::ResetFrame() {
+@@ -711,6 +734,8 @@ void Renderer::ResetFrame() {
+   shared_memory_uploaded_ = false;
+   last_resolve_address_ = 0;
+   ForgetIndexUploads();
++  ResetIndexHeap();
++  index_dynamic_.clear();
+   stats_ = {};
+ }
+ 
+@@ -914,6 +939,10 @@ void Renderer::Flush() {
+   EndRendering("flush");
+   GpuMark(kGpuOther, true);  // closes the last span
+   if (ring_used_) vmaFlushAllocation(allocator_, ring_.allocation, 0, ring_used_);
++  if (index_heap_used_ > index_heap_flushed_) {
++    vmaFlushAllocation(allocator_, index_heap_.allocation, index_heap_flushed_, index_heap_used_ - index_heap_flushed_);
++    index_heap_flushed_ = index_heap_used_;
++  }
+   ring_peak_ = std::max(ring_peak_, ring_used_);
+   vk_.vkEndCommandBuffer(cmd_);
+   recording_ = false;
+@@ -932,6 +961,12 @@ void Renderer::Flush() {
+   retired_.clear();
+   QueueResolve(current_);
+   const uint32_t next = (current_ + 1) % kSubmissions;
++  index_heap_requests_ = 0;
++  if (index_heap_full_) {  // qos: nothing in flight may still read the heap when it is reused
++    for (Submission& s : submissions_) WaitSubmission(s);
++    ResetIndexHeap();
++    ++stats_.index_heap_resets;
++  }
+   WaitSubmission(submissions_[next]);
+   UseSubmission(next);
+ }
+@@ -1095,6 +1130,7 @@ Renderer::Image* Renderer::ResolveTexture(uint32_t address, uint32_t format, uin
+     }
+     slot = std::move(image);
+   }
++  BumpTextureMemo();
+   if (depth_value) {
+     depth_texture_at_[address] = slot.get();
+   } else {
+diff --git a/src/gfx/vk/renderer.h b/src/gfx/vk/renderer.h
+index 201d96a..6c56b82 100644
+--- a/src/gfx/vk/renderer.h
++++ b/src/gfx/vk/renderer.h
+@@ -55,6 +55,8 @@ class GuestMemoryTracker {
+   // Makes [start, start + length) current in the shared-memory buffer: re-uploads (UploadGuestMemory) the pages
+   // the CPU wrote since they were last requested, and watches them for the next write.
+   virtual bool Request(uint32_t start, uint32_t length) = 0;
++  // qos: whether Request would find the whole range current already (valid and watched): no lock, no upload.
++  virtual bool IsCurrent(uint32_t, uint32_t) { return false; }
+   // Physical ranges [first, last] the CPU wrote since the last call (for the renderer's caches).
+   virtual void TakeInvalidated(std::vector<std::pair<uint32_t, uint32_t>>& ranges) = 0;
+ };
+@@ -178,6 +180,9 @@ class Renderer : public Pm4Sink {
+     uint64_t presents = 0, barriers = 0;  // native
+     uint64_t constant_reuses = 0;  // constant buffers bound from an earlier draw's upload
+     uint64_t index_reuses = 0, index_converts = 0;  // DMA index buffers bound from an earlier conversion / converted
++    // qos: of those, bound from the index heap (kept across frames), and the heap's resets; texture bindings
++    // answered by the memo (texture_memo_).
++    uint64_t index_heap_hits = 0, index_heap_resets = 0, texture_memo_hits = 0, index_heap_requests = 0;
+     uint64_t pending_draws = 0;  // live: skipped while their shaders or pipeline were still being made
+     // Live: draws dropped because their pipeline failed to build (the driver refused it; every frame it's drawn).
+     uint64_t failed_pipeline_draws = 0;
+@@ -746,6 +751,47 @@ class Renderer : public Pm4Sink {
+   std::string set_memo_key_[2];
+   VkDescriptorSet set_memo_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+   uint64_t set_memo_epoch_[2] = {0, 0}, texture_sets_epoch_ = 1;
++  // qos: each texture binding's last result, per stage and binding position, for a draw whose fetch constant (all six
++  // words), signedness and dimension match: skips the resolve-destination and texture-cache lookups and the swizzled
++  // view's map. Only guest textures (and their null fallback), never resolve destinations (crops, raw depth) or the
++  // prompt atlases. Valid while texture_memo_epoch_ is unchanged: bumped when a texture is dropped or reloaded, a
++  // CPU write dirties one, or the resolve-destination maps change (BumpTextureMemo).
++  struct TextureMemo {
++    uint32_t words[6];
++    uint64_t epoch = 0;
++    GuestTexture* texture = nullptr;  // null: TextureView found nothing (null image)
++    VkImageView view = VK_NULL_HANDLE;
++    uint32_t swizzle = 0, signs = 0;
++    uint32_t dimension = 0;
++    bool is_signed = false;
++  };
++  TextureMemo texture_memo_[2][64];
++  uint64_t texture_memo_epoch_ = 1;
++  void BumpTextureMemo() { ++texture_memo_epoch_; }
++  GuestTexture* texture_view_texture_ = nullptr;  // TextureView's texture (for the memo), null when none
++  // qos: static DMA index buffers, converted once into index_heap_ and kept across submissions (index_uploads_
++  // only lasts for one ring). Their guest pages are requested from the tracker, so they are watched: a CPU write
++  // erases the entry (ProcessInvalidations) and its whole 64 KB block goes to the ring from then on (index_dynamic_:
++  // games stream dynamic indices through a ring of their own, at a new address each frame). Space
++  // is only reclaimed all at once: when the heap fills, the next Flush waits for the GPU and empties it.
++  static constexpr VkDeviceSize kIndexHeapSize = VkDeviceSize(64) << 20;
++  Buffer index_heap_;
++  VkDeviceSize index_heap_used_ = 0, index_heap_flushed_ = 0;
++  bool index_heap_full_ = false;
++  uint64_t index_heap_generation_ = 1;
++  // New heap entries whose pages are not watched yet cost a tracker request (lock, page protection, upload): at most
++  // kIndexHeapRequests of those a submission, so indices streamed at new addresses each frame stay cheap.
++  static constexpr uint32_t kIndexHeapRequests = 32;
++  uint32_t index_heap_requests_ = 0;  // bumped when it is emptied: earlier offsets no longer hold their indices
++  std::unordered_map<IndexKey, IndexUpload, IndexKeyHash> index_static_;
++  std::unordered_map<uint32_t, std::vector<IndexKey>> index_static_blocks_;
++  std::unordered_set<uint32_t> index_dynamic_;
++  void ResetIndexHeap() {
++    index_static_.clear(), index_static_blocks_.clear();
++    index_heap_used_ = index_heap_flushed_ = 0;
++    index_heap_full_ = false;
++    ++index_heap_generation_;
++  }
+   std::vector<uint8_t> last_system_constants_;
+   uint64_t system_constants_version_ = 0;  // bumped when they change
+   uint32_t transient_sets_ = 0;  // allocated from transient_pool_ this submission
+diff --git a/src/gfx/vk/texture.cpp b/src/gfx/vk/texture.cpp
+index a540210..bc02f3d 100644
+--- a/src/gfx/vk/texture.cpp
++++ b/src/gfx/vk/texture.cpp
+@@ -281,6 +281,7 @@ VkImageView Renderer::TextureView(const rg::xenos::xe_gpu_texture_fetch_t& fetch
+   }
+   GuestTexture& texture = *slot;
+   texture.last_used = frame_;
++  texture_view_texture_ = texture.prompt_atlas || texture.pad_sheet ? nullptr : &texture;
+   if (!texture.image.image) return VK_NULL_HANDLE;
+   host_swizzle = HostSwizzle(fetch.swizzle, texture.host_format_swizzle);
+   return SwizzledView(texture.image, host_swizzle, is_signed);

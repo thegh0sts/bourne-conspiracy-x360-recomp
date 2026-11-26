@@ -1,9 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.3.6 (2026-11-26)
+
+Controller camera fixes and an aiming reticle size option. Launcher only: no reinstall needed.
+
+### Input
+- **Controller camera: the stick turn speed now works at full stick.** At full stick the camera turns at each camera mode's own top rate (`YawSpeed` / `PitchSpeed` in `Xe-BourneCamera.ini` and `BourneCamera.ini`: 65 degrees a second on foot, 35 aiming over the shoulder, 120 sprinting), which **Stick turn speed** didn't touch: it only scaled the look scales, which shape the stick's travel below full. The launcher now scales those top rates too (controller config only; mouse look keeps its own).
+- **Stick camera smoothing** (launcher, Controls tab, 100% = the game's): the share of the camera's orbit smoothing (`HmOrbitSmootherCameraBehavior` `SmoothTime`, 0.2 s on foot) kept with a controller. Lower is more responsive.
+- **Linear stick turning fixed** (Camera tab). The game speeds the camera up once the stick has been held for `YawRampTime` (0.5 s; 0.8 s aiming). The option set that time to 1000 s, so the camera stayed at its slow starting rate for good; it now sets 0.01 s, so the stick turns at its top rate straight away.
+- **Aiming reticle size** (launcher, Camera tab: tick **Custom aiming reticle size** to show the size slider, 50-250%; unticked keeps the game's own size). The reticle is a 40 x 40 image in the HUD's UI scene (`BourneHUD.HudUI.HUDContainer.Reticule`, cooked into `BourneNative.xxx`), centred by docking with a padding of -20; no config sets it. The launcher writes the size and padding into a copy of the package (`installer/tbc_reticle.py`: the one LZO block holding them is decompressed, patched and stored uncompressed, the chunk offsets moved) and updates its `Xbox360TOC.txt` entry. The original is kept as `BourneNative.xxx.bak` and put back at 100%.
+
+### Other
+- Groundwork for a Linux build (launcher, installer and a few `#ifdef`s in `src/`); not released yet, and no change on Windows.
+
+## 0.3.5 (2026-11-23)
+
+Fight attacks on a controller's triggers, a faster native renderer (from the 007 port), and Quit Game back on the main menu after playing. Needs a reinstall (**Reinstall now** in the launcher): the bundled SDK is now `tbc14`.
 
 ### Input
 - **Fight attacks on the triggers, for controllers** (launcher, Controls tab: **Fight attacks on the triggers (RT light, LT heavy; controller)**, off by default). The game's own layout attacks with X (light) and Y (heavy); ticked, light attack moves to RT and heavy to LT, as keyboard and mouse already have them on the mouse buttons. X keeps reload and Y Bourne Instinct outside fights, and the triggers still shoot and aim with a gun out. The launcher writes the same trigger bindings it uses for keyboard and mouse into the game's own config (`Xe-BourneInput.ini`), and starts the game with `--pad_trigger_attacks=true`, so fight prompts ("X for Light Attack", "Chain X and Y together to perform Combos") show RT / LT instead of X / Y, or R2 / L2 with PlayStation prompts (`src/keyboard_prompts.cpp`).
+
+### Renderer
+- **Native renderer: speed-ups and fixes from the 007 port** (patches `0015`-`0024`): the per-draw CPU work cut down as in 007 (shader and texture lookups remembered, a flat index-upload table, textures the game rewrites with the same bytes kept instead of reloaded; `0018`, `0019`, `0021`, `0023`, `0024`), decal flicker above render scale 1 fixed (`0015`), resolves into part of a taller texture (`0016`), shader microcode copied when loaded (`0017`), a profile of the renderer thread with `BOTS_DRAW_PROFILE=1` (`0020`) and a second recording thread (`0022`, `BOTS_GFX_RECORD_THREAD=1`). New SDK bundle **`tbc14`**.
+- **Second render thread** (launcher, Graphics tab, on by default): the native renderer records its Vulkan commands on a worker thread (`BOTS_GFX_RECORD_THREAD`, which the launcher always sets to 1 or 0). In 007 it saved about 2 ms a frame in busy scenes. Untick it if the picture shows glitches.
+
+### Fixes
+- **Quit Game missing after returning to the main menu from a game** (`src/menu_quit.cpp`). Its check of which guest memory pages can be read kept every answer for good, so a page that couldn't be read when first asked (the object table before a level grew it, heap not in use yet) stayed "unreadable" after the game put the main menu's buttons there. The answers now last one scan of the object table, as `qte.cpp`'s do. The log says when the main menu is found and gone (`menu_quit: main menu found`).
+
+## 0.3.4 (2026-11-21)
+
+### Input
 - **Keyboard and mouse no longer changes the controller config.** The keyboard-and-mouse changes to the game's config (fight attacks moved off X / Y onto the mouse buttons, mouse camera rates, aim assist off) went into the game's own `Coalesced.ini` and stayed there. A later run without the launcher's keyboard-and-mouse flags (`Play.bat`, a build started by hand) then had a controller whose X and Y did nothing in fights. The launcher now writes the keyboard-and-mouse config to its own copy in `game\BourneGame\KeyboardMouse`, and the game reads that copy only when started with `--mnk_mode=true` (`src/kbm_config.cpp`). Everything else stays in the game's own file.
 - **New key glyphs.** Every keyboard and mouse prompt is now a flat, light grey key (`assets/keys`, made by `assets/kbm-test/make_key_glyphs.py`), so only QTEs are in colour. Each is a 128x128 image with the key at 82%, so it sits in the line of text, and all of them (now 27, with C, V, X, 1-4, Tab and Alt) fit on the button font's page.
 - **3D takedown diamond.** With keyboard and mouse, the QTE diamond (ButtonPresses, ButtonPressesDiamond, ButtonPressesDiamondNoOutline) is drawn as 3D W / A / S / D keys, following the original diamond's layout and colours (`assets/keys/qte`, made by `assets/kbm-test/make_kbm_diamond.py`). In the diamond itself the lit key's place is a flat, darker shape with no letter, so the lettered key the game animates over it looks pressed into it. If any QTE key is rebound away from W / A / S / D, the keys are drawn one by one as before. The installer now packs these pictures (`build_installer.bat`).
@@ -11,13 +37,11 @@
 - **On-screen messages.** The native renderer can show a short message from the game, low in the middle, in the achievement pop-up's style (patch `0013-osd-message.patch`; `src/osd.cpp`). Each scroll wheel notch shows the move speed. New SDK bundle **`tbc13`**.
 
 ### Renderer
-- **Native renderer: speed-ups and fixes from the 007 port** (patches `0015`-`0024`): the per-draw CPU work cut down as in 007 (shader and texture lookups remembered, a flat index-upload table, textures the game rewrites with the same bytes kept instead of reloaded; `0018`, `0019`, `0021`, `0023`, `0024`), decal flicker above render scale 1 fixed (`0015`), resolves into part of a taller texture (`0016`), shader microcode copied when loaded (`0017`), a profile of the renderer thread with `BOTS_DRAW_PROFILE=1` (`0020`) and an optional second recording thread (`0022`, `BOTS_GFX_RECORD_THREAD=1`; off by default). New SDK bundle **`tbc14`**.
 - **Native renderer: tiled frames** (patch `0012-tiled-resolve-offset.patch`, from the Eat Lead port). A game that draws its frame in tiles (predicated tiling) copies each tile into its place in the full texture; the renderer now puts it there instead of into a separate texture, so a tiled frame shows whole. Bourne doesn't tile by default (`--msaa=false`), so nothing changes in its picture; with `--msaa=true` the scene's two strips might now show whole on the native renderer (untested). The `--msaa=false` workarounds stay, and host MSAA (`docs/native-msaa.md`) is still the plan for anti-aliasing.
 
 - **Native renderer: texture brightness fix** (SDK patch `tools/sdk-patches/0012-texture-exp-adjust-word.patch`, found porting 007 Quantum of Solace). The shader translator the native renderer uses read a texture's exponent bias (a power-of-two brightness factor) from the wrong field of its fetch constant, inside the mip LOD bias. Textures with a zero LOD bias were unaffected; any with one setting those bits came out too dark or too bright (in 007, menu text and images 1/256 as bright: invisible). New SDK bundle **`tbc12`** (`SDK_BUNDLE` in `installer/build_installer.bat`), which also carries renderer patch 0012: a reinstall replaces the bundle. Not yet compared in Bourne.
 
 ### Fixes
-- **Quit Game missing after returning to the main menu from a game** (`src/menu_quit.cpp`). Its check of which guest memory pages can be read kept every answer for good, so a page that couldn't be read when first asked (the object table before a level grew it, heap not in use yet) stayed "unreadable" after the game put the main menu's buttons there. The answers now last one scan of the object table, as `qte.cpp`'s do. The log says when the main menu is found and gone (`menu_quit: main menu found`).
 - **Quit Game showed under Replay Chapter's list again** once five chapters were unlocked: the list then fills exactly the main menu's five rows with nothing under them, which is what the 0.3.2 check took for the main menu. Text to the left of the labels in those rows (the chapters' cities) now also means it isn't the main menu.
 
 ## 0.3.3 (2026-11-18)
